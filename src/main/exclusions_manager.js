@@ -44,7 +44,6 @@ class ExclusionsManager {
     for (const d of Array.isArray(immutableDirs) ? immutableDirs : []) {
       if (typeof d === 'string' && d) out.push(d)
     }
-    // Store as objects { original: string, normalized: string }
     const uniq = []
     const seen = new Set()
     for (const p of out) {
@@ -90,14 +89,12 @@ class ExclusionsManager {
       path: it && it.path ? it.path : ''
     })).filter(it => it.path)
     
-    // Filter out items that are already covered by immutable dirs
     return list.filter(it => {
       const n = this.normalize(it.path)
       for (const d of this.immutableDirs) {
         if (it.type === 'file') {
           if (n.startsWith(d.normalized)) return false
         } else {
-          // If it's a dir, check if it IS the protected dir or INSIDE it
           if (n.startsWith(d.normalized)) return false
         }
       }

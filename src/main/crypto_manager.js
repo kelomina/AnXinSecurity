@@ -58,14 +58,8 @@ class CryptoManager {
     );
   }
 
-  /**
-   * 静态加密方法，用于 Worker 调用
-   * @param {string} sourcePath 
-   * @param {string} destPath 
-   * @param {Buffer} key 
-   */
   static async encryptFileStatic(sourcePath, destPath, key) {
-    const iv = crypto.randomBytes(12); // GCM standard IV size
+    const iv = crypto.randomBytes(12);
     const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
     
     const input = fs.createReadStream(sourcePath);
@@ -93,21 +87,10 @@ class CryptoManager {
     });
   }
 
-  /**
-   * @param {string} sourcePath 源文件路径
-   * @param {string} destPath 目标文件路径
-   * @returns {Promise<{iv: string, authTag: string, originalSize: number}>}
-   */
   async encryptFile(sourcePath, destPath) {
     return CryptoManager.encryptFileStatic(sourcePath, destPath, this.key);
   }
 
-  /**
-   * @param {string} sourcePath 加密文件路径
-   * @param {string} destPath 目标文件路径
-   * @param {string} ivHex IV (hex)
-   * @param {string} authTagHex Auth Tag (hex)
-   */
   async decryptFile(sourcePath, destPath, ivHex, authTagHex) {
     const iv = Buffer.from(ivHex, 'hex');
     const authTag = Buffer.from(authTagHex, 'hex');

@@ -1,0 +1,16 @@
+{
+  "current": {
+    "id": "c80e2d0b-23a3-4c9d-8d4f-b27cba2c41d6",
+    "mode": "quick",
+    "startedAt": 1766682283617,
+    "endedAt": null,
+    "realtime": true,
+    "currentTarget": "C:\\Users\\Saika\\AppData\\Local\\Programs\\Trae\\Trae.exe",
+    "scannedCount": 55,
+    "totalCount": 0,
+    "threatCount": 0,
+    "aborted": false,
+    "handled": false,
+    "threats": []
+  }
+}

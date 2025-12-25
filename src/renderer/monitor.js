@@ -12,7 +12,6 @@ function initUpdate() {
   const notImpl = document.getElementById('update-not-implemented');
   if (notImpl) notImpl.textContent = t('feature_not_implemented');
 
-  // Stop subscribing to logs if we were previously
   if (logUnsubscriber) {
     logUnsubscriber();
     logUnsubscriber = null;
