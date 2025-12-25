@@ -1,0 +1,12 @@
+{
+  "quick": {
+    "includeRunningProcesses": true,
+    "directories": [
+      "%USERPROFILE%\\Desktop",
+      "%USERPROFILE%\\Downloads",
+      "%TEMP%"
+    ],
+    "files": []
+  }
+}
+

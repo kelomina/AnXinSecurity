@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="zh-CN" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self' http://127.0.0.1:8000;">
+    <title>AnXin Security</title>
+    <link rel="stylesheet" href="../../node_modules/bootstrap/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="./styles.css">
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="brand" id="brand">AnXin Security</div>
+        <nav>
+          <button class="btn btn-outline-light nav-btn" data-page="overview" id="nav-overview"></button>
+          <button class="btn btn-outline-light nav-btn" data-page="scan" id="nav-scan"></button>
+          <button class="btn btn-outline-light nav-btn" data-page="quarantine" id="nav-quarantine"></button>
+          <button class="btn btn-outline-light nav-btn" data-page="exclusions" id="nav-exclusions"></button>
+          <button class="btn btn-outline-light nav-btn" data-page="update" id="nav-update"></button>
+          <button class="btn btn-outline-light nav-btn" data-page="settings" id="nav-settings"></button>
+        </nav>
+      </aside>
+      <main class="content">
+        <header class="statusbar">
+          <div class="status" id="health-status"></div>
+          <div class="meta">
+            <span id="last-scan"></span>
+          </div>
+        </header>
+
+        <section class="page" id="page-overview" style="display:block">
+          <div class="card fade-in">
+            <h3 id="overview-title"></h3>
+            <p id="overview-desc"></p>
+          </div>
+        </section>
+
+        <section class="page" id="page-scan">
+          <div class="card fade-in mb-3">
+            <h3 id="scan-title"></h3>
+            <p id="scan-desc"></p>
+            <div class="scan-actions mb-2">
+              <button id="scan-btn-quick" class="btn btn-primary scan-action scan-action-primary"></button>
+              <button id="scan-btn-full" class="btn btn-outline-primary scan-action scan-action-primary"></button>
+              <button id="scan-btn-dir" class="btn btn-outline-secondary scan-action"></button>
+              <button id="scan-btn-file" class="btn btn-outline-secondary scan-action"></button>
+            </div>
+            <div class="progress" style="height: 16px;">
+              <div id="scan-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
+            </div>
+            <div id="scan-current-target-row" class="mt-2 small text-muted scan-collapsible scan-hidden">
+              <div><span id="scan-current-target-label"></span><span id="scan-current-target"></span></div>
+            </div>
+            <div id="scan-metrics-row" class="mt-2 d-flex flex-wrap gap-3 small text-muted scan-collapsible scan-hidden">
+              <div><span id="scan-total-time-label"></span><span id="scan-total-time"></span></div>
+              <div><span id="scan-speed-label"></span><span id="scan-speed"></span></div>
+              <div id="scan-threat-count-wrap"><span id="scan-threat-count-label"></span><span id="scan-threat-count"></span></div>
+              <div><span id="scan-scanned-files-label"></span><span id="scan-scanned-files"></span></div>
+            </div>
+            <div id="scan-final-report" class="mt-2 small" style="display:none"></div>
+            <div class="mt-3 d-flex justify-content-between align-items-center">
+              <button id="scan-stop-back" class="btn btn-danger" style="display:none"></button>
+              <button id="scan-handle-threats" class="btn btn-warning" style="display:none"></button>
+            </div>
+          </div>
+          <div class="card fade-in" id="scan-threat-card" style="display:none">
+            <h5 id="scan-threat-title"></h5>
+            <div class="table-responsive threat-scroll">
+              <table class="table table-dark table-striped table-sm mb-2">
+                <thead>
+                  <tr>
+                    <th class="select-col">
+                      <span class="select-header">
+                        <input type="checkbox" id="scan-select-all" class="form-check-input" />
+                      </span>
+                    </th>
+                    <th id="scan-th-path"></th>
+                    <th id="scan-th-family"></th>
+                  </tr>
+                </thead>
+                <tbody id="scan-threat-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="page" id="page-exclusions">
+          <div class="card fade-in">
+            <h3 id="exclusions-title"></h3>
+            <p id="exclusions-desc"></p>
+            <div class="mb-2">
+              <button id="excl-btn-file" class="btn btn-primary"></button>
+              <button id="excl-btn-dir" class="btn btn-outline-primary ms-2"></button>
+            </div>
+            <div class="table-responsive threat-scroll">
+              <table class="table table-dark table-striped table-sm mb-2">
+                <thead>
+                  <tr>
+                    <th class="select-col"></th>
+                    <th id="excl-th-type"></th>
+                    <th id="excl-th-path"></th>
+                    <th id="excl-th-actions"></th>
+                  </tr>
+                </thead>
+                <tbody id="excl-tbody"></tbody>
+              </table>
+            </div>
+            <div id="excl-actions" class="mt-2 d-flex justify-content-between align-items-center" style="display:none">
+              <div id="excl-actions-left" class="d-flex align-items-center gap-2">
+                <input type="checkbox" id="excl-select-all" data-bs-toggle="tooltip" data-bs-placement="top" title="">
+                <span class="select-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="">ⓘ</span>
+              </div>
+              <div class="d-flex justify-content-end gap-2">
+                <button id="excl-btn-delete-selected" class="btn btn-danger" disabled></button>
+              </div>
+            </div>
+            <div id="excl-empty-msg" class="text-center text-muted mt-3" style="display:none"></div>
+          </div>
+        </section>
+
+
+        <section class="page" id="page-quarantine">
+          <div class="card fade-in">
+            <h3 id="quarantine-title"></h3>
+            <p id="quarantine-desc"></p>
+            <div class="table-responsive threat-scroll">
+              <table class="table table-dark table-striped table-sm mb-2">
+                <thead>
+                  <tr>
+                    <th class="select-col"></th>
+                    <th id="th-filename"></th>
+                    <th id="th-path"></th>
+                    <th id="th-date"></th>
+                    <th id="th-actions"></th>
+                  </tr>
+                </thead>
+                <tbody id="quarantine-tbody"></tbody>
+              </table>
+            </div>
+            <div id="quarantine-actions" class="mt-2 d-flex justify-content-between align-items-center" style="display:none">
+              <div id="quarantine-actions-left" class="d-flex align-items-center gap-2">
+                <input type="checkbox" id="quarantine-select-all" data-bs-toggle="tooltip" data-bs-placement="top" title="">
+                <span class="select-hint" data-bs-toggle="tooltip" data-bs-placement="top" title="">ⓘ</span>
+              </div>
+              <div class="d-flex justify-content-end gap-2">
+                <button id="quarantine-btn-restore-selected" class="btn btn-success" disabled></button>
+                <button id="quarantine-btn-delete-selected" class="btn btn-danger" disabled></button>
+              </div>
+            </div>
+            <div id="quarantine-empty-msg" class="text-center text-muted mt-3" style="display:none"></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-update">
+          <div class="card fade-in">
+            <h3 id="update-title"></h3>
+            <p id="update-desc"></p>
+            
+            <div class="alert alert-info mt-4 text-center" id="update-not-implemented"></div>
+          </div>
+        </section>
+
+        <section class="page" id="page-settings">
+          <div class="card fade-in">
+            <h3 id="settings-title"></h3>
+            <div id="lang-settings" class="mt-2">
+              <label for="select-locale" id="label-locale" class="form-label"></label>
+              <select id="select-locale" class="form-select form-select-sm">
+                <option value="zh-CN"></option>
+                <option value="en-US"></option>
+              </select>
+            </div>
+            <div id="perf-settings" class="mt-2">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="toggle-auto-tune" />
+                <label class="form-check-label" for="toggle-auto-tune" id="label-auto-tune"></label>
+              </div>
+              <div id="manual-tokens" class="mt-2" style="display:none">
+                <label for="input-max-tokens" class="form-label"></label>
+                <input type="number" min="1" max="256" step="1" id="input-max-tokens" class="form-control form-control-sm" />
+                <div id="input-max-tokens-error" class="text-danger small mt-1" style="display:none"></div>
+              </div>
+              <div id="max-file-size" class="mt-2">
+                <label for="input-max-file-size" class="form-label" id="label-max-file-size"></label>
+                <input type="number" min="1" max="10240" step="1" id="input-max-file-size" class="form-control form-control-sm" />
+                <div id="input-max-file-size-error" class="text-danger small mt-1" style="display:none"></div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <div class="modal fade" id="scan-interrupt-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="scan-interrupt-title" class="modal-title"></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-footer">
+            <button id="scan-interrupt-cancel" type="button" class="btn btn-secondary" data-bs-dismiss="modal"></button>
+            <button id="scan-interrupt-confirm" type="button" class="btn btn-danger"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="engine-wait-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="engine-wait-title"></h5>
+          </div>
+          <div class="modal-body text-center">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden" id="loading-text"></span>
+            </div>
+            <p class="mt-3" id="engine-wait-desc"></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="loading-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="loading-title"></h5>
+          </div>
+          <div class="modal-body text-center">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden" id="loading-spinner-text"></span>
+            </div>
+            <p class="mt-3" id="loading-desc"></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="processing-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="processing-title"></h5>
+          </div>
+          <div class="modal-body">
+            <p id="processing-desc" class="mb-2"></p>
+            <div class="progress">
+              <div class="progress-bar progress-bar-striped progress-bar-animated" id="processing-bar" role="progressbar" style="width: 0%"></div>
+            </div>
+            <p id="processing-status" class="mt-2 text-muted small text-end"></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="excl-delete-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="excl-delete-title" class="modal-title"></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <ul id="excl-delete-list" class="small"></ul>
+          </div>
+          <div class="modal-footer">
+            <button id="excl-delete-cancel" type="button" class="btn btn-secondary" data-bs-dismiss="modal"></button>
+            <button id="excl-delete-confirm" type="button" class="btn btn-danger"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal fade" id="excl-add-modal" tabindex="-1" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="excl-add-title" class="modal-title"></h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <p id="excl-add-path" class="path-fade"></p>
+          </div>
+          <div class="modal-footer">
+            <button id="excl-add-cancel" type="button" class="btn btn-secondary" data-bs-dismiss="modal"></button>
+            <button id="excl-add-confirm" type="button" class="btn btn-primary"></button>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script src="../../node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="./monitor.js"></script>
+    <script src="./scan_pre_tasks.js"></script>
+    <script src="./scan_metrics_visibility.js"></script>
+    <script src="./scan_progress.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

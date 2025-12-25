@@ -1,0 +1,67 @@
+{
+  "name": "anxin-security",
+  "version": "0.1.1",
+  "description": "AnXin Security Electron app",
+  "main": "src/main/main.js",
+  "scripts": {
+    "dev": "electron .",
+    "start": "electron .",
+    "test": "node --test tests/*.js",
+    "build": "electron-builder -w nsis"
+  },
+  "build": {
+    "appId": "com.anxin.security",
+    "directories": {
+      "output": "dist"
+    },
+    "compression": "maximum",
+    "afterPack": "build/afterPack.js",
+    "files": [
+      "**/*",
+      "!Engine/**",
+      "!dist/**",
+      "!dist2/**",
+      "!**/node_modules/koffi/build/koffi/**",
+      "**/node_modules/koffi/build/koffi/win32_x64/**",
+      "!**/node_modules/**/test/**",
+      "!**/node_modules/**/tests/**",
+      "!**/node_modules/**/example/**",
+      "!**/node_modules/**/examples/**",
+      "!**/node_modules/**/doc/**",
+      "!**/node_modules/**/docs/**",
+      "!**/*.md"
+    ],
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "Engine",
+        "to": "Engine",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^26.0.12"
+  },
+  "dependencies": {
+    "bootstrap": "^5.3.3",
+    "koffi": "^2.14.1"
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "brand": "AnXin Security",
+  "themeColor": "#4CA2FF",
+  "defaultPage": "overview",
+  "minimizeToTray": true,
+  "locale": "zh-CN",
+  "ui": {
+    "animations": true
+  },
+  "engine": {
+    "autoStart": true,
+    "exeRelativePath": "Engine\\Axon_v2\\Axon_ml.exe",
+    "processName": "Axon_ml.exe",
+    "args": [],
+    "exitTimeoutMs": 1000
+  },
+  "scanner": {
+    "baseUrl": "http://127.0.0.1:8000",
+    "timeoutMs": 5000,
+    "healthPollIntervalMs": 3000,
+    "tuningEnabled": true,
+    "maxFileSizeMB": 300,
+    "tuning": {
+      "fastLatencyMs": 700,
+      "slowLatencyMs": 2000,
+      "minPoolSize": 8,
+      "maxPoolSize": 256,
+      "minRatePerSecond": 8,
+      "maxRatePerSecond": 256,
+      "adjustStep": 8
+    },
+    "maxTokens": 64
+  },
+  "quarantine": {
+    "salt": "5dac06fd722d98fc67df698bff4539a9"
+  },
+  "exclusions": {
+    "salt": "72e696b7fae7b85706702ff6f6b7f37a"
+  },
+  "scan_cache": {
+    "salt": "b345e31c14b113e55c8f5a2afe0e886b",
+    "file": "config/scan_cache.json"
+  },
+  "scan": {
+    "rulesFile": "config/scan_rules.json",
+    "traversalTimeoutMs": 2000,
+    "walkerBatchSize": 256,
+    "cachePersistIntervalMs": 1000
+  }
+}
