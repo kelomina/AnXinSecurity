@@ -130,3 +130,5 @@ node_modules
 logs
 vir
 engine
+config/scan_cache.json
+quarantine_index.json
