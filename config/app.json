@@ -31,16 +31,6 @@
     },
     "maxTokens": 64
   },
-  "quarantine": {
-    "salt": "5dac06fd722d98fc67df698bff4539a9"
-  },
-  "exclusions": {
-    "salt": "72e696b7fae7b85706702ff6f6b7f37a"
-  },
-  "scan_cache": {
-    "salt": "b345e31c14b113e55c8f5a2afe0e886b",
-    "file": "config/scan_cache.json"
-  },
   "scan": {
     "rulesFile": "config/scan_rules.json",
     "traversalTimeoutMs": 2000,
