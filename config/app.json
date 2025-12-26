@@ -19,7 +19,6 @@
     "exitTimeoutMs": 1000
   },
   "scanner": {
-    "baseUrl": "http://127.0.0.1:8000",
     "timeoutMs": 5000,
     "healthPollIntervalMs": 3000,
     "tuningEnabled": true,
@@ -48,5 +47,11 @@
     "traversalTimeoutMs": 2000,
     "walkerBatchSize": 256,
     "cachePersistIntervalMs": 1000
+  },
+  "quarantine": {
+    "salt": "59e4101fcba50ea74bc9d1d0d5bc1621"
+  },
+  "exclusions": {
+    "salt": "05bfd1e0c88afb8888cf8a666ae7e18e"
   }
 }

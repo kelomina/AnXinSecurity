@@ -21,7 +21,6 @@ function loadConfig() {
       ui: { animations: true, window: { minWidth: 600, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
       scanner: {
-        baseUrl: 'http://127.0.0.1:8000',
         timeoutMs: 10000,
         healthPollIntervalMs: 30000,
         tuningEnabled: true,
@@ -61,30 +60,6 @@ function saveConfig() {
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf-8')
     try { ipcRenderer.send('config-updated', cfg) } catch {}
   } catch {}
-}
-
-async function get(url, timeout) {
-  const controller = new AbortController()
-  const t = setTimeout(() => controller.abort(), timeout)
-  return fetch(url, { signal: controller.signal }).then(r => {
-    clearTimeout(t)
-    return r.json()
-  })
-}
-
-async function post(url, body, timeout) {
-  const u = url
-  const controller = new AbortController()
-  const t = setTimeout(() => controller.abort(), timeout)
-  return fetch(u, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-    signal: controller.signal
-  }).then(r => {
-    clearTimeout(t)
-    return r.json()
-  })
 }
 
 function loadI18n() {
@@ -142,8 +117,6 @@ function getScanExcludeList() {
 const api = {
   config: {
     get: () => cfg,
-    setBaseUrl: (url) => { cfg.scanner.baseUrl = url }
-    ,
     setLocale: (locale) => {
       if (typeof locale !== 'string' || !locale) return
       cfg.locale = locale

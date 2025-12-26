@@ -1,22 +1,12 @@
-const http = require('http')
-const https = require('https')
 const net = require('net')
 
-function normalizeBaseUrl(baseUrl) {
-  const raw = typeof baseUrl === 'string' ? baseUrl.trim() : ''
-  return (raw ? raw : 'http://127.0.0.1:8000').replace(/\/$/, '')
-}
-
 function createScannerClient(getConfig, deps = {}) {
-  const fetchImpl = deps.fetch || (global.fetch ? global.fetch.bind(global) : null)
-  const AbortControllerImpl = deps.AbortController || (global.AbortController ? global.AbortController : null)
   const active = new Map()
 
   function getScannerCfg() {
     const cfg = typeof getConfig === 'function' ? (getConfig() || {}) : {}
     const scanner = cfg && cfg.scanner ? cfg.scanner : {}
     const ipc = scanner && scanner.ipc ? scanner.ipc : {}
-    const baseUrl = normalizeBaseUrl(scanner.baseUrl)
     const timeoutMs = Number.isFinite(scanner.timeoutMs) ? scanner.timeoutMs : 5000
     const envHost = process.env.SCANNER_SERVICE_IPC_HOST
     const envPort = process.env.SCANNER_SERVICE_IPC_PORT
@@ -27,7 +17,7 @@ function createScannerClient(getConfig, deps = {}) {
     const ipcPort = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 8765
     const ipcConnectTimeoutMs = Number.isFinite(ipc.connectTimeoutMs) ? ipc.connectTimeoutMs : 500
     const ipcTimeoutMs = Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : timeoutMs
-    return { baseUrl, timeoutMs, ipcEnabled, ipcPrefer, ipcHost, ipcPort, ipcConnectTimeoutMs, ipcTimeoutMs }
+    return { timeoutMs, ipcEnabled, ipcPrefer, ipcHost, ipcPort, ipcConnectTimeoutMs, ipcTimeoutMs }
   }
 
   function setActive(id, abortFn) {
@@ -48,16 +38,6 @@ function createScannerClient(getConfig, deps = {}) {
     try { fn() } catch {}
     active.delete(key)
     return true
-  }
-
-  function shouldFallbackToHttp(err) {
-    if (!err) return false
-    if (err.isIpcTransport) return true
-    const code = err.code ? String(err.code) : ''
-    if (code === 'ECONNREFUSED' || code === 'EHOSTUNREACH' || code === 'ENOTFOUND' || code === 'ETIMEDOUT') return true
-    const msg = err.message ? String(err.message) : ''
-    if (msg === 'TIMEOUT' || msg === 'CONNECT_TIMEOUT' || msg === 'IPC_CLOSED' || msg === 'IPC_PROTOCOL') return true
-    return false
   }
 
   function ipcRequest(type, payload, requestId) {
@@ -220,192 +200,50 @@ function createScannerClient(getConfig, deps = {}) {
   }
 
   async function health(requestId) {
-    const { baseUrl, timeoutMs, ipcEnabled, ipcPrefer } = getScannerCfg()
-    const url = baseUrl + '/health'
-
-    if (ipcEnabled && ipcPrefer) {
-      try {
-        return await ipcHealth(requestId)
-      } catch (e) {
-        if (!shouldFallbackToHttp(e)) throw e
-      }
-    }
-
-    if (!fetchImpl || !AbortControllerImpl) {
-      return new Promise((resolve, reject) => {
-        try {
-          const isHttps = url.startsWith('https:')
-          const client = isHttps ? https : http
-          const req = client.get(url, (res) => {
-            const chunks = []
-            res.on('data', (c) => chunks.push(c))
-            res.on('end', () => {
-              if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error('HTTP_' + res.statusCode))
-              try {
-                resolve(JSON.parse(Buffer.concat(chunks).toString()))
-              } catch (e) {
-                reject(e)
-              }
-            })
-          })
-          req.on('error', reject)
-          req.setTimeout(timeoutMs, () => {
-            req.destroy(new Error('TIMEOUT'))
-          })
-        } catch (e) {
-          reject(e)
-        }
-      })
-    }
-
-    const controller = new AbortControllerImpl()
-    const reqId = requestId ? String(requestId) : ''
-    if (reqId) setActive(reqId, () => { try { controller.abort() } catch {} })
-    const t = setTimeout(() => controller.abort(), timeoutMs)
-    try {
-      const res = await fetchImpl(url, { method: 'GET', signal: controller.signal })
-      clearTimeout(t)
-      if (!res.ok) throw new Error('HTTP_' + res.status)
-      return await res.json()
-    } finally {
-      clearTimeout(t)
-      if (reqId) clearActive(reqId)
-    }
+    const { ipcEnabled, ipcPrefer } = getScannerCfg()
+    if (!ipcEnabled) throw new Error('IPC_DISABLED')
+    if (!ipcPrefer) throw new Error('IPC_NOT_PREFERRED')
+    return ipcHealth(requestId)
   }
 
   async function scanFile(filePath, requestId) {
     const fp = typeof filePath === 'string' ? filePath : ''
     if (!fp) throw new Error('INVALID_FILE_PATH')
 
-    const { baseUrl, timeoutMs, ipcEnabled, ipcPrefer } = getScannerCfg()
-    const url = baseUrl + '/scan/file'
-
-    if (ipcEnabled && ipcPrefer) {
-      try {
-        return await ipcScanFile(fp, requestId)
-      } catch (e) {
-        if (!shouldFallbackToHttp(e)) throw e
-      }
-    }
-
-    if (!fetchImpl || !AbortControllerImpl) {
-      return new Promise((resolve, reject) => {
-        try {
-          const body = Buffer.from(JSON.stringify({ file_path: fp }), 'utf-8')
-          const isHttps = url.startsWith('https:')
-          const client = isHttps ? https : http
-          const req = client.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': body.length } }, (res) => {
-            const chunks = []
-            res.on('data', (c) => chunks.push(c))
-            res.on('end', () => {
-              if (res.statusCode === 400) return resolve({ infected: false, is_malware: false, file_path: fp })
-              if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error('HTTP_' + res.statusCode))
-              try {
-                resolve(JSON.parse(Buffer.concat(chunks).toString()))
-              } catch (e) {
-                reject(e)
-              }
-            })
-          })
-          req.on('error', reject)
-          req.setTimeout(timeoutMs, () => {
-            req.destroy(new Error('TIMEOUT'))
-          })
-          req.write(body)
-          req.end()
-        } catch (e) {
-          reject(e)
-        }
-      })
-    }
-
-    const controller = new AbortControllerImpl()
-    const reqId = requestId ? String(requestId) : ''
-    if (reqId) setActive(reqId, () => { try { controller.abort() } catch {} })
-    const t = setTimeout(() => controller.abort(), timeoutMs)
-    try {
-      const res = await fetchImpl(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_path: fp }),
-        signal: controller.signal
-      })
-      clearTimeout(t)
-      if (res.status === 400) return { infected: false, is_malware: false, file_path: fp }
-      if (!res.ok) throw new Error('HTTP_' + res.status)
-      return await res.json()
-    } finally {
-      clearTimeout(t)
-      if (reqId) clearActive(reqId)
-    }
+    const { ipcEnabled, ipcPrefer } = getScannerCfg()
+    if (!ipcEnabled) throw new Error('IPC_DISABLED')
+    if (!ipcPrefer) throw new Error('IPC_NOT_PREFERRED')
+    return ipcScanFile(fp, requestId)
   }
 
   async function scanBatch(filePaths, requestId) {
     const fps = Array.isArray(filePaths) ? filePaths.filter(p => typeof p === 'string' && p) : []
     if (fps.length === 0) throw new Error('INVALID_FILE_PATHS')
 
-    const { baseUrl, timeoutMs, ipcEnabled, ipcPrefer } = getScannerCfg()
-    const url = baseUrl + '/scan/batch'
-
-    if (ipcEnabled && ipcPrefer) {
-      try {
-        return await ipcScanBatch(fps, requestId)
-      } catch (e) {
-        if (!shouldFallbackToHttp(e)) throw e
-      }
-    }
-
-    if (!fetchImpl || !AbortControllerImpl) {
-      return new Promise((resolve, reject) => {
-        try {
-          const body = Buffer.from(JSON.stringify({ file_paths: fps }), 'utf-8')
-          const isHttps = url.startsWith('https:')
-          const client = isHttps ? https : http
-          const req = client.request(url, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': body.length } }, (res) => {
-            const chunks = []
-            res.on('data', (c) => chunks.push(c))
-            res.on('end', () => {
-              if (res.statusCode < 200 || res.statusCode >= 300) return reject(new Error('HTTP_' + res.statusCode))
-              try {
-                resolve(JSON.parse(Buffer.concat(chunks).toString()))
-              } catch (e) {
-                reject(e)
-              }
-            })
-          })
-          req.on('error', reject)
-          req.setTimeout(timeoutMs, () => {
-            req.destroy(new Error('TIMEOUT'))
-          })
-          req.write(body)
-          req.end()
-        } catch (e) {
-          reject(e)
-        }
-      })
-    }
-
-    const controller = new AbortControllerImpl()
-    const reqId = requestId ? String(requestId) : ''
-    if (reqId) setActive(reqId, () => { try { controller.abort() } catch {} })
-    const t = setTimeout(() => controller.abort(), timeoutMs)
-    try {
-      const res = await fetchImpl(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file_paths: fps }),
-        signal: controller.signal
-      })
-      clearTimeout(t)
-      if (!res.ok) throw new Error('HTTP_' + res.status)
-      return await res.json()
-    } finally {
-      clearTimeout(t)
-      if (reqId) clearActive(reqId)
-    }
+    const { ipcEnabled, ipcPrefer } = getScannerCfg()
+    if (!ipcEnabled) throw new Error('IPC_DISABLED')
+    if (!ipcPrefer) throw new Error('IPC_NOT_PREFERRED')
+    return ipcScanBatch(fps, requestId)
   }
 
-  return { health, scanFile, scanBatch, abort }
+  async function control(command, token, requestId) {
+    const cmd = typeof command === 'string' ? command : ''
+    if (!cmd) throw new Error('INVALID_COMMAND')
+    const { ipcEnabled, ipcPrefer } = getScannerCfg()
+    if (!ipcEnabled) throw new Error('IPC_DISABLED')
+    if (!ipcPrefer) throw new Error('IPC_NOT_PREFERRED')
+    const payload = token ? { command: cmd, token: String(token) } : { command: cmd }
+    const res = await ipcRequest('control', payload, requestId)
+    if (res && res.ok === false) {
+      const e = new Error((res.error && res.error.message) ? String(res.error.message) : 'IPC_ERROR')
+      if (res.error && res.error.code) e.code = String(res.error.code)
+      e.isIpcTransport = false
+      throw e
+    }
+    return (res && res.payload) ? res.payload : res
+  }
+
+  return { health, scanFile, scanBatch, control, abort }
 }
 
 module.exports = { createScannerClient }

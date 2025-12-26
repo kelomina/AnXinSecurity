@@ -368,6 +368,7 @@ async function finalizeScan(session) {
     }
     const bar = document.getElementById('scan-progress-bar')
     if (bar) {
+      bar.classList.remove('scan-indeterminate')
       bar.classList.remove('progress-bar-animated')
       bar.style.width = '100%'
       bar.textContent = '100%'

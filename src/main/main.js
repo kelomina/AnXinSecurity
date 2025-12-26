@@ -42,7 +42,6 @@ function loadConfig() {
       ui: { animations: true, window: { minWidth: 600, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
       scanner: {
-        baseUrl: 'http://127.0.0.1:8000',
         timeoutMs: 10000,
         healthPollIntervalMs: 30000,
         maxFileSizeMB: 500,
@@ -187,13 +186,13 @@ function createTray() {
       try {
         scanCache.clearAll(config).catch(() => {})
         config.minimizeToTray = false
-        const base = (config && config.scanner && config.scanner.baseUrl) ? config.scanner.baseUrl : 'http://127.0.0.1:8000'
-        const url = base.replace(/\/$/, '') + '/control/command'
-        const timeout = (config && config.engine && Number.isFinite(config.engine.exitTimeoutMs)) ? config.engine.exitTimeoutMs : ((config && config.scanner && config.scanner.timeoutMs) ? config.scanner.timeoutMs : 1000)
+        const scannerCfg = (config && config.scanner) ? config.scanner : {}
+        const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
+        const timeout = (config && config.engine && Number.isFinite(config.engine.exitTimeoutMs)) ? config.engine.exitTimeoutMs : (Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : ((scannerCfg && scannerCfg.timeoutMs) ? scannerCfg.timeoutMs : 1000))
         const engineCfg = (config && config.engine) ? config.engine : {}
         const processName = engineCfg.processName || 'Axon_ml.exe'
         const mod = require('./engine_autostart')
-        mod.postExitCommand(url, timeout, null).then((res) => {
+        mod.postExitCommand({ ipc }, timeout, null).then((res) => {
           const ok = res && res.ok && res.status === 'shutting_down'
           if (!ok && process.platform === 'win32') return mod.killProcessWin32(processName)
           return null
@@ -228,16 +227,16 @@ app.whenReady().then(() => {
   try {
     const engineCfg = (config && config.engine) ? config.engine : {}
     const scannerCfg = (config && config.scanner) ? config.scanner : {}
-    const baseUrl = scannerCfg.baseUrl || 'http://127.0.0.1:8000'
+    const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
     const pollIntervalMs = Number.isFinite(scannerCfg.healthPollIntervalMs) ? scannerCfg.healthPollIntervalMs : 300
 
     const bootstrap = async () => {
       if (engineCfg.autoStart !== false) {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
-        const res = await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, baseUrl, baseDirs: getEngineBaseDirs() })
+        const res = await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
         if (res) {
           if (res.started) console.log('主进程: 已后台启动 Axon_ml.exe', res.path)
-          else if (res.reason === 'already_running') console.log('主进程: Axon_ml.exe (HTTP) 已在运行')
+          else if (res.reason === 'already_running') console.log('主进程: Axon_ml.exe 已在运行')
           else if (res.reason === 'exe_not_found') console.log('主进程: 未找到 Axon_ml.exe，跳过自动启动')
           else if (res.reason === 'spawn_failed') console.log('主进程: 启动 Axon_ml.exe 失败', res.path)
         }
@@ -245,7 +244,7 @@ app.whenReady().then(() => {
 
       let retries = 0
       const check = async () => {
-        const ok = await checkEngineHealth(baseUrl)
+        const ok = await checkEngineHealth({ ipc })
         if (ok || retries > 100) {
           if (splash && !splash.isDestroyed()) splash.destroy()
           if (win && !win.isDestroyed()) {

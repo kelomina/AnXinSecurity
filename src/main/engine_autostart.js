@@ -1,8 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const childProcess = require('child_process')
-const http = require('http')
-const https = require('https')
+const net = require('net')
 
 function normalizeProcessName(name) {
   if (typeof name !== 'string') return ''
@@ -32,66 +31,128 @@ function resolveExePath(exePathOrRelative, baseDirs, deps = {}) {
   return null
 }
 
-function spawnDetachedHidden(exePath, args, deps = {}) {
+function spawnDetachedHidden(exePath, args, spawnOptions = {}, deps = {}) {
   const cp = deps.childProcess || childProcess
+  const opts = spawnOptions && typeof spawnOptions === 'object' ? spawnOptions : {}
   const child = cp.spawn(exePath, Array.isArray(args) ? args : [], {
     detached: true,
     windowsHide: true,
-    stdio: 'ignore'
+    stdio: 'ignore',
+    env: opts.env || process.env
   })
   child.unref()
   return child
 }
 
-function checkEngineHealth(baseUrl, deps = {}) {
-  const base = typeof baseUrl === 'string' ? baseUrl.replace(/\/$/, '') : 'http://127.0.0.1:8000'
-  const url = base + '/health'
-  const fetchImpl = deps.fetch || (global.fetch ? global.fetch.bind(global) : null)
+function resolveIpcOptions(options) {
+  const ipc = options && options.ipc ? options.ipc : {}
+  const envHost = process.env.SCANNER_SERVICE_IPC_HOST
+  const envPort = process.env.SCANNER_SERVICE_IPC_PORT
+  const host = (typeof (envHost || ipc.host) === 'string' && (envHost || ipc.host).trim()) ? (envHost || ipc.host).trim() : '127.0.0.1'
+  const parsedPort = parseInt(envPort || ipc.port, 10)
+  const port = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 8765
+  const connectTimeoutMs = Number.isFinite(ipc.connectTimeoutMs) ? ipc.connectTimeoutMs : 300
+  const timeoutMs = Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : 800
+  return { host, port, connectTimeoutMs, timeoutMs }
+}
 
-  if (fetchImpl) {
-    const controller = new (deps.AbortController || AbortController)()
-    const t = setTimeout(() => controller.abort(), 1000)
-    return fetchImpl(url, { method: 'GET', signal: controller.signal })
-      .then(res => {
-        clearTimeout(t)
-        if (!res.ok) return false
-        return res.json().then(() => true).catch(() => false)
-      })
-      .catch(() => {
-        clearTimeout(t)
-        return false
-      })
+function ipcRoundTrip(host, port, msg, connectTimeoutMs, timeoutMs, deps = {}) {
+  const netMod = deps.net || net
+  const json = Buffer.from(JSON.stringify(msg), 'utf-8')
+  const frame = Buffer.allocUnsafe(4)
+  frame.writeUInt32BE(json.length, 0)
+  const out = Buffer.concat([frame, json])
+
+  return new Promise((resolve, reject) => {
+    let done = false
+    let buf = Buffer.alloc(0)
+    let expectedLen = null
+
+    const socket = netMod.createConnection({ host, port })
+    socket.setNoDelay(true)
+
+    const connectTimer = setTimeout(() => {
+      try { socket.destroy(new Error('CONNECT_TIMEOUT')) } catch {}
+    }, Math.max(1, connectTimeoutMs))
+
+    const timer = setTimeout(() => {
+      try { socket.destroy(new Error('TIMEOUT')) } catch {}
+    }, Math.max(1, timeoutMs + connectTimeoutMs))
+
+    function cleanup() {
+      clearTimeout(connectTimer)
+      clearTimeout(timer)
+      try { socket.removeAllListeners() } catch {}
+    }
+
+    function finish(err, res) {
+      if (done) return
+      done = true
+      cleanup()
+      if (err) return reject(err)
+      resolve(res)
+    }
+
+    socket.once('connect', () => {
+      clearTimeout(connectTimer)
+      try {
+        socket.write(out)
+      } catch (e) {
+        finish(e)
+      }
+    })
+
+    socket.on('data', (chunk) => {
+      try {
+        const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+        buf = buf.length ? Buffer.concat([buf, b]) : b
+        if (expectedLen == null) {
+          if (buf.length < 4) return
+          expectedLen = buf.readUInt32BE(0)
+          if (!Number.isFinite(expectedLen) || expectedLen < 0 || expectedLen > 64 * 1024 * 1024) return finish(new Error('IPC_PROTOCOL'))
+        }
+        if (buf.length < 4 + expectedLen) return
+        const body = buf.subarray(4, 4 + expectedLen)
+        const parsed = JSON.parse(body.toString('utf-8'))
+        try { socket.end() } catch {}
+        finish(null, parsed)
+      } catch (e) {
+        finish(e)
+      }
+    })
+
+    socket.once('error', (err) => finish(err))
+    socket.once('close', () => {
+      if (done) return
+      finish(new Error('IPC_CLOSED'))
+    })
+  })
+}
+
+function checkEngineHealth(hostOrOptions, portOrDeps, maybeDeps) {
+  let host = '127.0.0.1'
+  let port = 8765
+  let deps = {}
+
+  if (hostOrOptions && typeof hostOrOptions === 'object') {
+    const opt = resolveIpcOptions(hostOrOptions)
+    host = opt.host
+    port = opt.port
+    deps = portOrDeps || {}
+    const msg = { version: 1, type: 'health', payload: {}, timeout_ms: opt.timeoutMs }
+    return ipcRoundTrip(host, port, msg, opt.connectTimeoutMs, opt.timeoutMs, deps)
+      .then((res) => !!(res && res.ok))
+      .catch(() => false)
   }
 
-  return new Promise((resolve) => {
-    try {
-      const isHttps = url.startsWith('https:')
-      const client = isHttps ? (deps.https || https) : (deps.http || http)
-      const req = client.get(url, (res) => {
-        const chunks = []
-        res.on('data', (c) => chunks.push(c))
-        res.on('end', () => {
-          if (res.statusCode >= 200 && res.statusCode < 300) {
-            try {
-              JSON.parse(Buffer.concat(chunks).toString())
-              resolve(true)
-            } catch {
-              resolve(false)
-            }
-          } else {
-            resolve(false)
-          }
-        })
-      })
-      req.on('error', () => resolve(false))
-      req.setTimeout(1000, () => {
-        req.destroy()
-        resolve(false)
-      })
-    } catch {
-      resolve(false)
-    }
-  })
+  host = typeof hostOrOptions === 'string' && hostOrOptions.trim() ? hostOrOptions.trim() : '127.0.0.1'
+  const p = parseInt(portOrDeps, 10)
+  port = Number.isFinite(p) && p > 0 && p < 65536 ? p : 8765
+  deps = maybeDeps || {}
+  const msg = { version: 1, type: 'health', payload: {}, timeout_ms: 800 }
+  return ipcRoundTrip(host, port, msg, 300, 800, deps)
+    .then((res) => !!(res && res.ok))
+    .catch(() => false)
 }
 
 async function startIfNeeded(options, deps = {}) {
@@ -101,86 +162,35 @@ async function startIfNeeded(options, deps = {}) {
   const engine = options && options.engine ? options.engine : {}
   const baseDirs = options && options.baseDirs ? options.baseDirs : []
   const exeCandidate = engine.exePath || engine.exeRelativePath || ''
-  const baseUrl = options.baseUrl || 'http://127.0.0.1:8000'
+  const ipcOpt = resolveIpcOptions(options || {})
 
   const exePath = resolveExePath(exeCandidate, baseDirs, deps)
   if (!exePath) return { started: false, reason: 'exe_not_found' }
 
-  const running = await checkEngineHealth(baseUrl, deps)
+  const running = await checkEngineHealth({ ipc: { host: ipcOpt.host, port: ipcOpt.port, connectTimeoutMs: ipcOpt.connectTimeoutMs, timeoutMs: ipcOpt.timeoutMs } }, deps)
   if (running) return { started: false, reason: 'already_running', path: exePath }
 
   try {
-    spawnDetachedHidden(exePath, engine.args || [], deps)
+    const mergedEnv = { ...process.env, SCANNER_SERVICE_IPC_HOST: ipcOpt.host, SCANNER_SERVICE_IPC_PORT: String(ipcOpt.port) }
+    spawnDetachedHidden(exePath, engine.args || [], { env: mergedEnv }, deps)
     return { started: true, reason: 'started', path: exePath }
   } catch {
     return { started: false, reason: 'spawn_failed', path: exePath }
   }
 }
 
-function postExitCommand(url, timeoutMs, token, deps = {}) {
-  const u = typeof url === 'string' ? url : ''
-  const to = (typeof timeoutMs === 'number' && timeoutMs > 0) ? timeoutMs : 1000
-  const fetchImpl = deps.fetch || (global.fetch ? global.fetch.bind(global) : null)
+function postExitCommand(options, timeoutMs, token, deps = {}) {
+  const opt = resolveIpcOptions(options || {})
+  const to = Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : opt.timeoutMs
+  const msg = { version: 1, type: 'control', payload: token ? { command: 'exit', token } : { command: 'exit' }, timeout_ms: to }
 
-  if (fetchImpl) {
-    const controller = new (deps.AbortController || AbortController)()
-    const t = setTimeout(() => controller.abort(), to)
-    const body = token ? { command: 'exit', token } : { command: 'exit' }
-    return fetchImpl(u, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-      signal: controller.signal
-    }).then(async (res) => {
-      clearTimeout(t)
-      let status = null
-      try {
-        const ct = res && res.headers && res.headers.get ? res.headers.get('content-type') : null
-        if (ct && ct.indexOf('application/json') !== -1) {
-          const data = await res.json()
-          status = data && data.status ? data.status : null
-        }
-      } catch {}
+  return ipcRoundTrip(opt.host, opt.port, msg, opt.connectTimeoutMs, to, deps)
+    .then((res) => {
+      if (!res || res.ok !== true) return { ok: false, status: null }
+      const status = res && res.payload && res.payload.status ? res.payload.status : null
       return { ok: true, status }
-    }).catch(() => {
-      clearTimeout(t)
-      return { ok: false, status: null }
     })
-  }
-
-  return new Promise((resolve) => {
-    try {
-      const data = Buffer.from(JSON.stringify(token ? { command: 'exit', token } : { command: 'exit' }))
-      const isHttps = u.startsWith('https:')
-      const client = isHttps ? (deps.https || https) : (deps.http || http)
-      const req = client.request(u, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': data.length }
-      }, (res) => {
-        const chunks = []
-        res.on('data', (c) => { chunks.push(c) })
-        res.on('end', () => {
-          clearTimeout(timer)
-          try {
-            const text = Buffer.concat(chunks).toString('utf-8')
-            const parsed = JSON.parse(text)
-            resolve({ ok: true, status: parsed && parsed.status ? parsed.status : null })
-          } catch {
-            resolve({ ok: true, status: null })
-          }
-        })
-      })
-      const timer = setTimeout(() => {
-        try { req.destroy() } catch {}
-        resolve({ ok: false, status: null })
-      }, to)
-      req.on('error', () => { clearTimeout(timer); resolve({ ok: false, status: null }) })
-      req.write(data)
-      req.end()
-    } catch {
-      resolve({ ok: false, status: null })
-    }
-  })
+    .catch(() => ({ ok: false, status: null }))
 }
 
 function killProcessWin32(processName, deps = {}) {
