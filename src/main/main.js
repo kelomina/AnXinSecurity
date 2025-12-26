@@ -3,10 +3,12 @@ const { Worker } = require('worker_threads')
 const path = require('path')
 const fs = require('fs')
 const { startIfNeeded, checkEngineHealth } = require('./engine_autostart')
+const { createScannerClient } = require('./scanner_client')
 const quarantineManager = require('./quarantine_manager')
 const processes = require('./processes')
 const scanCache = require('./scan_cache')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
+const { resolveMainWindowOptions } = require('./window_options')
 
 let winapi = null
 try {
@@ -37,7 +39,7 @@ function loadConfig() {
       themeColor: '#4CA2FF',
       defaultPage: 'overview',
       minimizeToTray: true,
-      ui: { animations: true },
+      ui: { animations: true, window: { minWidth: 600, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
       scanner: { baseUrl: 'http://127.0.0.1:8000', timeoutMs: 10000, healthPollIntervalMs: 30000, maxFileSizeMB: 500 },
       behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
@@ -50,6 +52,7 @@ let win
 let splash
 let config = loadConfig()
 const behavior = createBehaviorAnalyzer(config)
+const scannerClient = createScannerClient(() => config)
 let i18nDict = {}
 
 function loadI18n() {
@@ -139,9 +142,9 @@ function createSplash() {
 }
 
 function createWindow() {
+  const bounds = resolveMainWindowOptions(config)
   win = new BrowserWindow({
-    width: 800,
-    height: 560,
+    ...bounds,
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -252,6 +255,11 @@ app.whenReady().then(() => {
     }
     bootstrap()
   } catch {}
+  ipcMain.on('config-updated', (_event, nextCfg) => {
+    if (!nextCfg || typeof nextCfg !== 'object') return
+    config = nextCfg
+    try { i18nDict = loadI18n() } catch {}
+  })
   ipcMain.handle('open-file-dialog', async () => {
     const browser = BrowserWindow.getFocusedWindow() || win
     console.log('主进程: 打开文件选择对话框')
@@ -284,6 +292,12 @@ app.whenReady().then(() => {
   ipcMain.handle('behavior-get-db-path', () => behavior.getDbPath())
   ipcMain.handle('behavior-list-processes', async (_event, query) => behavior.listProcesses(query || {}))
   ipcMain.handle('behavior-list-events', async (_event, query) => behavior.listEvents(query || {}))
+  ipcMain.handle('scanner:health', async () => scannerClient.health())
+  ipcMain.handle('scanner:scanFile', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    return scannerClient.scanFile(p.filePath, p.requestId)
+  })
+  ipcMain.handle('scanner:abort', async (_event, requestId) => scannerClient.abort(requestId))
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

@@ -5,7 +5,11 @@
   "minimizeToTray": true,
   "locale": "zh-CN",
   "ui": {
-    "animations": true
+    "animations": true,
+    "window": {
+      "minWidth": 600,
+      "minHeight": 800
+    }
   },
   "engine": {
     "autoStart": true,

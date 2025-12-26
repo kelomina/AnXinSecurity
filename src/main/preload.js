@@ -18,6 +18,7 @@ function loadConfig() {
       themeColor: '#1677ff',
       defaultPage: 'overview',
       minimizeToTray: true,
+      ui: { animations: true, window: { minWidth: 600, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
       scanner: {
         baseUrl: 'http://127.0.0.1:8000',
@@ -57,6 +58,7 @@ function saveConfig() {
   try {
     const p = path.join(__dirname, '../../config/app.json')
     fs.writeFileSync(p, JSON.stringify(cfg, null, 2), 'utf-8')
+    try { ipcRenderer.send('config-updated', cfg) } catch {}
   } catch {}
 }
 
@@ -171,35 +173,14 @@ const api = {
   },
   scanner: {
     health: async () => {
-      const url = cfg.scanner.baseUrl + '/health'
-      console.log('预加载: 调用健康检查', url)
-      return get(url, cfg.scanner.timeoutMs)
+      return ipcRenderer.invoke('scanner:health')
     },
-    scanFile: async (filePath) => {
-      const url = cfg.scanner.baseUrl + '/scan/file'
-      console.log('预加载: 调用文件扫描', filePath)
-      const controller = new AbortController()
-      const timeoutMs = Number.isFinite(cfg.scanner.timeoutMs) ? cfg.scanner.timeoutMs : 5000
-      const t = setTimeout(() => controller.abort(), timeoutMs)
-      try {
-        const res = await fetch(url, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ file_path: filePath }),
-            signal: controller.signal
-        })
-        clearTimeout(t)
-        if (res.status === 400) {
-            return { infected: false, is_malware: false, file_path: filePath }
-        }
-        if (!res.ok) {
-            throw new Error('HTTP_' + res.status)
-        }
-        return await res.json()
-      } catch (e) {
-          clearTimeout(t)
-          throw e
-      }
+    scanFile: async (filePath, options) => {
+      const opts = options && typeof options === 'object' ? options : {}
+      return ipcRenderer.invoke('scanner:scanFile', { filePath, requestId: opts.requestId || '' })
+    },
+    abort: async (requestId) => {
+      return ipcRenderer.invoke('scanner:abort', requestId || '')
     }
   },
   i18n: {

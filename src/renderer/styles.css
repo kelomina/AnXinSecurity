@@ -10,6 +10,18 @@ body {
   color: #e6e8eb;
   font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, PingFang SC, Microsoft YaHei, Arial, sans-serif;
 }
+.app,
+.app * {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+[contenteditable=""],
+[contenteditable="true"] {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .app {
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);

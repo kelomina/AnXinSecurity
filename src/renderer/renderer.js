@@ -392,6 +392,7 @@ async function scanOneFile(filePath, session) {
     }
   } catch {}
   session.currentTarget = filePath
+  if (session.stopRequested) return
 
   const cfg = window.api && window.api.config ? window.api.config.get() : null
   const maxMB = cfg && cfg.scanner && Number.isFinite(cfg.scanner.maxFileSizeMB) ? cfg.scanner.maxFileSizeMB : 300
@@ -403,13 +404,19 @@ async function scanOneFile(filePath, session) {
     }
   } catch {}
 
+  if (session.stopRequested) return
+
   let res
+  const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (String(Date.now()) + '-' + String(Math.random()))
+  session.activeScanRequestId = requestId
   try {
-    res = await window.api.scanner.scanFile(filePath)
+    res = await window.api.scanner.scanFile(filePath, { requestId })
   } catch {
     session.scannedCount++
+    if (session.activeScanRequestId === requestId) session.activeScanRequestId = ''
     return
   }
+  if (session.activeScanRequestId === requestId) session.activeScanRequestId = ''
   session.scannedCount++
   if (isMalware(res)) {
     const family = getVirusFamily(res) || t('unknown')
@@ -557,6 +564,7 @@ async function scanDirsAndFiles(session, dirs, files) {
     try { window.api.fsAsync.destroyWalker(walkerId) } catch {}
   }
   session.walkerId = null
+  session.activeScanRequestId = ''
 }
 
 async function startScan(mode, targetLabel, dirs, files, serialRoots, options) {
@@ -592,7 +600,9 @@ async function startScan(mode, targetLabel, dirs, files, serialRoots, options) {
     stopRequested: false,
     aborted: false,
     handled: false,
-    lastCacheAt: 0
+    lastCacheAt: 0,
+    walkerId: null,
+    activeScanRequestId: ''
   }
   state.scanSession = session
 
@@ -663,7 +673,9 @@ async function restoreScanResultIfAny() {
       stopRequested: false,
       aborted: !!cached.aborted,
       handled: !!cached.handled,
-      lastCacheAt: 0
+      lastCacheAt: 0,
+      walkerId: null,
+      activeScanRequestId: ''
     }
     uiThread(() => {
       applyScanMetricsVisibility(true)
@@ -721,6 +733,12 @@ function bindScanUi() {
       if (state.scanning && state.scanSession) {
         state.scanSession.stopRequested = true
         try { window.api.fsAsync.destroyWalker(state.scanSession.walkerId) } catch {}
+        try {
+          const reqId = state.scanSession.activeScanRequestId
+          if (reqId && window.api && window.api.scanner && window.api.scanner.abort) {
+            await window.api.scanner.abort(reqId)
+          }
+        } catch {}
         return
       }
       const ok = await showConfirmDialog(t('scan_back_confirm_title'), t('modal_confirm'))
