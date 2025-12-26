@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "electron .",
     "start": "electron .",
-    "test": "node --test tests/*.js",
+    "test": "node --test tests/test_*.js",
     "build": "electron-builder -w nsis"
   },
   "build": {
@@ -62,6 +62,7 @@
   },
   "dependencies": {
     "bootstrap": "^5.3.3",
-    "koffi": "^2.14.1"
+    "koffi": "^2.14.1",
+    "sql.js": "^1.11.0"
   }
 }

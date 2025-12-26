@@ -6,6 +6,7 @@ const { startIfNeeded, checkEngineHealth } = require('./engine_autostart')
 const quarantineManager = require('./quarantine_manager')
 const processes = require('./processes')
 const scanCache = require('./scan_cache')
+const { createBehaviorAnalyzer } = require('./behavior_analyzer')
 
 let winapi = null
 try {
@@ -38,7 +39,8 @@ function loadConfig() {
       minimizeToTray: true,
       ui: { animations: true },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
-      scanner: { baseUrl: 'http://127.0.0.1:8000', timeoutMs: 10000, healthPollIntervalMs: 30000, maxFileSizeMB: 500 }
+      scanner: { baseUrl: 'http://127.0.0.1:8000', timeoutMs: 10000, healthPollIntervalMs: 30000, maxFileSizeMB: 500 },
+      behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
     }
   }
 }
@@ -47,6 +49,7 @@ let tray
 let win
 let splash
 let config = loadConfig()
+const behavior = createBehaviorAnalyzer(config)
 let i18nDict = {}
 
 function loadI18n() {
@@ -84,6 +87,7 @@ function startEtwWorker() {
       if (msg.type === 'log') {
         eventLogs.unshift(msg.event)
         if (eventLogs.length > 500) eventLogs.pop()
+        try { behavior.ingest(msg.event) } catch {}
         
         if (win && !win.isDestroyed()) {
           win.webContents.send('etw-log', msg.event)
@@ -210,6 +214,7 @@ app.whenReady().then(() => {
   createSplash()
   createWindow()
   createTray()
+  try { behavior.start() } catch {}
   startEtwWorker()
   try {
     const engineCfg = (config && config.engine) ? config.engine : {}
@@ -276,6 +281,9 @@ app.whenReady().then(() => {
   ipcMain.handle('quarantine-delete', (event, id) => quarantineManager.delete(id))
   ipcMain.handle('logs:list', () => eventLogs)
   ipcMain.handle('system-get-running-processes', () => processes.getRunningProcesses())
+  ipcMain.handle('behavior-get-db-path', () => behavior.getDbPath())
+  ipcMain.handle('behavior-list-processes', async (_event, query) => behavior.listProcesses(query || {}))
+  ipcMain.handle('behavior-list-events', async (_event, query) => behavior.listEvents(query || {}))
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -304,15 +312,19 @@ app.on('before-quit', (e) => {
     const forceQuit = setTimeout(() => {
       console.warn('主进程: ETW Worker 停止超时，将断开连接并退出')
       if (etwWorker) etwWorker.unref()
-      app.quit()
+      Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
     }, 5000)
     
     etwWorker.once('exit', () => {
       clearTimeout(forceQuit)
-      app.quit()
+      Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
     })
     
     etwWorker.postMessage('stop')
+  } else {
+    e.preventDefault()
+    isQuitting = true
+    Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
   }
 })
 

@@ -78,5 +78,8 @@
   "scan_back_confirm_title": "返回将清除本次扫描结果，是否继续？",
   "scan_no_selected_threats": "未选择任何威胁项",
   "scan_quarantine_confirm_title": "确定要隔离选中的威胁文件吗？",
-  "scan_quarantine_failed": "隔离失败"
+  "scan_quarantine_failed": "隔离失败",
+  "engine_status": "引擎状态",
+  "engine_online": "在线",
+  "engine_offline": "离线"
 }

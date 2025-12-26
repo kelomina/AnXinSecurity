@@ -78,5 +78,8 @@
   "scan_back_confirm_title": "Going back will clear this scan result. Continue?",
   "scan_no_selected_threats": "No threats selected",
   "scan_quarantine_confirm_title": "Quarantine selected threat files?",
-  "scan_quarantine_failed": "Quarantine failed"
+  "scan_quarantine_failed": "Quarantine failed",
+  "engine_status": "Engine Status",
+  "engine_online": "Online",
+  "engine_offline": "Offline"
 }

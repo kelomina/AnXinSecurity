@@ -142,7 +142,10 @@ function getScanCfg() {
   return {
     traversalTimeoutMs: Number.isFinite(scan.traversalTimeoutMs) ? scan.traversalTimeoutMs : 2000,
     walkerBatchSize: Number.isFinite(scan.walkerBatchSize) ? scan.walkerBatchSize : 256,
-    cachePersistIntervalMs: Number.isFinite(scan.cachePersistIntervalMs) ? scan.cachePersistIntervalMs : 1000
+    cachePersistIntervalMs: Number.isFinite(scan.cachePersistIntervalMs) ? scan.cachePersistIntervalMs : 1000,
+    metricsUpdateIntervalMs: Number.isFinite(scan.metricsUpdateIntervalMs) ? scan.metricsUpdateIntervalMs : 200,
+    uiYieldEveryFiles: Number.isFinite(scan.uiYieldEveryFiles) ? scan.uiYieldEveryFiles : 25,
+    queueCompactionThreshold: Number.isFinite(scan.queueCompactionThreshold) ? scan.queueCompactionThreshold : 5000
   }
 }
 
@@ -426,8 +429,39 @@ async function scanDirsAndFiles(session, dirs, files) {
   session.scannedCount = session.scannedCount || 0
   session.threatCount = state.threatItems.length
 
-  const queue = []
-  ;(Array.isArray(files) ? files : []).forEach(p => { if (p) queue.push(p) })
+  const makeQueue = window.createScanQueue
+  const queue = (typeof makeQueue === 'function')
+    ? makeQueue(Array.isArray(files) ? files : [], { compactionThreshold: cfg.queueCompactionThreshold })
+    : null
+  const fallbackQueue = queue ? null : []
+  if (fallbackQueue) {
+    ;(Array.isArray(files) ? files : []).forEach(p => { if (p) fallbackQueue.push(p) })
+  }
+  let fallbackQueueIdx = 0
+
+  const queueRemaining = () => {
+    if (queue) return queue.remaining()
+    return Math.max(0, fallbackQueue.length - fallbackQueueIdx)
+  }
+  const queuePushMany = (list) => {
+    if (!list || list.length === 0) return
+    if (queue) queue.pushMany(list)
+    else {
+      for (const v of list) {
+        if (v) fallbackQueue.push(v)
+      }
+    }
+  }
+  const queueNext = () => {
+    if (queue) return queue.next()
+    if (fallbackQueueIdx >= fallbackQueue.length) return null
+    const v = fallbackQueue[fallbackQueueIdx++]
+    if (fallbackQueueIdx >= cfg.queueCompactionThreshold) {
+      fallbackQueue.splice(0, fallbackQueueIdx)
+      fallbackQueueIdx = 0
+    }
+    return v
+  }
 
   let walkerId = null
   if (Array.isArray(dirs) && dirs.length > 0) {
@@ -437,10 +471,13 @@ async function scanDirsAndFiles(session, dirs, files) {
       walkerId = null
     }
   }
+  session.walkerId = walkerId
 
   const startTraversalAt = Date.now()
   let traversalDone = !walkerId
   const initialFiles = []
+  let lastUiAt = 0
+  let lastYieldAtCount = session.scannedCount
 
   while (!traversalDone) {
     const step = await window.api.fsAsync.walkerNext(walkerId, cfg.walkerBatchSize)
@@ -448,16 +485,22 @@ async function scanDirsAndFiles(session, dirs, files) {
     traversalDone = !!step.done
     if (traversalDone) break
     if (Date.now() - startTraversalAt >= cfg.traversalTimeoutMs) break
+    const now = Date.now()
+    if (now - lastUiAt >= cfg.metricsUpdateIntervalMs) {
+      lastUiAt = now
+      await waitNextPaint()
+      uiThread(() => updateScanMetricsUi(session))
+    }
   }
 
   if (traversalDone) {
     session.realtime = false
-    session.totalCount = queue.length + initialFiles.length
-    queue.push(...initialFiles)
+    session.totalCount = queueRemaining() + initialFiles.length
+    queuePushMany(initialFiles)
     uiThread(() => updateScanMetricsUi(session))
   } else {
     session.realtime = true
-    queue.push(...initialFiles)
+    queuePushMany(initialFiles)
     uiThread(() => updateScanMetricsUi(session))
     traversalDone = false
   }
@@ -467,8 +510,9 @@ async function scanDirsAndFiles(session, dirs, files) {
   let lastSpeedCount = session.scannedCount
 
   while (!session.stopRequested) {
-    while (!session.stopRequested && queue.length > 0) {
-      const fp = queue.shift()
+    while (!session.stopRequested && queueRemaining() > 0) {
+      const fp = queueNext()
+      if (!fp) break
       await scanOneFile(fp, session)
       const now = Date.now()
       if (now - lastSpeedAt >= 1000) {
@@ -477,21 +521,32 @@ async function scanDirsAndFiles(session, dirs, files) {
         lastSpeedAt = now
         lastSpeedCount = session.scannedCount
       }
-      uiThread(() => updateScanMetricsUi(session))
+      if (cfg.uiYieldEveryFiles > 0 && (session.scannedCount - lastYieldAtCount) >= cfg.uiYieldEveryFiles) {
+        lastYieldAtCount = session.scannedCount
+        await waitNextPaint()
+      }
+      if (now - lastUiAt >= cfg.metricsUpdateIntervalMs) {
+        lastUiAt = now
+        uiThread(() => updateScanMetricsUi(session))
+      }
       await persistScanCache(session, false)
     }
     if (session.stopRequested) break
     if (!traversalDone && walkerId) {
       const step = await window.api.fsAsync.walkerNext(walkerId, cfg.walkerBatchSize)
       if (step && Array.isArray(step.files) && step.files.length > 0) {
-        queue.push(...step.files)
+        queuePushMany(step.files)
       }
       traversalDone = !!(step && step.done)
       if (traversalDone) {
         session.realtime = false
-        session.totalCount = session.scannedCount + queue.length
+        session.totalCount = session.scannedCount + queueRemaining()
       }
-      uiThread(() => updateScanMetricsUi(session))
+      const now = Date.now()
+      if (now - lastUiAt >= cfg.metricsUpdateIntervalMs) {
+        lastUiAt = now
+        uiThread(() => updateScanMetricsUi(session))
+      }
       await persistScanCache(session, false)
       continue
     }
@@ -501,6 +556,7 @@ async function scanDirsAndFiles(session, dirs, files) {
   if (walkerId) {
     try { window.api.fsAsync.destroyWalker(walkerId) } catch {}
   }
+  session.walkerId = null
 }
 
 async function startScan(mode, targetLabel, dirs, files, serialRoots, options) {
@@ -1090,6 +1146,27 @@ function tryInterrupt(action) {
     action()
 }
 
+let lastHealthResult = null
+
+function updateHealthUi(res) {
+  const el = document.getElementById('health-status')
+  const overviewEl = document.getElementById('overview-health-status')
+  
+  const isOnline = res && (res.status === 'ok' || res.ok)
+  const statusText = t('engine_status') + ': ' + (isOnline ? t('engine_online') : t('engine_offline'))
+  const statusClass = 'status ' + (isOnline ? 'status-ok' : 'status-offline')
+  const badgeClass = 'badge ' + (isOnline ? 'bg-success' : 'bg-danger')
+
+  if (el) {
+    el.textContent = statusText
+    el.className = statusClass
+  }
+
+  if (overviewEl) {
+    overviewEl.innerHTML = `<span class="${badgeClass}">${statusText}</span>`
+  }
+}
+
 function updateTexts() {
     initNav()
     if (state.page === 'overview') initOverview()
@@ -1097,6 +1174,7 @@ function updateTexts() {
     if (state.page === 'quarantine') initQuarantine()
     if (state.page === 'exclusions') initExclusions()
     if (state.page === 'settings') initSettings()
+    updateHealthUi(lastHealthResult)
 }
 
 function restoreTabState(tab) {
@@ -1325,10 +1403,27 @@ function initSettings() {
 
 
 
+function startHealthPoll() {
+  const poll = async () => {
+    try {
+      lastHealthResult = await window.api.scanner.health()
+    } catch (e) {
+      lastHealthResult = { status: 'offline' }
+    }
+    updateHealthUi(lastHealthResult)
+  }
+
+  const cfg = window.api.config.get()
+  const interval = (cfg && cfg.scanner && cfg.scanner.healthPollIntervalMs) || 5000
+  
+  poll()
+  setInterval(poll, interval)
+}
+
 window.addEventListener('DOMContentLoaded', () => {
   setTheme()
   initNav()
   updateTexts()
   showPage('overview')
-  
+  startHealthPoll()
 })

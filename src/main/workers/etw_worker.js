@@ -28,6 +28,13 @@ const GUID_KernelFile = {
     Data4: [0xB9, 0x70, 0xC2, 0x56, 0x0F, 0xB5, 0xC2, 0x89]
 };
 
+const GUID_KernelRegistry = {
+    Data1: 0x70EB4F03,
+    Data2: 0xC1DE,
+    Data3: 0x4F73,
+    Data4: [0xA0, 0x51, 0x33, 0xD1, 0x3D, 0x54, 0x13, 0xBD]
+};
+
 const ULONG = 'uint32_t';
 const ULONG64 = 'uint64_t';
 const USHORT = 'uint16_t';
@@ -248,6 +255,52 @@ function createTraceHandleArrayBuffer(handle) {
 let isSessionRunning = false;
 let isStopping = false;
 
+function sameGuid(a, b) {
+    if (!a || !b) return false;
+    if (a.Data1 !== b.Data1) return false;
+    if (a.Data2 !== b.Data2) return false;
+    if (a.Data3 !== b.Data3) return false;
+    if (!a.Data4 || !b.Data4) return false;
+    for (let i = 0; i < 8; i++) {
+        if ((a.Data4[i] >>> 0) !== (b.Data4[i] >>> 0)) return false;
+    }
+    return true;
+}
+
+function extractUtf16Strings(bytes, minLen = 3) {
+    try {
+        const text = Buffer.from(bytes).toString('utf16le');
+        const parts = text.split('\u0000').map(s => s.trim()).filter(Boolean);
+        return parts.filter(s => s.length >= minLen);
+    } catch {
+        return [];
+    }
+}
+
+function mapRegistryOp(opcode, id) {
+    const m = {
+        1: 'CreateKey',
+        2: 'OpenKey',
+        3: 'DeleteKey',
+        4: 'QueryValue',
+        5: 'SetValue',
+        6: 'DeleteValue',
+        7: 'QueryKey',
+        8: 'EnumerateKey',
+        9: 'EnumerateValue',
+        10: 'QueryMultipleValue',
+        11: 'SetInformationKey',
+        12: 'FlushKey',
+        13: 'CloseKey',
+        14: 'SetSecurityKey',
+        15: 'QuerySecurityKey',
+        16: 'RenameKey'
+    };
+    if (m[opcode]) return m[opcode];
+    if (Number.isFinite(id) && id) return 'EventId_' + id;
+    return 'Opcode_' + opcode;
+}
+
 const eventCallback = koffi.register((recordPtr) => {
     if (isStopping) return;
 
@@ -258,16 +311,17 @@ const eventCallback = koffi.register((recordPtr) => {
         const providerId = header.ProviderId;
         const descriptor = header.EventDescriptor;
         
-        const isProcess = (providerId.Data1 === GUID_KernelProcess.Data1 && providerId.Data4[7] === GUID_KernelProcess.Data4[7]);
-        const isFile = (providerId.Data1 === GUID_KernelFile.Data1 && providerId.Data4[7] === GUID_KernelFile.Data4[7]);
+        const isProcess = sameGuid(providerId, GUID_KernelProcess);
+        const isFile = sameGuid(providerId, GUID_KernelFile);
+        const isRegistry = sameGuid(providerId, GUID_KernelRegistry);
         
-        if (!isProcess && !isFile) return;
+        if (!isProcess && !isFile && !isRegistry) return;
         
         const eventData = {
             timestamp: new Date(Number(header.TimeStamp) / 10000 - 11644473600000).toISOString(),
             pid: header.ProcessId,
             tid: header.ThreadId,
-            provider: isProcess ? 'Process' : 'File',
+            provider: isProcess ? 'Process' : (isFile ? 'File' : 'Registry'),
             opcode: descriptor.Opcode,
             id: descriptor.Id,
             data: {}
@@ -307,8 +361,6 @@ const eventCallback = koffi.register((recordPtr) => {
                     }
                 }
             } else if (isFile) {
-                const ptrSize = 8; 
-                
                 if (descriptor.Opcode === 32 || descriptor.Opcode === 35 || descriptor.Opcode === 36) {
                     let startOffset = 0;
                     if (descriptor.Opcode === 32) startOffset = 28;
@@ -331,6 +383,23 @@ const eventCallback = koffi.register((recordPtr) => {
                         }
                     }
                 }
+            } else if (isRegistry) {
+                const strings = extractUtf16Strings(bytes, 3);
+                const keyCandidates = strings.filter(s => s.includes('\\'));
+                const keyPath = keyCandidates.sort((a, b) => b.length - a.length)[0] || null;
+                let valueName = null;
+                if (strings.length > 0) {
+                    const others = strings.filter(s => s !== keyPath);
+                    valueName = others[0] || null;
+                }
+                const rawHex = Buffer.from(bytes).toString('hex');
+                eventData.data = {
+                    type: mapRegistryOp(descriptor.Opcode, descriptor.Id),
+                    keyPath,
+                    valueName,
+                    rawHex
+                };
+                postMessage({ type: 'log', event: eventData });
             }
         }
     } catch (e) {
@@ -360,6 +429,8 @@ function startSession() {
     EnableTraceEx2(sessionHandle, createGuidBuf(GUID_KernelProcess), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
     
     EnableTraceEx2(sessionHandle, createGuidBuf(GUID_KernelFile), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
+
+    EnableTraceEx2(sessionHandle, createGuidBuf(GUID_KernelRegistry), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
     
     logfile = {
         LogFileName: null,

@@ -39,11 +39,15 @@ function loadConfig() {
         traversalTimeoutMs: 2000,
         walkerBatchSize: 256,
         rulesFile: 'config/scan_rules.json',
-        cachePersistIntervalMs: 1000
+        cachePersistIntervalMs: 1000,
+        metricsUpdateIntervalMs: 200,
+        uiYieldEveryFiles: 25,
+        queueCompactionThreshold: 5000
       },
       scan_cache: {
         file: 'config/scan_cache.json'
-      }
+      },
+      behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
     }
   }
 }
@@ -348,6 +352,11 @@ const api = {
       ipcRenderer.on('etw-log', handler)
       return () => ipcRenderer.removeListener('etw-log', handler)
     }
+  },
+  behavior: {
+    getDbPath: () => ipcRenderer.invoke('behavior-get-db-path'),
+    listProcesses: (query) => ipcRenderer.invoke('behavior-list-processes', query || {}),
+    listEvents: (query) => ipcRenderer.invoke('behavior-list-events', query || {})
   },
   quarantine: {
     list: () => {
