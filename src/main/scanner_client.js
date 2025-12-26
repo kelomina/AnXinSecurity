@@ -94,6 +94,7 @@ function createScannerClient(getConfig, deps = {}) {
         clearTimeout(connectTimer)
         clearTimeout(overallTimer)
         try { socket.removeAllListeners() } catch {}
+        try { socket.on('error', () => {}) } catch {}
         if (reqId) clearActive(reqId)
       }
 

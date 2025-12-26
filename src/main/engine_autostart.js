@@ -83,6 +83,7 @@ function ipcRoundTrip(host, port, msg, connectTimeoutMs, timeoutMs, deps = {}) {
       clearTimeout(connectTimer)
       clearTimeout(timer)
       try { socket.removeAllListeners() } catch {}
+      try { socket.on('error', () => {}) } catch {}
     }
 
     function finish(err, res) {
