@@ -41,7 +41,13 @@ function loadConfig() {
       minimizeToTray: true,
       ui: { animations: true, window: { minWidth: 600, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
-      scanner: { baseUrl: 'http://127.0.0.1:8000', timeoutMs: 10000, healthPollIntervalMs: 30000, maxFileSizeMB: 500 },
+      scanner: {
+        baseUrl: 'http://127.0.0.1:8000',
+        timeoutMs: 10000,
+        healthPollIntervalMs: 30000,
+        maxFileSizeMB: 500,
+        ipc: { enabled: true, prefer: true, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 }
+      },
       behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
     }
   }

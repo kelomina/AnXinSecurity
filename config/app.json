@@ -33,7 +33,15 @@
       "maxRatePerSecond": 256,
       "adjustStep": 8
     },
-    "maxTokens": 64
+    "maxTokens": 64,
+    "ipc": {
+      "enabled": true,
+      "prefer": true,
+      "host": "127.0.0.1",
+      "port": 8765,
+      "connectTimeoutMs": 500,
+      "timeoutMs": 5000
+    }
   },
   "scan": {
     "rulesFile": "config/scan_rules.json",

@@ -26,6 +26,7 @@ function loadConfig() {
         healthPollIntervalMs: 30000,
         tuningEnabled: true,
         maxTokens: 16,
+        ipc: { enabled: true, prefer: true, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 },
         tuning: {
           fastLatencyMs: 300,
           slowLatencyMs: 1000,
