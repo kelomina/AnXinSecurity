@@ -47,5 +47,27 @@
     "traversalTimeoutMs": 2000,
     "walkerBatchSize": 256,
     "cachePersistIntervalMs": 1000
+  },
+  "etw": {
+    "enabled": true,
+    "sessionName": "AnXinSecuritySession",
+    "userDataMaxBytes": 65536,
+    "stopTimeoutMs": 2500,
+    "startRetries": 2,
+    "retryDelayMs": 150,
+    "emitRegistryRawHex": false,
+    "logToConsole": true,
+    "logParsedToConsole": true,
+    "resolveProcessName": true,
+    "processNameCacheMax": 2048,
+    "processNameCacheTtlMs": 300000,
+    "processNameResolveMaxPerSecond": 20,
+    "consoleMaxPerSecond": 200
+  },
+  "quarantine": {
+    "salt": "333271359dc76c25c74f58d772c07f57"
+  },
+  "exclusions": {
+    "salt": "a6435db5d847d1a278293eae67be7bc0"
   }
 }

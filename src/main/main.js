@@ -9,6 +9,7 @@ const processes = require('./processes')
 const scanCache = require('./scan_cache')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
 const { resolveMainWindowOptions } = require('./window_options')
+const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter } = require('./utils')
 
 let winapi = null
 try {
@@ -80,6 +81,70 @@ function t(key) { return i18nDict[key] || key }
 
 let etwWorker = null
 const eventLogs = []
+let etwConsoleLimiter = null
+let etwConsoleLimiterMax = null
+const etwPidCache = new Map()
+let etwPidCacheMax = null
+let etwPidCacheTtlMs = null
+let etwPidResolveLimiter = null
+let etwPidResolveLimiterMax = null
+
+function getProcessNameFromPath(p) {
+  if (typeof p !== 'string' || !p) return ''
+  try { return path.basename(p) } catch { return '' }
+}
+
+function refreshEtwPidCacheConfig(etwCfg) {
+  const max = Number.isFinite(etwCfg.processNameCacheMax) ? Math.max(64, Math.floor(etwCfg.processNameCacheMax)) : 2048
+  const ttlMs = Number.isFinite(etwCfg.processNameCacheTtlMs) ? Math.max(0, Math.floor(etwCfg.processNameCacheTtlMs)) : 300000
+  const perSec = Number.isFinite(etwCfg.processNameResolveMaxPerSecond) ? Math.max(0, Math.floor(etwCfg.processNameResolveMaxPerSecond)) : 20
+  if (etwPidCacheMax !== max) etwPidCacheMax = max
+  if (etwPidCacheTtlMs !== ttlMs) etwPidCacheTtlMs = ttlMs
+  if (etwPidResolveLimiterMax !== perSec || !etwPidResolveLimiter) {
+    etwPidResolveLimiterMax = perSec
+    etwPidResolveLimiter = createRateLimiter(perSec)
+  }
+}
+
+function pruneEtwPidCache(now) {
+  const ttl = Number.isFinite(etwPidCacheTtlMs) ? etwPidCacheTtlMs : 300000
+  const max = Number.isFinite(etwPidCacheMax) ? etwPidCacheMax : 2048
+  if (ttl > 0) {
+    for (const [pid, v] of etwPidCache) {
+      if (!v || !Number.isFinite(v.at) || now - v.at > ttl) etwPidCache.delete(pid)
+    }
+  }
+  while (etwPidCache.size > max) {
+    const firstKey = etwPidCache.keys().next().value
+    if (firstKey == null) break
+    etwPidCache.delete(firstKey)
+  }
+}
+
+function upsertEtwPid(pid, imagePath, now) {
+  if (!Number.isFinite(pid) || pid <= 0) return
+  const img = (typeof imagePath === 'string' && imagePath) ? imagePath : null
+  const name = img ? getProcessNameFromPath(img) : ''
+  etwPidCache.delete(pid)
+  etwPidCache.set(pid, { imagePath: img, name, at: now })
+}
+
+function resolveEtwProcessInfo(pid, now, etwCfg) {
+  if (!Number.isFinite(pid) || pid <= 0) return null
+  const existed = etwPidCache.get(pid)
+  if (existed && (!etwPidCacheTtlMs || (now - existed.at <= etwPidCacheTtlMs))) {
+    etwPidCache.delete(pid)
+    etwPidCache.set(pid, { imagePath: existed.imagePath, name: existed.name, at: now })
+    return existed
+  }
+
+  if (!winapi || typeof winapi.getProcessImagePathByPid !== 'function') return null
+  if (!etwPidResolveLimiter || !etwPidResolveLimiter()) return null
+  const img = winapi.getProcessImagePathByPid(pid)
+  if (!img) return null
+  upsertEtwPid(pid, img, now)
+  return etwPidCache.get(pid) || null
+}
 
 function startEtwWorker() {
   if (etwWorker) return
@@ -96,12 +161,55 @@ function startEtwWorker() {
         eventLogs.unshift(msg.event)
         if (eventLogs.length > 500) eventLogs.pop()
         try { behavior.ingest(msg.event) } catch {}
+
+        const isDev = !app.isPackaged
+        const etwCfg = (config && config.etw) ? config.etw : {}
+        const logToConsole = isDev && (etwCfg.logToConsole !== false)
+        const logParsedToConsole = isDev && (etwCfg.logParsedToConsole === true)
+        const resolveProcessName = isDev && (etwCfg.resolveProcessName === true)
+        const maxPerSecond = Number.isFinite(etwCfg.consoleMaxPerSecond) ? Math.max(0, Math.floor(etwCfg.consoleMaxPerSecond)) : 200
+        if (logToConsole) {
+          if (etwConsoleLimiterMax !== maxPerSecond || !etwConsoleLimiter) {
+            etwConsoleLimiterMax = maxPerSecond
+            etwConsoleLimiter = createRateLimiter(maxPerSecond)
+          }
+          if (etwConsoleLimiter && etwConsoleLimiter()) {
+            const now = Date.now()
+            if (resolveProcessName || logParsedToConsole) {
+              refreshEtwPidCacheConfig(etwCfg)
+              pruneEtwPidCache(now)
+              const p = msg.event && msg.event.provider
+              const d = msg.event && msg.event.data
+              if (p === 'Process' && d && typeof d === 'object') {
+                const subjectPid = Number.isFinite(d.processId) ? d.processId : null
+                const imageName = typeof d.imageName === 'string' ? d.imageName : null
+                if (subjectPid != null && imageName) upsertEtwPid(subjectPid, imageName, now)
+              }
+            }
+            const line = formatEtwEventForConsole(msg.event)
+            if (line) process.stdout.write(Buffer.from('ETW: ' + line + '\n', 'utf8'))
+            else process.stdout.write(Buffer.from('ETW: ' + JSON.stringify(msg.event) + '\n', 'utf8'))
+            if (logParsedToConsole) {
+              const parsedEvent = Object.assign({}, msg.event)
+              parsedEvent.opMeaning = resolveEtwOpMeaning(msg.event)
+              if (resolveProcessName && parsedEvent && Number.isFinite(parsedEvent.pid)) {
+                const info = resolveEtwProcessInfo(parsedEvent.pid, now, etwCfg)
+                if (info && info.name) parsedEvent.processName = info.name
+                if (info && info.imagePath) parsedEvent.processImage = info.imagePath
+              }
+              const parsedLine = formatEtwEventForParsedConsole(parsedEvent)
+              if (parsedLine) process.stdout.write(Buffer.from('ETW_PARSED: ' + parsedLine + '\n', 'utf8'))
+            }
+          }
+        }
         
         if (win && !win.isDestroyed()) {
           win.webContents.send('etw-log', msg.event)
         }
       } else if (msg.type === 'error') {
-        console.error('主进程: ETW Worker 错误:', msg.message)
+        const code = msg && msg.code ? msg.code : 'ETW_ERROR'
+        console.error('主进程: ETW Worker 错误:', code, msg && msg.message ? msg.message : msg)
+        if (msg && msg.details) console.error('主进程: ETW Worker 详情:', msg.details)
       } else if (msg.type === 'status') {
         console.log('主进程: ETW Worker 状态:', msg.message)
       }
@@ -117,7 +225,7 @@ function startEtwWorker() {
       etwWorker = null
     })
     
-    etwWorker.postMessage('start')
+    etwWorker.postMessage({ type: 'start', config: (config && config.etw) ? config.etw : null })
     
   } catch (e) {
     console.error('主进程: 启动 ETW Worker 失败:', e)
@@ -264,6 +372,9 @@ app.whenReady().then(() => {
     if (!nextCfg || typeof nextCfg !== 'object') return
     config = nextCfg
     try { i18nDict = loadI18n() } catch {}
+    etwConsoleLimiter = null
+    etwConsoleLimiterMax = null
+    try { if (etwWorker) etwWorker.postMessage({ type: 'config', config: (config && config.etw) ? config.etw : null }) } catch {}
   })
   ipcMain.handle('open-file-dialog', async () => {
     const browser = BrowserWindow.getFocusedWindow() || win
@@ -339,7 +450,7 @@ app.on('before-quit', (e) => {
       Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
     })
     
-    etwWorker.postMessage('stop')
+    etwWorker.postMessage({ type: 'stop' })
   } else {
     e.preventDefault()
     isQuitting = true

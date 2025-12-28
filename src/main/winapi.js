@@ -134,6 +134,31 @@ function verifyTrust(filePath) {
     }
 }
 
+function getProcessImagePathByPid(pid) {
+    if (!Number.isFinite(pid) || pid <= 0) return null;
+    let hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid >>> 0);
+    if (!hProcess) return null;
+    try {
+        const pathBuffer = Buffer.alloc(4096);
+        const sizeBuf = Buffer.alloc(4);
+        sizeBuf.writeUInt32LE(2048, 0);
+        if (!QueryFullProcessImageNameW(hProcess, 0, pathBuffer, sizeBuf)) return null;
+        const len = sizeBuf.readUInt32LE(0);
+        if (!len) return null;
+        let p = pathBuffer.toString('utf16le', 0, len * 2);
+        if (!p || p.includes('\uFFFD')) {
+            const alt = pathBuffer.toString('utf8', 0, len * 2);
+            if (alt) p = alt;
+        }
+        if (p.startsWith('\\??\\')) p = p.substring(4);
+        return p || null;
+    } catch {
+        return null;
+    } finally {
+        try { CloseHandle(hProcess); } catch {}
+    }
+}
+
 
 function getProcessPaths() {
     const paths = new Set();
@@ -182,9 +207,13 @@ function getProcessPaths() {
                          if (!hMod) continue;
 
                          const pathBuffer = Buffer.alloc(4096);
-                         const len = GetModuleFileNameExW(hProcess, hMod, pathBuffer, 2048);
+                        const len = GetModuleFileNameExW(hProcess, hMod, pathBuffer, 2048);
                          if (len > 0) {
                              let path = pathBuffer.toString('utf16le', 0, len * 2);
+                             if (!path || path.includes('\uFFFD')) {
+                                 const alt = pathBuffer.toString('utf8', 0, len * 2);
+                                 if (alt) path = alt;
+                             }
                              if (path.startsWith('\\??\\')) path = path.substring(4);
                              
                              const lowerPath = path.toLowerCase();
@@ -208,6 +237,10 @@ function getProcessPaths() {
                     if (QueryFullProcessImageNameW(hProcess, 0, pathBuffer, sizeBuf)) {
                         const len = sizeBuf.readUInt32LE(0);
                         let path = pathBuffer.toString('utf16le', 0, len * 2);
+                        if (!path || path.includes('\uFFFD')) {
+                            const alt = pathBuffer.toString('utf8', 0, len * 2);
+                            if (alt) path = alt;
+                        }
                         if (path.startsWith('\\??\\')) path = path.substring(4);
                         
                         const lowerPath = path.toLowerCase();
@@ -235,5 +268,6 @@ function getProcessPaths() {
 }
 
 module.exports = {
-    getProcessPaths
+    getProcessPaths,
+    getProcessImagePathByPid
 };
