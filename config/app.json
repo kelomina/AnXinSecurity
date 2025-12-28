@@ -7,8 +7,8 @@
   "ui": {
     "animations": true,
     "window": {
-      "minWidth": 600,
-      "minHeight": 800
+      "minWidth": 800,
+      "minHeight": 600
     }
   },
   "engine": {
@@ -47,11 +47,5 @@
     "traversalTimeoutMs": 2000,
     "walkerBatchSize": 256,
     "cachePersistIntervalMs": 1000
-  },
-  "quarantine": {
-    "salt": "59e4101fcba50ea74bc9d1d0d5bc1621"
-  },
-  "exclusions": {
-    "salt": "05bfd1e0c88afb8888cf8a666ae7e18e"
   }
 }

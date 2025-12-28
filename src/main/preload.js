@@ -18,7 +18,7 @@ function loadConfig() {
       themeColor: '#1677ff',
       defaultPage: 'overview',
       minimizeToTray: true,
-      ui: { animations: true, window: { minWidth: 600, minHeight: 800 } },
+      ui: { animations: true, window: { minWidth: 400, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
       scanner: {
         timeoutMs: 10000,

@@ -158,7 +158,7 @@ textarea,
 }
 .threat-scroll thead th.select-col,
 .threat-scroll tbody td.select-col {
-  width: var(--select-col-w, auto);
+  width: 40px;
   text-align: center;
   white-space: nowrap;
 }

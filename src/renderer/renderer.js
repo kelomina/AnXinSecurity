@@ -161,6 +161,11 @@ function applyScanMetricsVisibility(visible) {
 
 function resetScanUi() {
   uiThread(() => {
+    const scanActions = document.querySelector('.scan-actions')
+    if (scanActions) scanActions.style.display = 'grid'
+    const desc = document.getElementById('scan-desc')
+    if (desc) desc.textContent = t('overview_desc')
+
     const bar = document.getElementById('scan-progress-bar')
     if (bar) {
       bar.style.width = '0%'
@@ -358,6 +363,11 @@ async function finalizeScan(session) {
   session.endedAt = Date.now()
   await persistScanCache(session, true)
   uiThread(() => {
+    const scanActions = document.querySelector('.scan-actions')
+    if (scanActions) scanActions.style.display = 'grid'
+    const desc = document.getElementById('scan-desc')
+    if (desc) desc.textContent = t('overview_desc')
+
     const wrap = document.getElementById('scan-threat-count-wrap')
     if (wrap) wrap.style.display = 'none'
     const report = document.getElementById('scan-final-report')
@@ -577,7 +587,15 @@ async function startScan(mode, targetLabel, dirs, files, serialRoots, options) {
   state.threatItems = []
   resetScanUi()
   uiThread(() => {
-    const stopBack = document.getElementById('scan-stop-back')
+    const scanActions = document.querySelector('.scan-actions')
+     if (scanActions) scanActions.style.display = 'none'
+     const desc = document.getElementById('scan-desc')
+     if (desc) {
+       const modeName = (targetLabel || t('nav_scan')).replace('检测', '').replace('扫描', '')
+       desc.textContent = t('scan_in_progress').replace('{mode}', modeName)
+     }
+
+     const stopBack = document.getElementById('scan-stop-back')
     if (stopBack) {
       stopBack.className = 'btn btn-danger'
       stopBack.textContent = t('btn_terminate_scan')
@@ -861,6 +879,17 @@ function initScan() {
     if (stopBack) stopBack.textContent = state.scanning ? t('btn_terminate_scan') : t('btn_back')
     const handleBtn = document.getElementById('scan-handle-threats')
     if (handleBtn) handleBtn.textContent = t('btn_handle_threats')
+
+    if (state.scanning && state.scanSession) {
+       const scanActions = document.querySelector('.scan-actions')
+       if (scanActions) scanActions.style.display = 'none'
+       const desc = document.getElementById('scan-desc')
+       if (desc) {
+         const rawMode = state.scanSession.mode === 'quick' ? t('nav_quick') : (state.scanSession.mode === 'full' ? t('nav_full') : (state.scanSession.currentTarget || t('nav_scan')))
+         const modeName = rawMode.replace('检测', '').replace('扫描', '')
+         desc.textContent = t('scan_in_progress').replace('{mode}', modeName)
+       }
+     }
   })
 
   bindScanUi()
