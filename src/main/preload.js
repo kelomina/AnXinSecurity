@@ -18,6 +18,7 @@ function loadConfig() {
       themeColor: '#1677ff',
       defaultPage: 'overview',
       minimizeToTray: true,
+      tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, window: { minWidth: 400, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
       scanner: {

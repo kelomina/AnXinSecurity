@@ -32,6 +32,7 @@ class ProcessBehaviorStore {
     this.db = db
     this.mode = options.mode || 'memory'
     this.filePath = options.filePath || null
+    this.filters = options.filters || {}
 
     this.db.run('PRAGMA journal_mode=MEMORY')
     this.db.run('PRAGMA synchronous=OFF')
@@ -78,34 +79,38 @@ class ProcessBehaviorStore {
 
     const provider = typeof event.provider === 'string' ? event.provider : 'Unknown'
     const ts = typeof event.timestamp === 'string' && event.timestamp ? event.timestamp : nowIso()
-    const actorPid = Number.isFinite(event.pid) ? event.pid : null
+    let actorPid = Number.isFinite(event.pid) ? event.pid : null
     const tid = Number.isFinite(event.tid) ? event.tid : null
     const data = event.data && typeof event.data === 'object' ? event.data : {}
 
-    let op = null
+    let op = typeof data.type === 'string' ? data.type : null
     let subjectPid = null
     let filePath = null
     let regKey = null
     let regValue = null
     let rawHex = null
 
+    if (this._shouldSkipEvent(provider, op)) return
+
     if (provider === 'Process') {
-      op = typeof data.type === 'string' ? data.type : null
       subjectPid = Number.isFinite(data.processId) ? data.processId : null
       const ppid = Number.isFinite(data.parentProcessId) ? data.parentProcessId : null
       const image = typeof data.imageName === 'string' ? data.imageName : null
+      if (op === 'Start') {
+        actorPid = Number.isFinite(ppid) ? ppid : (subjectPid != null ? subjectPid : actorPid)
+      } else {
+        actorPid = subjectPid != null ? subjectPid : actorPid
+      }
 
       if (subjectPid != null) {
         this._upsertProcess(subjectPid, { ppid, image, seenAt: ts, exitedAt: op === 'Stop' ? ts : null })
       }
     } else if (provider === 'File') {
-      op = typeof data.type === 'string' ? data.type : null
       filePath = typeof data.fileName === 'string' ? data.fileName : null
       if (actorPid != null) {
         this._upsertProcess(actorPid, { seenAt: ts })
       }
     } else if (provider === 'Registry') {
-      op = typeof data.type === 'string' ? data.type : null
       regKey = typeof data.keyPath === 'string' ? data.keyPath : null
       regValue = typeof data.valueName === 'string' ? data.valueName : null
       rawHex = typeof data.rawHex === 'string' ? data.rawHex : null
@@ -141,18 +146,57 @@ class ProcessBehaviorStore {
     const p = Number.isFinite(pid) ? pid : null
     if (p == null) {
       return this._all(
-        'SELECT id, ts, provider, op, actor_pid, subject_pid, tid, file_path, reg_key, reg_value, raw_json FROM event ORDER BY id DESC LIMIT ? OFFSET ?',
+        `SELECT e.id, e.ts, e.provider, e.op, e.actor_pid, e.subject_pid, e.tid, e.file_path, e.reg_key, e.reg_value, e.raw_json,
+                a.image AS actor_image,
+                s.image AS subject_image
+         FROM event e
+         LEFT JOIN process a ON a.pid = e.actor_pid
+         LEFT JOIN process s ON s.pid = e.subject_pid
+         ORDER BY e.id DESC
+         LIMIT ? OFFSET ?`,
         [lim, off]
       )
     }
     return this._all(
-      `SELECT id, ts, provider, op, actor_pid, subject_pid, tid, file_path, reg_key, reg_value, raw_json
-       FROM event
-       WHERE actor_pid = ? OR subject_pid = ?
-       ORDER BY id DESC
+      `SELECT e.id, e.ts, e.provider, e.op, e.actor_pid, e.subject_pid, e.tid, e.file_path, e.reg_key, e.reg_value, e.raw_json,
+              a.image AS actor_image,
+              s.image AS subject_image
+       FROM event e
+       LEFT JOIN process a ON a.pid = e.actor_pid
+       LEFT JOIN process s ON s.pid = e.subject_pid
+       WHERE e.actor_pid = ? OR e.subject_pid = ?
+       ORDER BY e.id DESC
        LIMIT ? OFFSET ?`,
       [p, p, lim, off]
     )
+  }
+
+  listAllProcesses({ pageSize = 5000 } = {}) {
+    const size = Number.isFinite(pageSize) ? Math.max(1, Math.min(5000, Math.floor(pageSize))) : 5000
+    const out = []
+    let offset = 0
+    for (;;) {
+      const rows = this.listProcesses({ limit: size, offset })
+      const arr = Array.isArray(rows) ? rows : []
+      out.push(...arr)
+      if (arr.length < size) break
+      offset += size
+    }
+    return out
+  }
+
+  listAllEvents({ pid = null, pageSize = 10000 } = {}) {
+    const size = Number.isFinite(pageSize) ? Math.max(1, Math.min(10000, Math.floor(pageSize))) : 10000
+    const out = []
+    let offset = 0
+    for (;;) {
+      const rows = this.listEvents({ pid, limit: size, offset })
+      const arr = Array.isArray(rows) ? rows : []
+      out.push(...arr)
+      if (arr.length < size) break
+      offset += size
+    }
+    return out
   }
 
   exportToFileIfNeeded() {
@@ -175,6 +219,16 @@ class ProcessBehaviorStore {
     try {
       this.db.close()
     } catch {}
+  }
+
+  _shouldSkipEvent(provider, op) {
+    const p = typeof provider === 'string' ? provider : ''
+    const o = typeof op === 'string' ? op : ''
+    if (!p || !o) return false
+    const cfg = this.filters && typeof this.filters === 'object' ? this.filters : {}
+    const rule = cfg[p] && typeof cfg[p] === 'object' ? cfg[p] : {}
+    const skipOps = Array.isArray(rule.skipOps) ? rule.skipOps.map(String) : []
+    return skipOps.includes(o)
   }
 
   _upsertProcess(pid, { ppid = null, image = null, seenAt = null, exitedAt = null } = {}) {
@@ -221,7 +275,7 @@ class ProcessBehaviorStore {
   }
 }
 
-async function createProcessBehaviorStore(sqliteCfg = {}) {
+async function createProcessBehaviorStore(sqliteCfg = {}, filters = {}) {
   const { mode, filePath } = normalizeSqlitePath(sqliteCfg)
   const SQL = await initSqlJsOnce()
   let db = null
@@ -236,7 +290,7 @@ async function createProcessBehaviorStore(sqliteCfg = {}) {
   }
   if (!db) db = new SQL.Database()
 
-  return new ProcessBehaviorStore(SQL, db, { mode, filePath })
+  return new ProcessBehaviorStore(SQL, db, { mode, filePath, filters })
 }
 
 module.exports = {
@@ -244,4 +298,3 @@ module.exports = {
   normalizeSqlitePath,
   ProcessBehaviorStore
 }
-

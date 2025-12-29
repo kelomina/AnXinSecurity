@@ -6,12 +6,13 @@ function getBehaviorCfg(appConfig = {}) {
   const enabled = cfg.enabled !== false
   const flushIntervalMs = Number.isFinite(cfg.flushIntervalMs) ? cfg.flushIntervalMs : 500
   const sqlite = cfg && cfg.sqlite ? cfg.sqlite : {}
+  const filters = cfg && cfg.filters ? cfg.filters : {}
   const sqliteCfg = {
     mode: sqlite.mode === 'file' ? 'file' : 'memory',
     directory: typeof sqlite.directory === 'string' ? sqlite.directory : '%TEMP%',
     fileName: typeof sqlite.fileName === 'string' ? sqlite.fileName : 'anxin_etw_behavior.db'
   }
-  return { enabled, flushIntervalMs, sqlite: sqliteCfg }
+  return { enabled, flushIntervalMs, sqlite: sqliteCfg, filters }
 }
 
 function createBehaviorAnalyzer(appConfig = {}) {

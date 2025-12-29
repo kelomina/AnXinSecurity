@@ -146,10 +146,8 @@ function getProcessImagePathByPid(pid) {
         const len = sizeBuf.readUInt32LE(0);
         if (!len) return null;
         let p = pathBuffer.toString('utf16le', 0, len * 2);
-        if (!p || p.includes('\uFFFD')) {
-            const alt = pathBuffer.toString('utf8', 0, len * 2);
-            if (alt) p = alt;
-        }
+        p = (p || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim();
+        if (!p) return null;
         if (p.startsWith('\\??\\')) p = p.substring(4);
         return p || null;
     } catch {
@@ -210,10 +208,7 @@ function getProcessPaths() {
                         const len = GetModuleFileNameExW(hProcess, hMod, pathBuffer, 2048);
                          if (len > 0) {
                              let path = pathBuffer.toString('utf16le', 0, len * 2);
-                             if (!path || path.includes('\uFFFD')) {
-                                 const alt = pathBuffer.toString('utf8', 0, len * 2);
-                                 if (alt) path = alt;
-                             }
+                             path = (path || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim();
                              if (path.startsWith('\\??\\')) path = path.substring(4);
                              
                              const lowerPath = path.toLowerCase();
@@ -237,10 +232,7 @@ function getProcessPaths() {
                     if (QueryFullProcessImageNameW(hProcess, 0, pathBuffer, sizeBuf)) {
                         const len = sizeBuf.readUInt32LE(0);
                         let path = pathBuffer.toString('utf16le', 0, len * 2);
-                        if (!path || path.includes('\uFFFD')) {
-                            const alt = pathBuffer.toString('utf8', 0, len * 2);
-                            if (alt) path = alt;
-                        }
+                        path = (path || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim();
                         if (path.startsWith('\\??\\')) path = path.substring(4);
                         
                         const lowerPath = path.toLowerCase();

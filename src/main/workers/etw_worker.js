@@ -258,7 +258,9 @@ function resolveEtwCfg(payloadCfg) {
     const fromFile = loadAppConfig();
     const cfg = (fromFile && typeof fromFile === 'object' ? fromFile : {});
     const etw = (cfg.etw && typeof cfg.etw === 'object') ? cfg.etw : {};
-    const merged = { ...DEFAULT_ETW_CFG, ...etw, ...(payloadCfg && typeof payloadCfg === 'object' ? payloadCfg : {}) };
+    const filters = (cfg.behaviorAnalyzer && cfg.behaviorAnalyzer.filters && typeof cfg.behaviorAnalyzer.filters === 'object') ? cfg.behaviorAnalyzer.filters : {};
+    const incoming = (payloadCfg && typeof payloadCfg === 'object') ? payloadCfg : {};
+    const merged = { ...DEFAULT_ETW_CFG, ...etw, ...incoming, filters };
     merged.enabled = merged.enabled !== false;
     merged.sessionName = typeof merged.sessionName === 'string' && merged.sessionName.trim() ? merged.sessionName.trim() : DEFAULT_ETW_CFG.sessionName;
     merged.userDataMaxBytes = Number.isFinite(merged.userDataMaxBytes) ? Math.max(1024, Math.min(1024 * 1024, merged.userDataMaxBytes)) : DEFAULT_ETW_CFG.userDataMaxBytes;
@@ -271,6 +273,17 @@ function resolveEtwCfg(payloadCfg) {
 
 function postMessage(msg) {
     if (!parentPort) return;
+    if (msg && typeof msg === 'object' && msg.type === 'log' && msg.event) {
+        const ev = msg.event;
+        if (ev.provider) ev.provider = String(ev.provider);
+        if (ev.data) {
+            for (const k in ev.data) {
+                if (typeof ev.data[k] === 'string') {
+                    ev.data[k] = ev.data[k].replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim();
+                }
+            }
+        }
+    }
     parentPort.postMessage(msg);
 }
 
@@ -329,19 +342,178 @@ function sameGuid(a, b) {
 }
 
 function extractUtf16Strings(bytes, minLen = 3) {
+    const buf = Buffer.from(bytes);
+    let utf16 = [];
+    let utf8 = [];
     try {
-        const textUtf8 = Buffer.from(bytes).toString('utf8');
-        const partsUtf8 = textUtf8.split('\u0000').map(s => s.trim()).filter(Boolean);
-        const filteredUtf8 = partsUtf8.filter(s => s.length >= minLen);
-        if (filteredUtf8.length) return filteredUtf8;
+        const textUtf16 = buf.toString('utf16le');
+        utf16 = textUtf16.split('\u0000').map(s => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim()).filter(Boolean).filter(s => s.length >= minLen);
     } catch {}
     try {
-        const textUtf16 = Buffer.from(bytes).toString('utf16le');
-        const partsUtf16 = textUtf16.split('\u0000').map(s => s.trim()).filter(Boolean);
-        return partsUtf16.filter(s => s.length >= minLen);
-    } catch {
-        return [];
+        const textUtf8 = buf.toString('utf8');
+        utf8 = textUtf8.split('\u0000').map(s => s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim()).filter(Boolean).filter(s => s.length >= minLen);
+    } catch {}
+
+    const a = filterLikelyStrings(utf8);
+    const b = filterLikelyStrings(utf16);
+    const hasRegHint = (list) => {
+        for (const s of list) {
+            if (!s) continue;
+            if (s.startsWith('\\REGISTRY\\')) return true;
+            if (/^HK(LM|CU|CR|U|CC)\\/i.test(s)) return true;
+        }
+        return false;
+    };
+    const ha = hasRegHint(a);
+    const hb = hasRegHint(b);
+    if (hb && !ha) return utf16;
+    if (ha && !hb) return utf8;
+    const score = (list) => {
+        let sc = 0;
+        for (const s of list) {
+            if (!s) continue;
+            if (s.startsWith('\\REGISTRY\\')) sc += 80;
+            if (/^HK(LM|CU|CR|U|CC)\\/i.test(s)) sc += 70;
+            const bs = (s.match(/\\/g) || []).length;
+            sc += Math.min(60, bs * 6);
+            sc += Math.min(30, Math.floor(s.length / 6));
+        }
+        return sc;
+    };
+    const sa = score(a);
+    const sb = score(b);
+    if (sb > sa) return utf16;
+    if (sa > sb) return utf8;
+    if (b.length > a.length) return utf16;
+    if (a.length > b.length) return utf8;
+    return b.length ? utf16 : utf8;
+}
+
+function readUtf16leZFromBytes(bytes, startOffset, maxChars = 2048) {
+    const buf = Buffer.from(bytes);
+    let off = (startOffset >>> 0);
+    if (off >= buf.length) return { text: '', endOffset: off };
+    let end = off;
+    let chars = 0;
+    while (end + 1 < buf.length && chars < maxChars) {
+        if (buf[end] === 0 && buf[end + 1] === 0) {
+            end += 2;
+            break;
+        }
+        end += 2;
+        chars++;
     }
+    let text = '';
+    try {
+        text = buf.slice(off, Math.min(end, buf.length)).toString('utf16le');
+    } catch {}
+    text = (text || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim();
+    return { text, endOffset: end };
+}
+
+function scanRegistryKeyPathFromBinary(bytes) {
+    const buf = Buffer.from(bytes);
+    const patterns = ['\\REGISTRY\\', 'HKLM\\', 'HKCU\\', 'HKCR\\', 'HKU\\', 'HKCC\\'];
+    let bestIdx = -1;
+    let bestPat = '';
+    for (const p of patterns) {
+        let idx = -1;
+        try {
+            idx = buf.indexOf(Buffer.from(p, 'utf16le'));
+        } catch {}
+        if (idx >= 0 && (bestIdx < 0 || idx < bestIdx)) {
+            bestIdx = idx;
+            bestPat = p;
+        }
+    }
+    if (bestIdx < 0) return null;
+    const { text, endOffset } = readUtf16leZFromBytes(buf, bestIdx, 4096);
+    const normalized = (text || '').trim();
+    if (!normalized) return null;
+    const m1 = /\\REGISTRY\\[^\u0000]+/i.exec(normalized);
+    if (m1 && m1[0]) return { keyPath: m1[0].trim(), endOffset };
+    const m2 = /HK(LM|CU|CR|U|CC)\\[^\u0000]+/i.exec(normalized);
+    if (m2 && m2[0]) return { keyPath: m2[0].trim(), endOffset };
+    if (bestPat && normalized.toUpperCase().startsWith(bestPat.toUpperCase())) return { keyPath: normalized, endOffset };
+    return { keyPath: normalized, endOffset };
+}
+
+function scanRegistryValueNameFromBinary(bytes, startOffset, keyPath) {
+    const buf = Buffer.from(bytes);
+    let off = (startOffset >>> 0);
+    while (off + 1 < buf.length && buf[off] === 0 && buf[off + 1] === 0) off += 2;
+    const { text } = readUtf16leZFromBytes(buf, off, 512);
+    const s = (text || '').trim();
+    if (!s) return null;
+    if (s.includes('\\')) return null;
+    if (keyPath && s === keyPath) return null;
+    return s;
+}
+
+function pickBestRegistryKeyPath(strings, bytes) {
+    const list = filterLikelyStrings(strings);
+    const scored = list.map((s) => {
+        const hasSlash = s.includes('\\');
+        const isReg = s.startsWith('\\REGISTRY\\') ? 1 : 0;
+        const isHk = /^HK(LM|CU|CR|U|CC)\\/i.test(s) ? 1 : 0;
+        const slashes = (s.match(/\\/g) || []).length;
+        const score = (isReg ? 120 : 0) + (isHk ? 100 : 0) + (hasSlash ? 10 : 0) + Math.min(60, slashes * 6) + Math.min(40, Math.floor(s.length / 6));
+        return { s, score };
+    });
+    scored.sort((a, b) => b.score - a.score);
+    if (scored.length) {
+        const best = scored[0].s;
+        const m = /\\REGISTRY\\[^\u0000]+/i.exec(best);
+        if (m && m[0]) return m[0].trim();
+        const m2 = /HK(LM|CU|CR|U|CC)\\[^\u0000]+/i.exec(best);
+        if (m2 && m2[0]) return m2[0].trim();
+        return best;
+    }
+
+    const buf = Buffer.from(bytes);
+    let text = '';
+    try { text = buf.toString('utf16le'); } catch {}
+    if (text) {
+        const m = /\\REGISTRY\\[^\u0000]+/i.exec(text);
+        if (m && m[0]) return m[0].trim();
+        const m2 = /HK(LM|CU|CR|U|CC)\\[^\u0000]+/i.exec(text);
+        if (m2 && m2[0]) return m2[0].trim();
+    }
+    return null;
+}
+
+function pickBestRegistryValueName(strings, keyPath) {
+    const list = filterLikelyStrings(strings);
+    const cands = list.filter(s => s && s !== keyPath && !s.includes('\\'));
+    return cands.length ? cands[0] : null;
+}
+
+function parseRegistryUserData(bytes, descriptor, cfg) {
+    const strings = extractUtf16Strings(bytes, 3);
+    const type = mapRegistryOp(descriptor.Opcode, descriptor.Id);
+    let keyPath = pickBestRegistryKeyPath(strings, bytes);
+    let valueName = pickBestRegistryValueName(strings, keyPath);
+    let keyEndOffset = null;
+    if (!keyPath) {
+        const scanned = scanRegistryKeyPathFromBinary(bytes);
+        if (scanned && scanned.keyPath) {
+            keyPath = scanned.keyPath;
+            keyEndOffset = scanned.endOffset;
+        }
+    }
+    if (!valueName && keyEndOffset == null) {
+        const scanned = scanRegistryKeyPathFromBinary(bytes);
+        if (scanned && scanned.keyPath) {
+            if (!keyPath) keyPath = scanned.keyPath;
+            keyEndOffset = scanned.endOffset;
+        }
+    }
+    if (!valueName && keyEndOffset != null) {
+        valueName = scanRegistryValueNameFromBinary(bytes, keyEndOffset, keyPath);
+    }
+    const data = { type, keyPath: keyPath || null, valueName: valueName || null };
+    if (cfg && cfg.emitRegistryRawHex) data.rawHex = Buffer.from(bytes).toString('hex');
+    return data;
 }
 
 function isLikelyReadableText(s) {
@@ -407,7 +579,16 @@ function pickBestPathCandidate(strings) {
         return { s, score };
     });
     scored.sort((a, b) => b.score - a.score);
-    return scored.length ? scored[0].s : null;
+    const isPathLike = (s) => {
+        if (typeof s !== 'string' || !s) return false;
+        if (s.includes('\\')) return true;
+        if (/\.exe$/i.test(s)) return true;
+        return false;
+    };
+    for (const it of scored) {
+        if (isPathLike(it.s)) return it.s;
+    }
+    return null;
 }
 
 function tryDecodeEventRecord(ptr) {
@@ -422,6 +603,25 @@ function normalizeEventRecordPtr(recordPtr) {
     if (!recordPtr) return null;
     if (recordPtr && recordPtr.EventHeader) return recordPtr;
     return tryDecodeEventRecord(recordPtr);
+}
+
+function shouldSkipByFilters(filters, provider, type) {
+    try {
+        const p = typeof provider === 'string' ? provider : '';
+        const t = typeof type === 'string' ? type : '';
+        if (!p || !t) return false;
+        const f = (filters && typeof filters === 'object') ? filters : {};
+        const rule = f[p] && typeof f[p] === 'object' ? f[p] : {};
+        const skipOps = Array.isArray(rule.skipOps) ? rule.skipOps.map(String) : [];
+        return skipOps.includes(t);
+    } catch { return false; }
+}
+
+function shouldSkipByCfg(provider, type) {
+    try {
+        const filters = (etwCfg && etwCfg.filters && typeof etwCfg.filters === 'object') ? etwCfg.filters : {};
+        return shouldSkipByFilters(filters, provider, type);
+    } catch { return false; }
 }
 
 function mapRegistryOp(opcode, id) {
@@ -513,21 +713,11 @@ function createEventCallback() {
                         }
                     }
                 } else if (isRegistry) {
-                    const strings = filterLikelyStrings(extractUtf16Strings(bytes, 3));
-                    const keyCandidates = strings.filter(s => s.includes('\\'));
-                    const keyPath = keyCandidates.sort((a, b) => b.length - a.length)[0] || null;
-                    let valueName = null;
-                    if (strings.length > 0) {
-                        const others = strings.filter(s => s !== keyPath && !s.includes('\\'));
-                        valueName = others[0] || null;
+                    const regType = mapRegistryOp(descriptor.Opcode, descriptor.Id);
+                    if (shouldSkipByCfg('Registry', regType)) {
+                        return;
                     }
-                    const data = {
-                        type: mapRegistryOp(descriptor.Opcode, descriptor.Id),
-                        keyPath,
-                        valueName
-                    };
-                    if (etwCfg && etwCfg.emitRegistryRawHex) data.rawHex = Buffer.from(bytes).toString('hex');
-                    eventData.data = data;
+                    eventData.data = parseRegistryUserData(bytes, descriptor, etwCfg);
                     postMessage({ type: 'log', event: eventData });
                 }
             }
@@ -793,11 +983,13 @@ module.exports = {
     __test: {
         filetimeToIso,
         extractUtf16Strings,
+        parseRegistryUserData,
         pickBestPathCandidate,
         resolveEtwCfg,
         mapRegistryOp,
         readUInt32LESafe,
         tryDecodeEventRecord,
-        normalizeEventRecordPtr
+        normalizeEventRecordPtr,
+        shouldSkipByFilters
     }
 };

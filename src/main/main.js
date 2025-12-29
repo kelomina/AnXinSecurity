@@ -9,7 +9,8 @@ const processes = require('./processes')
 const scanCache = require('./scan_cache')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
 const { resolveMainWindowOptions } = require('./window_options')
-const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter } = require('./utils')
+const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter, sanitizeText, isCleanText, isLikelyProcessImageText } = require('./utils')
+const { resolveTrayExitMode } = require('./tray_exit_mode')
 
 let winapi = null
 try {
@@ -40,6 +41,7 @@ function loadConfig() {
       themeColor: '#4CA2FF',
       defaultPage: 'overview',
       minimizeToTray: true,
+      tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, window: { minWidth: 800, minHeight: 600 } },  
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
       scanner: {
@@ -91,7 +93,10 @@ let etwPidResolveLimiterMax = null
 
 function getProcessNameFromPath(p) {
   if (typeof p !== 'string' || !p) return ''
-  try { return path.basename(p) } catch { return '' }
+  try {
+    const n = path.basename(p)
+    return sanitizeText(typeof n === 'string' ? n : '')
+  } catch { return '' }
 }
 
 function refreshEtwPidCacheConfig(etwCfg) {
@@ -123,7 +128,9 @@ function pruneEtwPidCache(now) {
 
 function upsertEtwPid(pid, imagePath, now) {
   if (!Number.isFinite(pid) || pid <= 0) return
-  const img = (typeof imagePath === 'string' && imagePath) ? imagePath : null
+  const rawImg = (typeof imagePath === 'string' && imagePath) ? imagePath : null
+  const img = rawImg ? sanitizeText(rawImg) : null
+  if (img && !isLikelyProcessImageText(img)) return
   const name = img ? getProcessNameFromPath(img) : ''
   etwPidCache.delete(pid)
   etwPidCache.set(pid, { imagePath: img, name, at: now })
@@ -133,15 +140,21 @@ function resolveEtwProcessInfo(pid, now, etwCfg) {
   if (!Number.isFinite(pid) || pid <= 0) return null
   const existed = etwPidCache.get(pid)
   if (existed && (!etwPidCacheTtlMs || (now - existed.at <= etwPidCacheTtlMs))) {
+    const cachedImage = (typeof existed.imagePath === 'string' && existed.imagePath) ? existed.imagePath : ''
+    const cachedName = (typeof existed.name === 'string' && existed.name) ? existed.name : ''
+    const ok = (cachedImage && isLikelyProcessImageText(cachedImage)) || (cachedName && isLikelyProcessImageText(cachedName))
+    if (ok) {
+      etwPidCache.delete(pid)
+      etwPidCache.set(pid, { imagePath: existed.imagePath, name: existed.name, at: now })
+      return existed
+    }
     etwPidCache.delete(pid)
-    etwPidCache.set(pid, { imagePath: existed.imagePath, name: existed.name, at: now })
-    return existed
   }
 
   if (!winapi || typeof winapi.getProcessImagePathByPid !== 'function') return null
   if (!etwPidResolveLimiter || !etwPidResolveLimiter()) return null
   const img = winapi.getProcessImagePathByPid(pid)
-  if (!img) return null
+  if (!img || !isCleanText(img)) return null
   upsertEtwPid(pid, img, now)
   return etwPidCache.get(pid) || null
 }
@@ -282,6 +295,68 @@ function createWindow() {
   })
 }
 
+let trayExitInProgress = false
+
+function quitAppOnlyFromTray() {
+  try {
+    scanCache.clearAll(config).catch(() => {})
+    config.minimizeToTray = false
+  } catch {}
+  app.quit()
+}
+
+function quitAllFromTray() {
+  try {
+    scanCache.clearAll(config).catch(() => {})
+    config.minimizeToTray = false
+    const scannerCfg = (config && config.scanner) ? config.scanner : {}
+    const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
+    const timeout = (config && config.engine && Number.isFinite(config.engine.exitTimeoutMs))
+      ? config.engine.exitTimeoutMs
+      : (Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : ((scannerCfg && scannerCfg.timeoutMs) ? scannerCfg.timeoutMs : 1000))
+    const engineCfg = (config && config.engine) ? config.engine : {}
+    const processName = engineCfg.processName || 'Axon_ml.exe'
+    const mod = require('./engine_autostart')
+    mod.postExitCommand({ ipc }, timeout, null).then((res) => {
+      const ok = res && res.ok && res.status === 'shutting_down'
+      if (!ok && process.platform === 'win32') return mod.killProcessWin32(processName)
+      return null
+    }).finally(() => { app.quit() })
+  } catch {
+    app.quit()
+  }
+}
+
+async function handleTrayExitClick() {
+  if (trayExitInProgress) return
+  trayExitInProgress = true
+
+  const trayCfg = (config && config.tray) ? config.tray : {}
+  if (trayCfg.exitKeepScannerServicePrompt === false) return quitAllFromTray()
+
+  const defaultKeep = trayCfg.exitKeepScannerServiceDefault !== false
+  const defaultId = defaultKeep ? 0 : 1
+
+  let response = null
+  try {
+    const browser = BrowserWindow.getFocusedWindow() || win
+    const res = await dialog.showMessageBox(browser, {
+      type: 'question',
+      buttons: [t('tray_exit_keep_service_yes'), t('tray_exit_keep_service_no')],
+      defaultId,
+      cancelId: defaultId,
+      noLink: true,
+      title: t('tray_exit_keep_service_title'),
+      message: t('tray_exit_keep_service_message')
+    })
+    response = res && Number.isFinite(res.response) ? res.response : null
+  } catch {}
+
+  const mode = resolveTrayExitMode({ response, defaultKeep })
+  if (mode === 'keep_service') return quitAppOnlyFromTray()
+  return quitAllFromTray()
+}
+
 function createTray() {
   const pngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAGElEQVQYlWP8////fwYGBgYGJgYGBgYAAG1uCkqO3W1QAAAAAElFTkSuQmCC'
@@ -290,25 +365,7 @@ function createTray() {
   console.log('主进程: 创建系统托盘')
   const menu = Menu.buildFromTemplate([
     { label: t('tray_show_main'), click: () => { win.show() } },
-    { label: t('tray_exit'), click: () => {
-      try {
-        scanCache.clearAll(config).catch(() => {})
-        config.minimizeToTray = false
-        const scannerCfg = (config && config.scanner) ? config.scanner : {}
-        const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
-        const timeout = (config && config.engine && Number.isFinite(config.engine.exitTimeoutMs)) ? config.engine.exitTimeoutMs : (Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : ((scannerCfg && scannerCfg.timeoutMs) ? scannerCfg.timeoutMs : 1000))
-        const engineCfg = (config && config.engine) ? config.engine : {}
-        const processName = engineCfg.processName || 'Axon_ml.exe'
-        const mod = require('./engine_autostart')
-        mod.postExitCommand({ ipc }, timeout, null).then((res) => {
-          const ok = res && res.ok && res.status === 'shutting_down'
-          if (!ok && process.platform === 'win32') return mod.killProcessWin32(processName)
-          return null
-        }).finally(() => { app.quit() })
-      } catch {
-        app.quit()
-      }
-    } }
+    { label: t('tray_exit'), click: () => { void handleTrayExitClick() } }
   ])
   tray.setToolTip(t('brand_name') || config.brand || 'AnXin Security')
   tray.setContextMenu(menu)
@@ -406,8 +463,73 @@ app.whenReady().then(() => {
   ipcMain.handle('logs:list', () => eventLogs)
   ipcMain.handle('system-get-running-processes', () => processes.getRunningProcesses())
   ipcMain.handle('behavior-get-db-path', () => behavior.getDbPath())
-  ipcMain.handle('behavior-list-processes', async (_event, query) => behavior.listProcesses(query || {}))
-  ipcMain.handle('behavior-list-events', async (_event, query) => behavior.listEvents(query || {}))
+  ipcMain.handle('behavior-list-processes', async (_event, query) => {
+    const list = await behavior.listProcesses(query || {})
+    const arr = Array.isArray(list) ? list : []
+    const now = Date.now()
+    const etwCfg = (config && config.etw) ? config.etw : {}
+    const uiCfg = (config && config.behaviorUi) ? config.behaviorUi : {}
+    const resolveProcessName = uiCfg.resolveProcessName !== false
+    if (!resolveProcessName) return arr
+    refreshEtwPidCacheConfig(etwCfg)
+    pruneEtwPidCache(now)
+    return arr.map((p) => {
+      const pid = Number.isFinite(p && p.pid) ? p.pid : null
+      const out = Object.assign({}, p)
+      if (typeof out.image === 'string' && out.image) out.image = sanitizeText(out.image)
+      if (typeof out.name === 'string' && out.name) out.name = sanitizeText(out.name)
+      if (pid != null) {
+        const info = resolveEtwProcessInfo(pid, now, etwCfg)
+        if (info && info.imagePath && !out.image) out.image = info.imagePath
+        if (info && info.name) out.name = sanitizeText(info.name)
+      }
+      if (out.name && !isCleanText(out.name)) out.name = ''
+      if (!out.name && out.image) out.name = getProcessNameFromPath(out.image)
+      if (out.name && !isCleanText(out.name)) out.name = ''
+      return out
+    })
+  })
+  ipcMain.handle('behavior-list-events', async (_event, query) => {
+    const list = await behavior.listEvents(query || {})
+    const arr = Array.isArray(list) ? list : []
+    const now = Date.now()
+    const etwCfg = (config && config.etw) ? config.etw : {}
+    const uiCfg = (config && config.behaviorUi) ? config.behaviorUi : {}
+    const resolveProcessName = uiCfg.resolveProcessName !== false
+    if (!resolveProcessName) return arr
+    refreshEtwPidCacheConfig(etwCfg)
+    pruneEtwPidCache(now)
+    return arr.map((ev) => {
+      const out = Object.assign({}, ev)
+      const actorPid = Number.isFinite(out.actor_pid) ? out.actor_pid : null
+      const subjectPid = Number.isFinite(out.subject_pid) ? out.subject_pid : null
+      const actorImage = (typeof out.actor_image === 'string' && out.actor_image) ? out.actor_image : null
+      const subjectImage = (typeof out.subject_image === 'string' && out.subject_image) ? out.subject_image : null
+      if (typeof out.actor_processImage === 'string' && out.actor_processImage) out.actor_processImage = sanitizeText(out.actor_processImage)
+      if (typeof out.subject_processImage === 'string' && out.subject_processImage) out.subject_processImage = sanitizeText(out.subject_processImage)
+      if (typeof out.actor_processName === 'string' && out.actor_processName) out.actor_processName = sanitizeText(out.actor_processName)
+      if (typeof out.subject_processName === 'string' && out.subject_processName) out.subject_processName = sanitizeText(out.subject_processName)
+      if (!out.actor_processImage && actorImage) out.actor_processImage = actorImage
+      if (!out.subject_processImage && subjectImage) out.subject_processImage = subjectImage
+      if (!out.actor_processName && out.actor_processImage) out.actor_processName = getProcessNameFromPath(out.actor_processImage)
+      if (!out.subject_processName && out.subject_processImage) out.subject_processName = getProcessNameFromPath(out.subject_processImage)
+      if (actorPid != null) {
+        const info = resolveEtwProcessInfo(actorPid, now, etwCfg)
+        if (info && info.name) out.actor_processName = sanitizeText(info.name)
+        if (info && info.imagePath) out.actor_processImage = info.imagePath
+      }
+      if (subjectPid != null) {
+        const info = resolveEtwProcessInfo(subjectPid, now, etwCfg)
+        if (info && info.name) out.subject_processName = sanitizeText(info.name)
+        if (info && info.imagePath) out.subject_processImage = info.imagePath
+      }
+      if (out.actor_processName && !isCleanText(out.actor_processName)) out.actor_processName = ''
+      if (out.subject_processName && !isCleanText(out.subject_processName)) out.subject_processName = ''
+      if (!out.actor_processName && out.actor_processImage) out.actor_processName = getProcessNameFromPath(out.actor_processImage)
+      if (!out.subject_processName && out.subject_processImage) out.subject_processName = getProcessNameFromPath(out.subject_processImage)
+      return out
+    })
+  })
   ipcMain.handle('scanner:health', async () => scannerClient.health())
   ipcMain.handle('scanner:scanFile', async (_event, payload) => {
     const p = payload && typeof payload === 'object' ? payload : {}

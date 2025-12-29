@@ -4,6 +4,10 @@
   "defaultPage": "overview",
   "minimizeToTray": true,
   "locale": "zh-CN",
+  "tray": {
+    "exitKeepScannerServicePrompt": true,
+    "exitKeepScannerServiceDefault": true
+  },
   "ui": {
     "animations": true,
     "window": {
@@ -48,6 +52,12 @@
     "walkerBatchSize": 256,
     "cachePersistIntervalMs": 1000
   },
+  "behaviorUi": {
+    "pageSize": 0,
+    "autoRefreshMs": 0,
+    "processListLimit": 0,
+    "resolveProcessName": true
+  },
   "etw": {
     "enabled": true,
     "sessionName": "AnXinSecuritySession",
@@ -64,10 +74,14 @@
     "processNameResolveMaxPerSecond": 20,
     "consoleMaxPerSecond": 200
   },
-  "quarantine": {
-    "salt": "333271359dc76c25c74f58d772c07f57"
-  },
-  "exclusions": {
-    "salt": "a6435db5d847d1a278293eae67be7bc0"
+  "behaviorAnalyzer": {
+    "enabled": true,
+    "flushIntervalMs": 100,
+    "sqlite": { "mode": "file", "directory": "%TEMP%", "fileName": "anxin_etw_behavior.db" },
+    "filters": {
+      "Registry": { "skipOps": ["OpenKey", "CloseKey", "QueryValue", "QueryKey", "EnumerateKey","SetInformationKey","EnumerateValue"] },
+      "Process": { "skipOps": ["Stop"] },
+      "File": { "skipOps": [] }
+    }
   }
 }

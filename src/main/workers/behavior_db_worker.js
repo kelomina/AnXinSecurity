@@ -18,7 +18,8 @@ function clearFlushTimer() {
 async function init(payload) {
   const cfg = payload && payload.config ? payload.config : {}
   const sqliteCfg = cfg && cfg.sqlite ? cfg.sqlite : {}
-  store = await createProcessBehaviorStore(sqliteCfg)
+  const filters = cfg && cfg.filters ? cfg.filters : {}
+  store = await createProcessBehaviorStore(sqliteCfg, filters)
 
   const flushIntervalMs = Number.isFinite(cfg.flushIntervalMs) ? cfg.flushIntervalMs : 500
   clearFlushTimer()
@@ -42,7 +43,8 @@ function ingest(payload) {
 function handleListProcesses(payload) {
   if (!store) return postMessage({ type: 'result', requestId: payload.requestId, data: [] })
   try {
-    const data = store.listProcesses(payload && payload.query ? payload.query : {})
+    const q = payload && payload.query ? payload.query : {}
+    const data = q && q.limit === Infinity ? store.listAllProcesses({}) : store.listProcesses(q)
     postMessage({ type: 'result', requestId: payload.requestId, data })
   } catch {
     postMessage({ type: 'result', requestId: payload.requestId, data: [] })
@@ -52,7 +54,8 @@ function handleListProcesses(payload) {
 function handleListEvents(payload) {
   if (!store) return postMessage({ type: 'result', requestId: payload.requestId, data: [] })
   try {
-    const data = store.listEvents(payload && payload.query ? payload.query : {})
+    const q = payload && payload.query ? payload.query : {}
+    const data = q && q.limit === Infinity ? store.listAllEvents({ pid: q.pid }) : store.listEvents(q)
     postMessage({ type: 'result', requestId: payload.requestId, data })
   } catch {
     postMessage({ type: 'result', requestId: payload.requestId, data: [] })
@@ -91,4 +94,3 @@ if (parentPort) {
     }
   })
 }
-

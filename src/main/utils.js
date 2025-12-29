@@ -79,7 +79,20 @@ function formatEtwEventForConsole(event) {
 function formatEtwEventForParsedConsole(event) {
   if (!event || typeof event !== 'object') return ''
   try {
-    return JSON.stringify(event)
+    const out = JSON.parse(JSON.stringify(event))
+    if (out && typeof out === 'object') {
+      if (typeof out.processName === 'string') out.processName = sanitizeText(out.processName)
+      if (typeof out.processImage === 'string') out.processImage = sanitizeText(out.processImage)
+      const data = (out.data && typeof out.data === 'object') ? out.data : null
+      if (data) {
+        if (typeof data.type === 'string') data.type = sanitizeText(data.type)
+        if (typeof data.imageName === 'string') data.imageName = sanitizeText(data.imageName)
+        if (typeof data.fileName === 'string') data.fileName = sanitizeText(data.fileName)
+        if (typeof data.keyPath === 'string') data.keyPath = sanitizeText(data.keyPath)
+        if (typeof data.valueName === 'string') data.valueName = sanitizeText(data.valueName)
+      }
+    }
+    return JSON.stringify(out)
   } catch {
     return ''
   }
@@ -241,6 +254,47 @@ function createRateLimiter(maxPerSecond, nowFn) {
   }
 }
 
+function sanitizeText(s) {
+  if (typeof s !== 'string' || !s) return ''
+  return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim()
+}
+
+function isCleanText(s) {
+  if (typeof s !== 'string' || !s) return false
+  return !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/.test(s)
+}
+
+function isLikelyWindowsPath(p) {
+  if (typeof p !== 'string') return false
+  const s = p.trim()
+  if (!s) return false
+  if (/^[a-zA-Z]:[\\/]/.test(s)) return true
+  if (s.startsWith('\\\\?\\') || s.startsWith('\\\\.\\')) return true
+  if (s.startsWith('\\\\')) return true
+  if (s.startsWith('\\Device\\')) return true
+  if (s.startsWith('\\??\\')) return true
+  return false
+}
+
+function isLikelyProcessImagePath(p) {
+  if (typeof p !== 'string') return false
+  const s = p.trim()
+  if (!s) return false
+  if (!/[\\/]/.test(s)) return false
+  if (!/\.exe$/i.test(s)) return false
+  return isLikelyWindowsPath(s)
+}
+
+function isLikelyProcessImageText(p) {
+  if (typeof p !== 'string') return false
+  const s = p.trim()
+  if (!s) return false
+  if (!isCleanText(s)) return false
+  if (isLikelyProcessImagePath(s)) return true
+  if (/\.exe$/i.test(s) && !/[\\/]/.test(s) && s.length <= 260) return true
+  return false
+}
+
 module.exports = {
   killRelatedProcess,
   forceDelete,
@@ -248,5 +302,10 @@ module.exports = {
   formatEtwEventForParsedConsole,
   resolveEtwOpMeaning,
   parseEtwEventFromConsoleLine,
-  createRateLimiter
+  createRateLimiter,
+  sanitizeText,
+  isCleanText,
+  isLikelyWindowsPath,
+  isLikelyProcessImagePath,
+  isLikelyProcessImageText
 };

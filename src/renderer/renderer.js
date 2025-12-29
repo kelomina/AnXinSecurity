@@ -10,9 +10,17 @@ const state = {
   tabCache: {},
   quarantineItems: [],
   exclusionsItems: [],
+  behavior: {
+    pid: null,
+    loading: false,
+    processSnapshotId: 0,
+    processSnapshotActiveId: 0
+  },
   engineStatus: 'ok',
   metricsFromCache: false
 }
+
+let behaviorDetailModal = null
 
 function setTheme() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : { themeColor: '#1677ff' }
@@ -43,6 +51,8 @@ function initNav() {
     navScan.style.display = 'block'
   }
   document.getElementById('nav-quarantine').textContent = t('nav_quarantine')
+  const navBehavior = document.getElementById('nav-behavior')
+  if (navBehavior) navBehavior.textContent = t('nav_behavior')
   const navExcl = document.getElementById('nav-exclusions')
   if (navExcl) navExcl.textContent = t('nav_exclusions')
   document.getElementById('nav-update').textContent = t('nav_update')
@@ -78,6 +88,9 @@ function showPage(p) {
   if (p === 'quarantine') {
     console.log('渲染进程: 进入隔离区页面，开始加载列表')
     initQuarantine()
+  }
+  if (p === 'behavior') {
+    initBehavior()
   }
   if (p === 'exclusions') {
     initExclusions()
@@ -902,13 +915,25 @@ function initScan() {
 
 let loadingModal = null
  
-function showLoading(title, desc) {
+function updateLoading(percent, statusText) {
+  const p = Number.isFinite(percent) ? Math.max(0, Math.min(100, Math.floor(percent))) : 0
+  const b = document.getElementById('loading-bar')
+  if (b) {
+    b.style.width = p + '%'
+    b.textContent = p + '%'
+  }
+  const s = document.getElementById('loading-status')
+  if (s) s.textContent = statusText ? String(statusText) : ''
+}
+
+function showLoading(title, desc, percent, statusText) {
   const el = document.getElementById('loading-modal')
   if (!el) return Promise.resolve()
   const t = document.getElementById('loading-title')
-  if (t) t.textContent = title
+  if (t) t.textContent = title ? String(title) : ''
   const d = document.getElementById('loading-desc')
-  if (d) d.textContent = desc
+  if (d) d.textContent = desc ? String(desc) : ''
+  updateLoading(percent, statusText)
   
   if (!loadingModal) {
     loadingModal = new bootstrap.Modal(el, { backdrop: 'static', keyboard: false })
@@ -950,6 +975,11 @@ function showProcessing(title, desc) {
     processingModal = new bootstrap.Modal(el, { backdrop: 'static', keyboard: false })
   }
   processingModal.show()
+}
+
+function showIndeterminateProcessing(title, desc) {
+  showProcessing(title, desc)
+  updateProcessing(100, '')
 }
 
 function updateProcessing(percent, statusText) {
@@ -1030,6 +1060,450 @@ function showExclAddConfirm(type, pathText) {
     if (confirmBtn) confirmBtn.addEventListener('click', onConfirm, { once: true })
     exclAddModal.show()
   })
+}
+
+function getBehaviorUiCfg() {
+  const cfg = window.api && window.api.config ? window.api.config.get() : null
+  const ui = cfg && cfg.behaviorUi ? cfg.behaviorUi : {}
+  let processListLimit = 500
+  if (ui.processListLimit === 0) processListLimit = Infinity
+  else if (Number.isFinite(ui.processListLimit)) processListLimit = Math.max(50, Math.min(5000, Math.floor(ui.processListLimit)))
+
+  let eventListLimit = 1000
+  if (ui.pageSize === 0) eventListLimit = Infinity
+  else if (Number.isFinite(ui.pageSize)) eventListLimit = Math.max(50, Math.min(10000, Math.floor(ui.pageSize)))
+
+  return { processListLimit, eventListLimit }
+}
+
+function setBehaviorError(msg) {
+  const el = document.getElementById('behavior-error')
+  if (!el) return
+  if (typeof msg === 'string' && msg.trim()) {
+    el.textContent = msg.trim()
+    el.style.display = 'block'
+  } else {
+    el.textContent = ''
+    el.style.display = 'none'
+  }
+}
+
+function setBehaviorStatus(msg) {
+  const el = document.getElementById('behavior-status')
+  if (!el) return
+  el.textContent = msg || ''
+}
+
+function setBehaviorMeta(msg) {
+  const el = document.getElementById('behavior-meta')
+  if (!el) return
+  el.textContent = msg || ''
+}
+
+function getBaseName(p) {
+  const s = typeof p === 'string' ? p : ''
+  if (!s) return ''
+  const parts = s.split(/[\\/]+/).filter(Boolean)
+  return parts.length ? parts[parts.length - 1] : s
+}
+
+function formatPidCell(pid, name, image) {
+  const p = Number.isFinite(pid) ? pid : null
+  if (p == null) return ''
+  const n = (typeof name === 'string' && name.trim()) ? name.trim() : ''
+  const img = (typeof image === 'string' && image.trim()) ? image.trim() : ''
+  const base = img ? getBaseName(img) : ''
+  const label = n || base
+  return label ? `${p} - ${label}` : String(p)
+}
+
+function parsePidValue(v) {
+  if (v == null) return null
+  const n = typeof v === 'number' ? v : parseInt(String(v), 10)
+  if (!Number.isFinite(n) || n <= 0) return null
+  return n
+}
+
+function getBehaviorPidFromInput() {
+  const input = document.getElementById('behavior-pid-input')
+  if (!input) return null
+  const pid = parsePidValue(input.value)
+  return pid
+}
+
+function setBehaviorPidInput(pid) {
+  const input = document.getElementById('behavior-pid-input')
+  if (input) input.value = pid != null ? String(pid) : ''
+}
+
+function setBehaviorProcessSelect(pid) {
+  const sel = document.getElementById('behavior-process-select')
+  if (!sel) return
+  const p = pid != null ? String(pid) : ''
+  if (sel.value !== p) sel.value = p
+}
+
+function updateBehaviorButtons() {
+  const btnApply = document.getElementById('behavior-btn-apply')
+  if (btnApply) btnApply.disabled = state.behavior.loading
+  const btnClear = document.getElementById('behavior-btn-clear')
+  if (btnClear) btnClear.disabled = state.behavior.loading
+  const btnRefresh = document.getElementById('behavior-btn-refresh-processes')
+  if (btnRefresh) btnRefresh.disabled = state.behavior.loading
+  const btnRefreshEvents = document.getElementById('behavior-btn-refresh-events')
+  if (btnRefreshEvents) btnRefreshEvents.disabled = state.behavior.loading
+}
+
+async function renderBehaviorProcessesAsync(list) {
+  const sel = document.getElementById('behavior-process-select')
+  if (!sel) return
+
+  const renderId = (state.behavior.processSnapshotId || 0) + 1
+  state.behavior.processSnapshotId = renderId
+  state.behavior.processSnapshotActiveId = renderId
+  const shouldContinue = () => state.behavior.processSnapshotActiveId === renderId
+  const snapshot = Array.isArray(list) ? list.slice() : []
+
+  const helper = window.behaviorRender && window.behaviorRender.renderProcessSelectAsync
+  if (typeof helper === 'function') {
+    await helper({
+      sel,
+      list: snapshot,
+      t,
+      getBaseName,
+      batchSize: 200,
+      shouldContinue,
+      onProgress: (total, done) => {
+        const percent = total > 0 ? Math.floor((done / total) * 100) : 100
+        updateLoading(percent, '')
+      },
+      onFirstBatch: () => {
+        hideLoading()
+      }
+    })
+    return
+  }
+
+  if (!shouldContinue()) return
+  sel.innerHTML = ''
+  const optAll = document.createElement('option')
+  optAll.value = ''
+  optAll.textContent = t('behavior_all_processes')
+  sel.appendChild(optAll)
+
+  const arr = snapshot
+  let firstAppended = false
+  let done = 0
+  const total = arr.length
+  for (const p of arr) {
+    if (!shouldContinue()) return
+    const pid = Number.isFinite(p && p.pid) ? p.pid : null
+    if (pid == null) continue
+    const image = typeof p.image === 'string' ? p.image : ''
+    const name = (typeof p.name === 'string' && p.name) ? p.name : getBaseName(image)
+    const opt = document.createElement('option')
+    opt.value = String(pid)
+    opt.textContent = name ? `${pid} - ${name}` : String(pid)
+    sel.appendChild(opt)
+    done++
+    if (!firstAppended) {
+      firstAppended = true
+      hideLoading()
+    }
+    const percent = total > 0 ? Math.floor((done / total) * 100) : 100
+    updateLoading(percent, '')
+  }
+}
+
+function renderBehaviorEvents(list, append) {
+  const tbody = document.getElementById('behavior-tbody')
+  if (!tbody) return
+
+  if (!append) tbody.innerHTML = ''
+
+  const arr = Array.isArray(list) ? list : []
+  if (!append && arr.length === 0) {
+    const tr = document.createElement('tr')
+    const td = document.createElement('td')
+    td.colSpan = 7
+    td.className = 'text-center text-muted'
+    td.textContent = t('behavior_empty')
+    tr.appendChild(td)
+    tbody.appendChild(tr)
+    return
+  }
+
+  arr.forEach(ev => {
+    const tr = document.createElement('tr')
+    tr.style.cursor = 'pointer'
+    tr.onclick = () => openBehaviorDetail(ev)
+
+    const ts = typeof ev.ts === 'string' ? ev.ts : ''
+    const provider = typeof ev.provider === 'string' ? ev.provider : ''
+    const op = typeof ev.op === 'string' ? ev.op : ''
+    const actor = formatPidCell(ev.actor_pid, ev.actor_processName, ev.actor_processImage)
+    const subject = formatPidCell(ev.subject_pid, ev.subject_processName, ev.subject_processImage)
+    const tid = Number.isFinite(ev.tid) ? ev.tid : ''
+    const target = (typeof ev.file_path === 'string' && ev.file_path) ? ev.file_path
+      : ((typeof ev.reg_key === 'string' && ev.reg_key) ? ev.reg_key : '')
+    const value = (typeof ev.reg_value === 'string' && ev.reg_value) ? ev.reg_value : ''
+    const targetText = value ? `${target} :: ${value}` : target
+
+    const cols = [ts, provider, op, actor, subject, tid, targetText]
+    cols.forEach((c, idx) => {
+      const td = document.createElement('td')
+      if (idx === 6) td.className = 'path-fade'
+      td.textContent = c === null || c === undefined ? '' : String(c)
+      if (idx === 6) td.title = td.textContent
+      tr.appendChild(td)
+    })
+    tbody.appendChild(tr)
+  })
+}
+
+function openBehaviorDetail(ev) {
+  const el = document.getElementById('behavior-detail-modal')
+  if (!el) return
+  const titleEl = document.getElementById('behavior-detail-title')
+  const closeEl = document.getElementById('behavior-detail-close')
+  if (closeEl) closeEl.textContent = t('btn_close')
+  const id = Number.isFinite(ev && ev.id) ? ev.id : null
+  if (titleEl) titleEl.textContent = id != null ? `${t('behavior_detail_title')} #${id}` : t('behavior_detail_title')
+
+  const pre = document.getElementById('behavior-detail-json')
+  if (pre) {
+    const raw = typeof ev.raw_json === 'string' ? ev.raw_json : ''
+    let text = raw
+    try {
+      const obj = raw ? JSON.parse(raw) : null
+      if (obj && typeof obj === 'object') text = JSON.stringify(obj, null, 2)
+    } catch {}
+    pre.textContent = text || ''
+  }
+  if (!behaviorDetailModal) {
+    behaviorDetailModal = new bootstrap.Modal(el, { backdrop: 'static', keyboard: true })
+  }
+  behaviorDetailModal.show()
+}
+
+function updateBehaviorTexts() {
+  const title = document.getElementById('behavior-title')
+  if (title) title.textContent = t('behavior_title')
+  const desc = document.getElementById('behavior-desc')
+  if (desc) desc.textContent = t('behavior_desc')
+
+  const btnRefresh = document.getElementById('behavior-btn-refresh-processes')
+  if (btnRefresh) btnRefresh.textContent = t('behavior_refresh_processes')
+  const btnRefreshEvents = document.getElementById('behavior-btn-refresh-events')
+  if (btnRefreshEvents) btnRefreshEvents.textContent = t('behavior_refresh_events')
+
+  const labelProc = document.getElementById('behavior-label-processes')
+  if (labelProc) labelProc.textContent = t('behavior_label_processes')
+  const labelPid = document.getElementById('behavior-label-pid')
+  if (labelPid) labelPid.textContent = t('behavior_label_pid')
+
+  const thTs = document.getElementById('behavior-th-ts')
+  if (thTs) thTs.textContent = t('behavior_th_ts')
+  const thProvider = document.getElementById('behavior-th-provider')
+  if (thProvider) thProvider.textContent = t('behavior_th_provider')
+  const thOp = document.getElementById('behavior-th-op')
+  if (thOp) thOp.textContent = t('behavior_th_op')
+  const thActor = document.getElementById('behavior-th-actor')
+  if (thActor) thActor.textContent = t('behavior_th_actor')
+  const thSubject = document.getElementById('behavior-th-subject')
+  if (thSubject) thSubject.textContent = t('behavior_th_subject')
+  const thTid = document.getElementById('behavior-th-tid')
+  if (thTid) thTid.textContent = t('behavior_th_tid')
+  const thTarget = document.getElementById('behavior-th-target')
+  if (thTarget) thTarget.textContent = t('behavior_th_target')
+
+  const btnApply = document.getElementById('behavior-btn-apply')
+  if (btnApply) btnApply.textContent = t('behavior_apply')
+  const btnClear = document.getElementById('behavior-btn-clear')
+  if (btnClear) btnClear.textContent = t('behavior_clear')
+}
+
+async function refreshBehaviorProcesses() {
+  if (!window.api || !window.api.behavior || !window.api.behavior.listProcesses) return
+  if (state.behavior.loading) return
+  state.behavior.loading = true
+  setBehaviorError('')
+  updateBehaviorButtons()
+  const { processListLimit } = getBehaviorUiCfg()
+  try {
+    await showLoading(t('behavior_loading_processes'), t('please_wait'), 0, '')
+    const list = await window.api.behavior.listProcesses({ limit: processListLimit, offset: 0 })
+    state.tabCache.behaviorProcesses = Array.isArray(list) ? list : []
+    await renderBehaviorProcessesAsync(state.tabCache.behaviorProcesses)
+    setBehaviorStatus('')
+  } catch {
+    setBehaviorStatus(t('behavior_processes_load_failed'))
+  } finally {
+    hideLoading()
+    state.behavior.loading = false
+    updateBehaviorButtons()
+  }
+}
+
+async function renderBehaviorEventsAsync(list, opts) {
+  const tbody = document.getElementById('behavior-tbody')
+  if (!tbody) return
+
+  tbody.innerHTML = ''
+  const arr = Array.isArray(list) ? list : []
+  if (arr.length === 0) {
+    const tr = document.createElement('tr')
+    const td = document.createElement('td')
+    td.colSpan = 7
+    td.className = 'text-center text-muted'
+    td.textContent = t('behavior_empty')
+    tr.appendChild(td)
+    tbody.appendChild(tr)
+    updateLoading(100, '')
+    hideLoading()
+    return
+  }
+
+  const o = opts && typeof opts === 'object' ? opts : {}
+  const batchSize = Number.isFinite(o.batchSize) ? Math.max(1, Math.floor(o.batchSize)) : 200
+  const total = arr.length
+  let done = 0
+  let firstBatch = true
+  for (let i = 0; i < arr.length; i += batchSize) {
+    const frag = document.createDocumentFragment()
+    const slice = arr.slice(i, i + batchSize)
+    slice.forEach(ev => {
+      const tr = document.createElement('tr')
+      tr.style.cursor = 'pointer'
+      tr.onclick = () => openBehaviorDetail(ev)
+      const ts = typeof ev.ts === 'string' ? ev.ts : ''
+      const provider = typeof ev.provider === 'string' ? ev.provider : ''
+      const op = typeof ev.op === 'string' ? ev.op : ''
+      const actor = formatPidCell(ev.actor_pid, ev.actor_processName, ev.actor_processImage)
+      const subject = formatPidCell(ev.subject_pid, ev.subject_processName, ev.subject_processImage)
+      const tid = Number.isFinite(ev.tid) ? ev.tid : ''
+      const target = (typeof ev.file_path === 'string' && ev.file_path) ? ev.file_path
+        : ((typeof ev.reg_key === 'string' && ev.reg_key) ? ev.reg_key : '')
+      const value = (typeof ev.reg_value === 'string' && ev.reg_value) ? ev.reg_value : ''
+      const targetText = value ? `${target} :: ${value}` : target
+      const cols = [ts, provider, op, actor, subject, tid, targetText]
+      cols.forEach((c, idx) => {
+        const td = document.createElement('td')
+        if (idx === 6) td.className = 'path-fade'
+        td.textContent = c === null || c === undefined ? '' : String(c)
+        if (idx === 6) td.title = td.textContent
+        tr.appendChild(td)
+      })
+      frag.appendChild(tr)
+    })
+    tbody.appendChild(frag)
+    done += slice.length
+    const percent = total > 0 ? Math.floor((done / total) * 100) : 100
+    updateLoading(percent, '')
+    if (firstBatch) {
+      firstBatch = false
+      hideLoading()
+      if (o.onFirstBatch) o.onFirstBatch()
+    }
+    if (o.onProgress) o.onProgress(total, done)
+    await waitNextPaint()
+  }
+}
+
+async function loadBehaviorEvents() {
+  if (!window.api || !window.api.behavior || !window.api.behavior.listEvents) return
+  if (state.behavior.loading) return
+
+  state.behavior.loading = true
+  setBehaviorError('')
+  updateBehaviorButtons()
+  const pid = state.behavior.pid
+
+  try {
+    await showLoading(t('behavior_loading_events'), t('please_wait'), 0, '')
+    const { eventListLimit } = getBehaviorUiCfg()
+    const query = { limit: eventListLimit, offset: 0 }
+    if (pid != null) query.pid = pid
+    const list = await window.api.behavior.listEvents(query)
+    const rows = Array.isArray(list) ? list : []
+    state.tabCache.behaviorEvents = rows
+
+    await renderBehaviorEventsAsync(rows, {
+      onProgress: (total, done) => {
+        const percent = total > 0 ? Math.floor((done / total) * 100) : 100
+        updateLoading(percent, `${done}/${total}`)
+      },
+      onFirstBatch: () => {}
+    })
+    const shown = rows.length
+    const filterText = pid != null ? `${t('behavior_filter_pid')}: ${pid}` : t('behavior_filter_all')
+    setBehaviorMeta(`${filterText} · ${t('behavior_shown')}: ${shown}`)
+    setBehaviorStatus('')
+  } catch (e) {
+    setBehaviorError((e && e.message) ? e.message : t('behavior_events_load_failed'))
+  } finally {
+    hideLoading()
+    state.behavior.loading = false
+    updateBehaviorButtons()
+  }
+}
+
+function initBehavior() {
+  updateBehaviorTexts()
+
+  const btnRefresh = document.getElementById('behavior-btn-refresh-processes')
+  const btnRefreshEvents = document.getElementById('behavior-btn-refresh-events')
+  const btnApply = document.getElementById('behavior-btn-apply')
+  const btnClear = document.getElementById('behavior-btn-clear')
+
+  if (!state.tabCache.behaviorBound) {
+    const sel = document.getElementById('behavior-process-select')
+    if (sel) {
+      sel.onchange = () => {
+        const pid = parsePidValue(sel.value)
+        state.behavior.pid = pid
+        setBehaviorPidInput(pid)
+        setBehaviorProcessSelect(pid)
+        loadBehaviorEvents()
+      }
+    }
+
+    if (btnRefresh) {
+      btnRefresh.onclick = async () => {
+        await refreshBehaviorProcesses()
+      }
+    }
+    if (btnRefreshEvents) {
+      btnRefreshEvents.onclick = async () => {
+        await loadBehaviorEvents()
+      }
+    }
+    if (btnApply) {
+      btnApply.onclick = async () => {
+        const pid = getBehaviorPidFromInput()
+        state.behavior.pid = pid
+        setBehaviorProcessSelect(pid)
+        await loadBehaviorEvents()
+      }
+    }
+    if (btnClear) {
+      btnClear.onclick = async () => {
+        state.behavior.pid = null
+        setBehaviorPidInput(null)
+        setBehaviorProcessSelect(null)
+        await loadBehaviorEvents()
+      }
+    }
+    state.tabCache.behaviorBound = true
+  }
+
+  const cachedProcesses = Array.isArray(state.tabCache.behaviorProcesses) ? state.tabCache.behaviorProcesses : []
+  void renderBehaviorProcessesAsync(cachedProcesses)
+  renderBehaviorEvents([], false)
+
+  setBehaviorPidInput(state.behavior.pid)
+  setBehaviorProcessSelect(state.behavior.pid)
+  updateBehaviorButtons()
 }
 
 async function initQuarantine() {
@@ -1220,6 +1694,7 @@ function updateTexts() {
     if (state.page === 'overview') initOverview()
     if (state.page === 'scan') initScan()
     if (state.page === 'quarantine') initQuarantine()
+    if (state.page === 'behavior') updateBehaviorTexts()
     if (state.page === 'exclusions') initExclusions()
     if (state.page === 'settings') initSettings()
     updateHealthUi(lastHealthResult)
