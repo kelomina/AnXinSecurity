@@ -66,6 +66,16 @@ function handleGetDbPath(payload) {
   postMessage({ type: 'result', requestId: payload.requestId, data: store ? store.getDbPath() : null })
 }
 
+function handleClearAll(payload) {
+  if (!store) return postMessage({ type: 'result', requestId: payload.requestId, data: false })
+  try {
+    store.clearAll()
+    postMessage({ type: 'result', requestId: payload.requestId, data: true })
+  } catch {
+    postMessage({ type: 'result', requestId: payload.requestId, data: false })
+  }
+}
+
 async function close(payload) {
   clearFlushTimer()
   try {
@@ -89,6 +99,8 @@ if (parentPort) {
       handleListEvents(msg)
     } else if (type === 'getDbPath') {
       handleGetDbPath(msg)
+    } else if (type === 'clearAll') {
+      handleClearAll(msg)
     } else if (type === 'close') {
       close(msg).catch(() => process.exit(0))
     }

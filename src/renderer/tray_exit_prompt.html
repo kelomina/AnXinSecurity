@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN" data-bs-theme="dark">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';">
+    <title>AnXin Security</title>
+    <link rel="stylesheet" href="../../node_modules/bootstrap/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="./styles.css">
+    <style>
+      body { display:flex; align-items:center; justify-content:center; padding:14px; }
+      .tray-prompt-card { width:100%; max-width:560px; }
+      .tray-prompt-drag { -webkit-app-region: drag; }
+      .tray-prompt-nodrag { -webkit-app-region: no-drag; }
+      .tray-prompt-close { width: 34px; height: 34px; padding: 0; line-height: 32px; }
+    </style>
+  </head>
+  <body>
+    <div class="card tray-prompt-card">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <h5 id="prompt-title" class="mb-0 tray-prompt-drag flex-grow-1"></h5>
+        <button id="prompt-close" type="button" class="btn btn-sm btn-outline-secondary tray-prompt-nodrag tray-prompt-close">×</button>
+      </div>
+      <p id="prompt-message" class="text-muted mb-3"></p>
+      <div id="prompt-hint" class="small text-muted mb-3"></div>
+      <div class="d-flex justify-content-end gap-2 tray-prompt-nodrag">
+        <button id="btn-no" type="button" class="btn btn-outline-secondary"></button>
+        <button id="btn-yes" type="button" class="btn btn-primary"></button>
+      </div>
+    </div>
+    <script src="./tray_exit_prompt.js"></script>
+  </body>
+</html>

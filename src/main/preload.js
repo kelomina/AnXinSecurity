@@ -165,6 +165,14 @@ const api = {
   ui: {
     debug: (tag, payload) => { try { ipcRenderer.send('ui-debug', { tag, payload }) } catch {} }
   },
+  trayExitPrompt: {
+    submit: (requestId, keep) => {
+      const id = typeof requestId === 'string' ? requestId : ''
+      if (!id) return
+      const v = keep === true ? true : (keep === false ? false : null)
+      try { ipcRenderer.send('tray-exit-prompt:submit', { requestId: id, keep: v }) } catch {}
+    }
+  },
   system: {
     cpuUsage: () => process.cpuUsage(),
     cpuCount: () => os.cpus().length,
@@ -312,7 +320,11 @@ const api = {
   behavior: {
     getDbPath: () => ipcRenderer.invoke('behavior-get-db-path'),
     listProcesses: (query) => ipcRenderer.invoke('behavior-list-processes', query || {}),
-    listEvents: (query) => ipcRenderer.invoke('behavior-list-events', query || {})
+    listEvents: (query) => ipcRenderer.invoke('behavior-list-events', query || {}),
+    clearAll: () => ipcRenderer.invoke('behavior-clear-all'),
+    pauseEtw: () => ipcRenderer.invoke('behavior-pause-etw'),
+    clearDb: () => ipcRenderer.invoke('behavior-clear-db'),
+    resumeEtw: () => ipcRenderer.invoke('behavior-resume-etw')
   },
   quarantine: {
     list: () => {

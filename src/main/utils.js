@@ -40,6 +40,20 @@ async function forceDelete(filePath) {
   }
 }
 
+function resolveFileFromBaseDirs(baseDirs, relativeFilePath) {
+  const rel = typeof relativeFilePath === 'string' ? relativeFilePath.trim() : ''
+  if (!rel) return ''
+  const dirs = Array.isArray(baseDirs) ? baseDirs : []
+  for (const dir of dirs) {
+    if (typeof dir !== 'string' || !dir) continue
+    try {
+      const p = path.join(dir, rel)
+      if (fs.existsSync(p)) return p
+    } catch {}
+  }
+  return ''
+}
+
 function formatEtwEventForConsole(event) {
   if (!event || typeof event !== 'object') return ''
   const clean = (s) => {
@@ -307,5 +321,6 @@ module.exports = {
   isCleanText,
   isLikelyWindowsPath,
   isLikelyProcessImagePath,
-  isLikelyProcessImageText
+  isLikelyProcessImageText,
+  resolveFileFromBaseDirs
 };

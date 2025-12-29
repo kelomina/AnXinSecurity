@@ -81,7 +81,11 @@ function createBehaviorAnalyzer(appConfig = {}) {
   }
 
   function call(type, query) {
-    if (!worker) return Promise.resolve(type === 'getDbPath' ? dbPath : [])
+    if (!worker) {
+      if (type === 'getDbPath') return Promise.resolve(dbPath)
+      if (type === 'clearAll') return Promise.resolve(false)
+      return Promise.resolve([])
+    }
     const requestId = String(requestSeq++)
     return new Promise((resolve, reject) => {
       pending.set(requestId, { resolve, reject })
@@ -121,7 +125,8 @@ function createBehaviorAnalyzer(appConfig = {}) {
     ingest,
     getDbPath: () => dbPath,
     listProcesses: (q) => call('listProcesses', q),
-    listEvents: (q) => call('listEvents', q)
+    listEvents: (q) => call('listEvents', q),
+    clearAll: () => call('clearAll', {})
   }
 }
 

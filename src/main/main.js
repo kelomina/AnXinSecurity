@@ -9,7 +9,7 @@ const processes = require('./processes')
 const scanCache = require('./scan_cache')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
 const { resolveMainWindowOptions } = require('./window_options')
-const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter, sanitizeText, isCleanText, isLikelyProcessImageText } = require('./utils')
+const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter, sanitizeText, isCleanText, isLikelyProcessImageText, resolveFileFromBaseDirs } = require('./utils')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
 
 let winapi = null
@@ -63,6 +63,20 @@ const behavior = createBehaviorAnalyzer(config)
 const scannerClient = createScannerClient(() => config)
 let i18nDict = {}
 
+const trayExitPromptPending = new Map()
+ipcMain.on('tray-exit-prompt:submit', (_event, payload) => {
+  const p = payload && typeof payload === 'object' ? payload : {}
+  const requestId = typeof p.requestId === 'string' ? p.requestId : ''
+  if (!requestId) return
+  const pending = trayExitPromptPending.get(requestId)
+  if (!pending) return
+  trayExitPromptPending.delete(requestId)
+
+  const keep = p.keep === true ? true : (p.keep === false ? false : null)
+  try { if (pending.win && !pending.win.isDestroyed()) pending.win.close() } catch {}
+  try { pending.resolve(keep) } catch {}
+})
+
 function loadI18n() {
   try {
     const locale = (config && config.locale) ? config.locale : 'zh-CN'
@@ -90,6 +104,19 @@ let etwPidCacheMax = null
 let etwPidCacheTtlMs = null
 let etwPidResolveLimiter = null
 let etwPidResolveLimiterMax = null
+let etwControlSeq = 1
+const etwControlPending = new Map()
+let etwStartPending = null
+let etwLastStatus = null
+let etwLastError = null
+
+function resolveAppIconPath() {
+  try {
+    return resolveFileFromBaseDirs(getEngineBaseDirs(), 'favicon.ico')
+  } catch {
+    return ''
+  }
+}
 
 function getProcessNameFromPath(p) {
   if (typeof p !== 'string' || !p) return ''
@@ -170,6 +197,16 @@ function startEtwWorker() {
     etwWorker = new Worker(workerPath)
     
     etwWorker.on('message', (msg) => {
+      if (msg && (msg.type === 'paused' || msg.type === 'resumed')) {
+        const reqId = msg.requestId
+        const pending = etwControlPending.get(reqId)
+        if (pending) {
+          etwControlPending.delete(reqId)
+          try { if (pending.timer) clearTimeout(pending.timer) } catch {}
+          try { pending.resolve(msg) } catch {}
+        }
+        return
+      }
       if (msg.type === 'log') {
         eventLogs.unshift(msg.event)
         if (eventLogs.length > 500) eventLogs.pop()
@@ -221,32 +258,113 @@ function startEtwWorker() {
         }
       } else if (msg.type === 'error') {
         const code = msg && msg.code ? msg.code : 'ETW_ERROR'
+        etwLastError = { at: Date.now(), code, message: msg && msg.message ? msg.message : '', details: msg && msg.details ? msg.details : null }
+        if (etwStartPending) {
+          const p = etwStartPending
+          etwStartPending = null
+          try { if (p.timer) clearTimeout(p.timer) } catch {}
+          try { p.resolve(false) } catch {}
+        }
         console.error('主进程: ETW Worker 错误:', code, msg && msg.message ? msg.message : msg)
         if (msg && msg.details) console.error('主进程: ETW Worker 详情:', msg.details)
       } else if (msg.type === 'status') {
+        etwLastStatus = { at: Date.now(), message: msg.message }
+        if (etwStartPending) {
+          const text = msg && msg.message ? String(msg.message) : ''
+          const isStarted = text.includes('Monitoring started') || text.includes('ETW disabled by config')
+          if (isStarted) {
+            const p = etwStartPending
+            etwStartPending = null
+            try { if (p.timer) clearTimeout(p.timer) } catch {}
+            try { p.resolve(true) } catch {}
+          }
+        }
         console.log('主进程: ETW Worker 状态:', msg.message)
       }
     })
     
     etwWorker.on('error', (err) => {
       console.error('主进程: ETW Worker 崩溃:', err)
+      etwLastError = { at: Date.now(), code: 'ETW_WORKER_CRASH', message: err && err.message ? String(err.message) : String(err || ''), details: null }
+      if (etwStartPending) {
+        const p = etwStartPending
+        etwStartPending = null
+        try { if (p.timer) clearTimeout(p.timer) } catch {}
+        try { p.resolve(false) } catch {}
+      }
       etwWorker = null
     })
     
     etwWorker.on('exit', (code) => {
       console.log('主进程: ETW Worker 退出，代码', code)
+      etwLastStatus = { at: Date.now(), message: `worker exited (${code})` }
+      if (etwStartPending) {
+        const p = etwStartPending
+        etwStartPending = null
+        try { if (p.timer) clearTimeout(p.timer) } catch {}
+        try { p.resolve(false) } catch {}
+      }
       etwWorker = null
     })
     
-    etwWorker.postMessage({ type: 'start', config: (config && config.etw) ? config.etw : null })
+    void requestEtwStart()
     
   } catch (e) {
     console.error('主进程: 启动 ETW Worker 失败:', e)
   }
 }
 
+function requestEtwStart(timeoutMs = 5000) {
+  if (!etwWorker) return Promise.resolve(false)
+  if (etwStartPending) return etwStartPending.promise
+  const cfg = (config && config.etw) ? config.etw : null
+  let resolveFn = null
+  const promise = new Promise((resolve) => { resolveFn = resolve })
+  const timer = setTimeout(() => {
+    if (etwStartPending && etwStartPending.resolve === resolveFn) {
+      etwStartPending = null
+      resolveFn(false)
+    }
+  }, Math.max(250, timeoutMs || 0))
+  try { if (timer.unref) timer.unref() } catch {}
+  etwStartPending = { promise, resolve: resolveFn, timer }
+  try {
+    etwWorker.postMessage({ type: 'start', config: cfg })
+  } catch {
+    try { clearTimeout(timer) } catch {}
+    etwStartPending = null
+    resolveFn(false)
+  }
+  return promise
+}
+
+function controlEtwWorker(type) {
+  if (!etwWorker) return Promise.resolve({ ok: true, skipped: true })
+  const reqId = String(etwControlSeq++)
+  return new Promise((resolve) => {
+    const pending = { resolve, timer: null }
+    etwControlPending.set(reqId, pending)
+    const timer = setTimeout(() => {
+      if (etwControlPending.has(reqId)) etwControlPending.delete(reqId)
+      resolve({ ok: false, timeout: true })
+    }, 5000)
+    try { if (timer.unref) timer.unref() } catch {}
+    pending.timer = timer
+    try {
+      etwWorker.postMessage({ type, requestId: reqId })
+    } catch {
+      clearTimeout(timer)
+      if (etwControlPending.has(reqId)) etwControlPending.delete(reqId)
+      resolve({ ok: false })
+    }
+  })
+}
+
 function createSplash() {
+  const iconPath = resolveAppIconPath()
+  const iconOpt = iconPath ? { icon: iconPath } : {}
   splash = new BrowserWindow({
+    ...iconOpt,
     width: 400,
     height: 300,
     transparent: true,
@@ -268,9 +386,12 @@ function createSplash() {
 }
 
 function createWindow() {
+  const iconPath = resolveAppIconPath()
+  const iconOpt = iconPath ? { icon: iconPath } : {}
   const bounds = resolveMainWindowOptions(config)
   win = new BrowserWindow({
     ...bounds,
+    ...iconOpt,
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -327,40 +448,78 @@ function quitAllFromTray() {
   }
 }
 
+function showTrayExitPrompt(defaultKeep) {
+  const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`
+  return new Promise((resolve) => {
+    const p = path.join(__dirname, '../renderer/tray_exit_prompt.html')
+    const iconPath = resolveAppIconPath()
+    const iconOpt = iconPath ? { icon: iconPath } : {}
+    const promptWin = new BrowserWindow({
+      ...iconOpt,
+      width: 420,
+      height: 220,
+      resizable: false,
+      minimizable: false,
+      maximizable: false,
+      fullscreenable: false,
+      frame: false,
+      show: false,
+      alwaysOnTop: true,
+      skipTaskbar: true,
+      backgroundColor: '#0f1115',
+      webPreferences: {
+        preload: path.join(__dirname, './preload.js'),
+        contextIsolation: true,
+        nodeIntegration: false,
+        sandbox: false
+      }
+    })
+
+    trayExitPromptPending.set(requestId, { resolve, win: promptWin })
+    promptWin.on('closed', () => {
+      const pending = trayExitPromptPending.get(requestId)
+      if (!pending) return
+      trayExitPromptPending.delete(requestId)
+      try { pending.resolve(null) } catch {}
+    })
+
+    promptWin.loadFile(p, { query: { requestId, defaultKeep: defaultKeep ? '1' : '0' } })
+    promptWin.once('ready-to-show', () => {
+      try { promptWin.show() } catch {}
+      try { promptWin.focus() } catch {}
+    })
+  })
+}
+
 async function handleTrayExitClick() {
   if (trayExitInProgress) return
   trayExitInProgress = true
 
   const trayCfg = (config && config.tray) ? config.tray : {}
-  if (trayCfg.exitKeepScannerServicePrompt === false) return quitAllFromTray()
-
-  const defaultKeep = trayCfg.exitKeepScannerServiceDefault !== false
-  const defaultId = defaultKeep ? 0 : 1
-
-  let response = null
   try {
-    const browser = BrowserWindow.getFocusedWindow() || win
-    const res = await dialog.showMessageBox(browser, {
-      type: 'question',
-      buttons: [t('tray_exit_keep_service_yes'), t('tray_exit_keep_service_no')],
-      defaultId,
-      cancelId: defaultId,
-      noLink: true,
-      title: t('tray_exit_keep_service_title'),
-      message: t('tray_exit_keep_service_message')
-    })
-    response = res && Number.isFinite(res.response) ? res.response : null
-  } catch {}
+    if (trayCfg.exitKeepScannerServicePrompt === false) return quitAllFromTray()
 
-  const mode = resolveTrayExitMode({ response, defaultKeep })
-  if (mode === 'keep_service') return quitAppOnlyFromTray()
-  return quitAllFromTray()
+    const defaultKeep = trayCfg.exitKeepScannerServiceDefault !== false
+    const keep = await showTrayExitPrompt(defaultKeep)
+    const mode = resolveTrayExitMode({ keep, defaultKeep })
+    if (mode === 'keep_service') return quitAppOnlyFromTray()
+    return quitAllFromTray()
+  } finally {
+    trayExitInProgress = false
+  }
 }
 
 function createTray() {
-  const pngBase64 =
-    'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAGElEQVQYlWP8////fwYGBgYGJgYGBgYAAG1uCkqO3W1QAAAAAElFTkSuQmCC'
-  const image = nativeImage.createFromDataURL('data:image/png;base64,' + pngBase64)
+  const iconPath = resolveAppIconPath()
+  let image = null
+  try {
+    if (iconPath) image = nativeImage.createFromPath(iconPath)
+  } catch {}
+  if (!image || (typeof image.isEmpty === 'function' && image.isEmpty())) {
+    const pngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAoAAAAKCAYAAACNMs+9AAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAGElEQVQYlWP8////fwYGBgYGJgYGBgYAAG1uCkqO3W1QAAAAAElFTkSuQmCC'
+    image = nativeImage.createFromDataURL('data:image/png;base64,' + pngBase64)
+  }
   tray = new Tray(image)
   console.log('主进程: 创建系统托盘')
   const menu = Menu.buildFromTemplate([
@@ -463,6 +622,50 @@ app.whenReady().then(() => {
   ipcMain.handle('logs:list', () => eventLogs)
   ipcMain.handle('system-get-running-processes', () => processes.getRunningProcesses())
   ipcMain.handle('behavior-get-db-path', () => behavior.getDbPath())
+  ipcMain.handle('behavior-pause-etw', async () => {
+    try {
+      const res = await controlEtwWorker('pause')
+      return !!(res && res.ok)
+    } catch {
+      return false
+    }
+  })
+  ipcMain.handle('behavior-clear-db', async () => {
+    try {
+      const ok = await behavior.clearAll()
+      return ok === true
+    } catch {
+      return false
+    }
+  })
+  ipcMain.handle('behavior-clear-all', async () => {
+    try {
+      const paused = await controlEtwWorker('pause')
+      if (!(paused && paused.ok)) return false
+      const ok = await behavior.clearAll()
+      return ok === true
+    } catch {
+      return false
+    } finally {
+      try { await controlEtwWorker('resume') } catch {}
+    }
+  })
+  ipcMain.handle('behavior-resume-etw', async () => {
+    try {
+      if (!etwWorker) {
+        startEtwWorker()
+        return await requestEtwStart(6000)
+      }
+      const res = await controlEtwWorker('resume')
+      if (res && res.ok) return true
+      try { if (etwWorker) await etwWorker.terminate() } catch {}
+      etwWorker = null
+      startEtwWorker()
+      return await requestEtwStart(6000)
+    } catch {
+      return false
+    }
+  })
   ipcMain.handle('behavior-list-processes', async (_event, query) => {
     const list = await behavior.listProcesses(query || {})
     const arr = Array.isArray(list) ? list : []
@@ -499,6 +702,15 @@ app.whenReady().then(() => {
     if (!resolveProcessName) return arr
     refreshEtwPidCacheConfig(etwCfg)
     pruneEtwPidCache(now)
+    const hasDeviceResolver = !!(winapi && typeof winapi.devicePathToDosPath === 'function')
+    const normalizePath = (v) => {
+      if (typeof v !== 'string' || !v) return v
+      let s = sanitizeText(v)
+      if (hasDeviceResolver) {
+        try { s = winapi.devicePathToDosPath(s) || s } catch {}
+      }
+      return s
+    }
     return arr.map((ev) => {
       const out = Object.assign({}, ev)
       const actorPid = Number.isFinite(out.actor_pid) ? out.actor_pid : null
@@ -511,6 +723,8 @@ app.whenReady().then(() => {
       if (typeof out.subject_processName === 'string' && out.subject_processName) out.subject_processName = sanitizeText(out.subject_processName)
       if (!out.actor_processImage && actorImage) out.actor_processImage = actorImage
       if (!out.subject_processImage && subjectImage) out.subject_processImage = subjectImage
+      if (typeof out.file_path === 'string' && out.file_path) out.file_path = normalizePath(out.file_path)
+      if (typeof out.reg_key === 'string' && out.reg_key) out.reg_key = normalizePath(out.reg_key)
       if (!out.actor_processName && out.actor_processImage) out.actor_processName = getProcessNameFromPath(out.actor_processImage)
       if (!out.subject_processName && out.subject_processImage) out.subject_processName = getProcessNameFromPath(out.subject_processImage)
       if (actorPid != null) {
@@ -522,6 +736,22 @@ app.whenReady().then(() => {
         const info = resolveEtwProcessInfo(subjectPid, now, etwCfg)
         if (info && info.name) out.subject_processName = sanitizeText(info.name)
         if (info && info.imagePath) out.subject_processImage = info.imagePath
+      }
+      if (typeof out.actor_processImage === 'string' && out.actor_processImage) out.actor_processImage = normalizePath(out.actor_processImage)
+      if (typeof out.subject_processImage === 'string' && out.subject_processImage) out.subject_processImage = normalizePath(out.subject_processImage)
+      if (typeof out.raw_json === 'string' && out.raw_json) {
+        try {
+          const obj = JSON.parse(out.raw_json)
+          if (obj && typeof obj === 'object') {
+            const d = obj.data && typeof obj.data === 'object' ? obj.data : null
+            if (d) {
+              if (typeof d.keyPath === 'string' && d.keyPath) d.keyPath = normalizePath(d.keyPath)
+              if (typeof d.fileName === 'string' && d.fileName) d.fileName = normalizePath(d.fileName)
+              if (typeof d.imageName === 'string' && d.imageName) d.imageName = normalizePath(d.imageName)
+              out.raw_json = JSON.stringify(obj)
+            }
+          }
+        } catch {}
       }
       if (out.actor_processName && !isCleanText(out.actor_processName)) out.actor_processName = ''
       if (out.subject_processName && !isCleanText(out.subject_processName)) out.subject_processName = ''

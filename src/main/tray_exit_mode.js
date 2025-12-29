@@ -1,8 +1,7 @@
-function resolveTrayExitMode({ response, defaultKeep = true } = {}) {
-  if (response === 0) return 'keep_service'
-  if (response === 1) return 'full_exit'
+function resolveTrayExitMode({ keep, defaultKeep = true } = {}) {
+  if (keep === true) return 'keep_service'
+  if (keep === false) return 'full_exit'
   return defaultKeep ? 'keep_service' : 'full_exit'
 }
 
 module.exports = { resolveTrayExitMode }
-

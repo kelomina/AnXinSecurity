@@ -233,6 +233,7 @@ let processTraceDone = null;
 let resolveProcessTraceDone = null;
 let lastCallbackErrorAt = 0;
 let etwCfg = null;
+let lastPayloadCfg = null;
 
 const DEFAULT_ETW_CFG = {
     enabled: true,
@@ -826,6 +827,7 @@ async function stopSession(timeoutMs) {
 }
 
 async function startWithRetry(payloadCfg) {
+    lastPayloadCfg = payloadCfg || lastPayloadCfg;
     etwCfg = resolveEtwCfg(payloadCfg);
     if (!etwCfg.enabled) {
         postMessage({ type: 'status', message: 'ETW disabled by config' });
@@ -964,7 +966,25 @@ if (parentPort) {
                 });
                 return;
             }
+            if (msg && typeof msg === 'object' && msg.type === 'pause') {
+                const timeoutMs = (etwCfg && etwCfg.stopTimeoutMs) ? etwCfg.stopTimeoutMs : DEFAULT_ETW_CFG.stopTimeoutMs;
+                const reqId = msg.requestId || null;
+                Promise.resolve()
+                    .then(() => stopSession(timeoutMs))
+                    .then((ok) => postMessage({ type: 'paused', requestId: reqId, ok: !!ok }))
+                    .catch(() => postMessage({ type: 'paused', requestId: reqId, ok: false }));
+                return;
+            }
+            if (msg && typeof msg === 'object' && msg.type === 'resume') {
+                const reqId = msg.requestId || null;
+                Promise.resolve()
+                    .then(() => startWithRetry(lastPayloadCfg))
+                    .then(() => postMessage({ type: 'resumed', requestId: reqId, ok: !!isSessionRunning }))
+                    .catch(() => postMessage({ type: 'resumed', requestId: reqId, ok: false }));
+                return;
+            }
             if (msg && typeof msg === 'object' && msg.type === 'config') {
+                lastPayloadCfg = msg.config || lastPayloadCfg;
                 etwCfg = resolveEtwCfg(msg.config);
                 return;
             }

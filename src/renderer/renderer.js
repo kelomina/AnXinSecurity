@@ -16,6 +16,13 @@ const state = {
     processSnapshotId: 0,
     processSnapshotActiveId: 0
   },
+  behaviorLifecycle: {
+    pid: null,
+    loading: false,
+    process: null,
+    events: [],
+    view: 'tree'
+  },
   engineStatus: 'ok',
   metricsFromCache: false
 }
@@ -91,6 +98,9 @@ function showPage(p) {
   }
   if (p === 'behavior') {
     initBehavior()
+  }
+  if (p === 'behavior-lifecycle') {
+    initBehaviorLifecycle()
   }
   if (p === 'exclusions') {
     initExclusions()
@@ -1148,6 +1158,10 @@ function updateBehaviorButtons() {
   if (btnApply) btnApply.disabled = state.behavior.loading
   const btnClear = document.getElementById('behavior-btn-clear')
   if (btnClear) btnClear.disabled = state.behavior.loading
+  const btnLifecycle = document.getElementById('behavior-btn-lifecycle')
+  if (btnLifecycle) btnLifecycle.disabled = state.behavior.loading
+  const btnClearAll = document.getElementById('behavior-btn-clear-all')
+  if (btnClearAll) btnClearAll.disabled = state.behavior.loading
   const btnRefresh = document.getElementById('behavior-btn-refresh-processes')
   if (btnRefresh) btnRefresh.disabled = state.behavior.loading
   const btnRefreshEvents = document.getElementById('behavior-btn-refresh-events')
@@ -1296,6 +1310,8 @@ function updateBehaviorTexts() {
   if (btnRefresh) btnRefresh.textContent = t('behavior_refresh_processes')
   const btnRefreshEvents = document.getElementById('behavior-btn-refresh-events')
   if (btnRefreshEvents) btnRefreshEvents.textContent = t('behavior_refresh_events')
+  const btnClearAll = document.getElementById('behavior-btn-clear-all')
+  if (btnClearAll) btnClearAll.textContent = t('behavior_clear_all')
 
   const labelProc = document.getElementById('behavior-label-processes')
   if (labelProc) labelProc.textContent = t('behavior_label_processes')
@@ -1321,6 +1337,471 @@ function updateBehaviorTexts() {
   if (btnApply) btnApply.textContent = t('behavior_apply')
   const btnClear = document.getElementById('behavior-btn-clear')
   if (btnClear) btnClear.textContent = t('behavior_clear')
+  const btnLifecycle = document.getElementById('behavior-btn-lifecycle')
+  if (btnLifecycle) btnLifecycle.textContent = t('behavior_view_lifecycle')
+}
+
+function setBehaviorLifecycleError(msg) {
+  const el = document.getElementById('behavior-lifecycle-error')
+  if (!el) return
+  if (typeof msg === 'string' && msg.trim()) {
+    el.textContent = msg.trim()
+    el.style.display = 'block'
+  } else {
+    el.textContent = ''
+    el.style.display = 'none'
+  }
+}
+
+function setBehaviorLifecycleStatus(msg) {
+  const el = document.getElementById('behavior-lifecycle-status')
+  if (!el) return
+  el.textContent = msg || ''
+}
+
+function setBehaviorLifecycleMeta(msg) {
+  const el = document.getElementById('behavior-lifecycle-meta')
+  if (!el) return
+  el.textContent = msg || ''
+}
+
+function getBehaviorLifecyclePidFromInput() {
+  const input = document.getElementById('behavior-lifecycle-pid-input')
+  if (!input) return null
+  return parsePidValue(input.value)
+}
+
+function setBehaviorLifecyclePidInput(pid) {
+  const input = document.getElementById('behavior-lifecycle-pid-input')
+  if (!input) return
+  input.value = pid != null ? String(pid) : ''
+}
+
+function updateBehaviorLifecycleButtons() {
+  const disabled = !!state.behaviorLifecycle.loading
+  const btnBack = document.getElementById('behavior-lifecycle-btn-back')
+  if (btnBack) btnBack.disabled = disabled
+  const btnRefresh = document.getElementById('behavior-lifecycle-btn-refresh')
+  if (btnRefresh) btnRefresh.disabled = disabled
+  const btnOpen = document.getElementById('behavior-lifecycle-btn-open')
+  if (btnOpen) btnOpen.disabled = disabled
+  const btnToggle = document.getElementById('behavior-lifecycle-btn-toggle-mitre')
+  if (btnToggle) btnToggle.disabled = disabled
+}
+
+function updateBehaviorLifecycleTexts() {
+  const title = document.getElementById('behavior-lifecycle-title')
+  if (title) title.textContent = t('behavior_lifecycle_title')
+  const desc = document.getElementById('behavior-lifecycle-desc')
+  if (desc) desc.textContent = t('behavior_lifecycle_desc')
+
+  const labelPid = document.getElementById('behavior-lifecycle-label-pid')
+  if (labelPid) labelPid.textContent = t('behavior_label_pid')
+
+  const btnBack = document.getElementById('behavior-lifecycle-btn-back')
+  if (btnBack) btnBack.textContent = t('btn_back')
+  const btnRefresh = document.getElementById('behavior-lifecycle-btn-refresh')
+  if (btnRefresh) btnRefresh.textContent = t('behavior_refresh_events')
+  const btnOpen = document.getElementById('behavior-lifecycle-btn-open')
+  if (btnOpen) btnOpen.textContent = t('behavior_lifecycle_open')
+  const btnToggle = document.getElementById('behavior-lifecycle-btn-toggle-mitre')
+  if (btnToggle) btnToggle.textContent = (state.behaviorLifecycle.view === 'mitre') ? t('behavior_mitre_show_tree') : t('behavior_mitre_show_matrix')
+}
+
+function getProcessDisplayName(p) {
+  if (!p || typeof p !== 'object') return ''
+  const name = (typeof p.name === 'string' && p.name.trim()) ? p.name.trim() : ''
+  const image = (typeof p.image === 'string' && p.image.trim()) ? p.image.trim() : ''
+  return name || (image ? getBaseName(image) : '')
+}
+
+function renderBehaviorLifecycleSummary(pid, proc, events) {
+  const host = document.getElementById('behavior-lifecycle-summary')
+  if (!host) return
+  host.innerHTML = ''
+
+  const ppid = proc && Number.isFinite(proc.ppid) ? proc.ppid : ''
+  const name = getProcessDisplayName(proc)
+  const image = proc && typeof proc.image === 'string' ? proc.image : ''
+  const firstSeen = proc && typeof proc.first_seen === 'string' ? proc.first_seen : ''
+  const lastSeen = proc && typeof proc.last_seen === 'string' ? proc.last_seen : ''
+  const exitedAt = proc && typeof proc.exited_at === 'string' ? proc.exited_at : ''
+
+  const arr = Array.isArray(events) ? events : []
+  const total = arr.length
+  const sorted = arr.slice().sort((a, b) => {
+    const ia = Number.isFinite(a && a.id) ? a.id : 0
+    const ib = Number.isFinite(b && b.id) ? b.id : 0
+    return ia - ib
+  })
+  const startedAt = sorted.length && typeof sorted[0].ts === 'string' ? sorted[0].ts : ''
+  const endedAt = sorted.length && typeof sorted[sorted.length - 1].ts === 'string' ? sorted[sorted.length - 1].ts : ''
+
+  const grid = document.createElement('div')
+  grid.className = 'lifecycle-summary-grid'
+
+  const item = (label, value) => {
+    const box = document.createElement('div')
+    box.className = 'lifecycle-summary-item'
+    const l = document.createElement('div')
+    l.className = 'lifecycle-summary-label'
+    l.textContent = label
+    const v = document.createElement('div')
+    v.className = 'lifecycle-summary-value'
+    v.textContent = value || t('unknown')
+    v.title = v.textContent
+    box.appendChild(l)
+    box.appendChild(v)
+    return box
+  }
+
+  grid.appendChild(item('PID', pid != null ? String(pid) : ''))
+  grid.appendChild(item('PPID', ppid !== '' ? String(ppid) : ''))
+  grid.appendChild(item(t('behavior_lifecycle_field_name'), name))
+  grid.appendChild(item(t('behavior_lifecycle_field_image'), image))
+  grid.appendChild(item(t('behavior_lifecycle_field_first_seen'), firstSeen))
+  grid.appendChild(item(t('behavior_lifecycle_field_last_seen'), lastSeen))
+  grid.appendChild(item(t('behavior_lifecycle_field_started_at'), startedAt))
+  grid.appendChild(item(t('behavior_lifecycle_field_ended_at'), endedAt))
+  grid.appendChild(item(t('behavior_lifecycle_field_exited_at'), exitedAt))
+  grid.appendChild(item(t('behavior_lifecycle_field_total_events'), String(total)))
+
+  host.appendChild(grid)
+}
+
+function getBehaviorMitreCfg() {
+  const cfg = window.api && window.api.config ? window.api.config.get() : null
+  const src = cfg && cfg.behaviorMitre && typeof cfg.behaviorMitre === 'object' ? cfg.behaviorMitre : {}
+  const enabled = src.enabled !== false
+  const tactics = Array.isArray(src.tactics) ? src.tactics.map(String).filter(Boolean) : []
+  const rules = Array.isArray(src.rules) ? src.rules : []
+  return { enabled, tactics, rules }
+}
+
+function setBehaviorLifecycleView(view) {
+  const v = view === 'mitre' ? 'mitre' : 'tree'
+  state.behaviorLifecycle.view = v
+
+  const tree = document.getElementById('behavior-lifecycle-tree')
+  const mitre = document.getElementById('behavior-lifecycle-mitre')
+  if (tree) tree.style.display = v === 'tree' ? 'block' : 'none'
+  if (mitre) mitre.style.display = v === 'mitre' ? 'block' : 'none'
+
+  updateBehaviorLifecycleTexts()
+}
+
+function renderBehaviorLifecycleTree(pid, proc, events) {
+  const host = document.getElementById('behavior-lifecycle-tree')
+  if (!host) return
+  host.innerHTML = ''
+  const builder = window.behaviorRender && window.behaviorRender.buildPidLifecycleTree
+  const tree = (typeof builder === 'function')
+    ? builder({ pid, process: proc || {}, events: Array.isArray(events) ? events : [], t })
+    : null
+
+  if (!tree || !tree.label) {
+    const empty = document.createElement('div')
+    empty.className = 'text-center text-muted'
+    empty.textContent = t('behavior_lifecycle_empty')
+    host.appendChild(empty)
+    return
+  }
+
+  const makeNodeEl = (node) => {
+    const wrap = document.createElement('div')
+    wrap.className = 'tree-node'
+
+    const textWrap = document.createElement('div')
+    textWrap.className = 'd-flex flex-column'
+
+    const titleRow = document.createElement('div')
+    titleRow.className = 'tree-title'
+    titleRow.title = typeof node.label === 'string' ? node.label : ''
+
+    if (node && node.kind === 'pid' && Number.isFinite(node.pid) && node.pid !== pid) {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      btn.className = 'tree-pid-link'
+      btn.textContent = typeof node.label === 'string' ? node.label : String(node.pid)
+      btn.onclick = () => openBehaviorLifecycle(node.pid)
+      titleRow.appendChild(btn)
+    } else {
+      titleRow.textContent = typeof node.label === 'string' ? node.label : ''
+    }
+
+    textWrap.appendChild(titleRow)
+
+    const hint = typeof node.hint === 'string' ? node.hint : ''
+    if (hint) {
+      const hintEl = document.createElement('div')
+      hintEl.className = 'tree-hint'
+      hintEl.textContent = hint
+      hintEl.title = hint
+      textWrap.appendChild(hintEl)
+    }
+
+    wrap.appendChild(textWrap)
+
+    const cnt = Number.isFinite(node && node.count) ? node.count : null
+    if (cnt != null && cnt > 1 && node.kind !== 'event') {
+      const badge = document.createElement('span')
+      badge.className = 'tree-count'
+      badge.textContent = String(cnt)
+      wrap.appendChild(badge)
+    }
+    return wrap
+  }
+
+  const buildDom = (node) => {
+    const li = document.createElement('li')
+    li.appendChild(makeNodeEl(node))
+    const children = Array.isArray(node && node.children) ? node.children : []
+    if (children.length) {
+      const ul = document.createElement('ul')
+      for (const ch of children) ul.appendChild(buildDom(ch))
+      li.appendChild(ul)
+    }
+    return li
+  }
+
+  const ul = document.createElement('ul')
+  ul.className = 'tree'
+  ul.appendChild(buildDom(tree))
+  host.appendChild(ul)
+}
+
+function renderBehaviorLifecycleMitre(pid, proc, events) {
+  const host = document.getElementById('behavior-lifecycle-mitre')
+  if (!host) return
+  host.innerHTML = ''
+
+  const cfg = getBehaviorMitreCfg()
+  if (!cfg.enabled) {
+    const el = document.createElement('div')
+    el.className = 'text-center text-muted'
+    el.textContent = t('behavior_mitre_disabled')
+    host.appendChild(el)
+    return
+  }
+
+  const builder = window.behaviorRender && window.behaviorRender.buildMitreMatrixModel
+  const model = (typeof builder === 'function')
+    ? builder({ pid, process: proc || {}, events: Array.isArray(events) ? events : [], cfg, t })
+    : null
+
+  if (!model || !Array.isArray(model.columns) || model.columns.length === 0) {
+    const el = document.createElement('div')
+    el.className = 'text-center text-muted'
+    el.textContent = t('behavior_mitre_empty')
+    host.appendChild(el)
+    return
+  }
+
+  const stats = `${t('behavior_mitre_matched')}: ${model.matchedEvents || 0} · ${t('behavior_mitre_unmatched')}: ${model.unmatchedEvents || 0}`
+  setBehaviorLifecycleStatus(stats)
+
+  const grid = document.createElement('div')
+  grid.className = 'mitre-matrix'
+
+  const makeExample = (ex) => {
+    const row = document.createElement('div')
+    row.className = 'example'
+    const label = (ex && typeof ex.label === 'string') ? ex.label : ''
+    const hint = (ex && typeof ex.hint === 'string') ? ex.hint : ''
+    row.textContent = hint ? `${label} · ${hint}` : label
+    row.title = row.textContent
+    return row
+  }
+
+  for (const col of model.columns) {
+    const colEl = document.createElement('div')
+    colEl.className = 'mitre-column'
+
+    const head = document.createElement('div')
+    head.className = 'mitre-column-title'
+    const nameEl = document.createElement('div')
+    nameEl.className = 'name'
+    nameEl.textContent = col && typeof col.tactic === 'string' ? col.tactic : ''
+    nameEl.title = nameEl.textContent
+    const countEl = document.createElement('div')
+    countEl.className = 'count'
+    const colCount = Array.isArray(col && col.techniques) ? col.techniques.reduce((s, it) => s + (it.count || 0), 0) : 0
+    countEl.textContent = String(colCount)
+    head.appendChild(nameEl)
+    head.appendChild(countEl)
+    colEl.appendChild(head)
+
+    const techniques = Array.isArray(col && col.techniques) ? col.techniques : []
+    if (!techniques.length) {
+      const empty = document.createElement('div')
+      empty.className = 'text-muted small'
+      empty.textContent = t('behavior_mitre_no_hits')
+      colEl.appendChild(empty)
+    } else {
+      for (const tech of techniques) {
+        const card = document.createElement('div')
+        card.className = 'mitre-tech'
+
+        const header = document.createElement('div')
+        header.className = 'mitre-tech-header'
+
+        const titleWrap = document.createElement('div')
+        titleWrap.className = 'mitre-tech-title'
+
+        const idEl = document.createElement('div')
+        idEl.className = 'id'
+        idEl.textContent = tech && typeof tech.techniqueId === 'string' ? tech.techniqueId : ''
+
+        const nmEl = document.createElement('div')
+        nmEl.className = 'name'
+        nmEl.textContent = tech && typeof tech.techniqueName === 'string' ? tech.techniqueName : ''
+        nmEl.title = nmEl.textContent
+
+        titleWrap.appendChild(idEl)
+        titleWrap.appendChild(nmEl)
+
+        const badge = document.createElement('div')
+        badge.className = 'mitre-tech-badge'
+        badge.textContent = String(tech && tech.count ? tech.count : 0)
+
+        header.appendChild(titleWrap)
+        header.appendChild(badge)
+        card.appendChild(header)
+
+        const exWrap = document.createElement('div')
+        exWrap.className = 'mitre-tech-examples'
+        const examples = Array.isArray(tech && tech.examples) ? tech.examples : []
+        for (const ex of examples) exWrap.appendChild(makeExample(ex))
+        card.appendChild(exWrap)
+
+        header.onclick = () => {
+          exWrap.classList.toggle('show')
+        }
+
+        colEl.appendChild(card)
+      }
+    }
+
+    grid.appendChild(colEl)
+  }
+
+  host.appendChild(grid)
+}
+
+async function loadBehaviorLifecycle(pidOverride) {
+  if (!window.api || !window.api.behavior || !window.api.behavior.listEvents) return
+  if (state.behaviorLifecycle.loading) return
+  const pid = pidOverride != null ? pidOverride : state.behaviorLifecycle.pid
+  if (pid == null) return
+
+  state.behaviorLifecycle.loading = true
+  setBehaviorLifecycleError('')
+  setBehaviorLifecycleStatus('')
+  updateBehaviorLifecycleButtons()
+
+  try {
+    await showLoading(t('behavior_lifecycle_loading'), t('please_wait'), 0, '')
+    let processes = Array.isArray(state.tabCache.behaviorProcesses) ? state.tabCache.behaviorProcesses : []
+    if (!processes.length && window.api.behavior.listProcesses) {
+      const list = await window.api.behavior.listProcesses({ limit: 5000, offset: 0 })
+      processes = Array.isArray(list) ? list : []
+      state.tabCache.behaviorProcesses = processes
+    }
+    const proc = processes.find(p => Number.isFinite(p && p.pid) && p.pid === pid) || null
+
+    const list = await window.api.behavior.listEvents({ pid, limit: Infinity, offset: 0 })
+    const rows = Array.isArray(list) ? list : []
+
+    state.behaviorLifecycle.pid = pid
+    state.behaviorLifecycle.process = proc
+    state.behaviorLifecycle.events = rows
+
+    setBehaviorLifecyclePidInput(pid)
+    renderBehaviorLifecycleSummary(pid, proc, rows)
+    if (state.behaviorLifecycle.view === 'mitre') {
+      renderBehaviorLifecycleMitre(pid, proc, rows)
+    } else {
+      renderBehaviorLifecycleTree(pid, proc, rows)
+    }
+
+    const shown = rows.length
+    setBehaviorLifecycleMeta(`${t('behavior_filter_pid')}: ${pid} · ${t('behavior_shown')}: ${shown}`)
+  } catch (e) {
+    setBehaviorLifecycleError((e && e.message) ? e.message : t('behavior_events_load_failed'))
+  } finally {
+    hideLoading()
+    state.behaviorLifecycle.loading = false
+    updateBehaviorLifecycleButtons()
+  }
+}
+
+function openBehaviorLifecycle(pid) {
+  const p = parsePidValue(pid)
+  if (p == null) return
+  state.behaviorLifecycle.pid = p
+  showPage('behavior-lifecycle')
+  setBehaviorLifecycleView(state.behaviorLifecycle.view)
+  void loadBehaviorLifecycle(p)
+}
+
+function initBehaviorLifecycle() {
+  updateBehaviorLifecycleTexts()
+
+  if (!state.tabCache.behaviorLifecycleBound) {
+    const btnBack = document.getElementById('behavior-lifecycle-btn-back')
+    const btnRefresh = document.getElementById('behavior-lifecycle-btn-refresh')
+    const btnOpen = document.getElementById('behavior-lifecycle-btn-open')
+    const btnToggle = document.getElementById('behavior-lifecycle-btn-toggle-mitre')
+    const input = document.getElementById('behavior-lifecycle-pid-input')
+
+    if (btnBack) btnBack.onclick = () => showPage('behavior')
+    if (btnRefresh) btnRefresh.onclick = () => void loadBehaviorLifecycle()
+    if (btnOpen) btnOpen.onclick = () => {
+      const pid = getBehaviorLifecyclePidFromInput()
+      if (pid == null) {
+        alert(t('behavior_lifecycle_pid_required'))
+        return
+      }
+      openBehaviorLifecycle(pid)
+    }
+    if (input) {
+      input.onkeydown = (e) => {
+        if (e && e.key === 'Enter') {
+          const pid = getBehaviorLifecyclePidFromInput()
+          if (pid == null) {
+            alert(t('behavior_lifecycle_pid_required'))
+            return
+          }
+          openBehaviorLifecycle(pid)
+        }
+      }
+    }
+    if (btnToggle) {
+      btnToggle.onclick = () => {
+        const cfg = getBehaviorMitreCfg()
+        if (!cfg.enabled) {
+          alert(t('behavior_mitre_disabled'))
+          return
+        }
+        const next = state.behaviorLifecycle.view === 'mitre' ? 'tree' : 'mitre'
+        setBehaviorLifecycleView(next)
+        const pid = state.behaviorLifecycle.pid
+        const proc = state.behaviorLifecycle.process
+        const events = state.behaviorLifecycle.events
+        if (pid != null && Array.isArray(events) && events.length) {
+          if (next === 'mitre') renderBehaviorLifecycleMitre(pid, proc, events)
+          else renderBehaviorLifecycleTree(pid, proc, events)
+        } else if (pid != null) {
+          void loadBehaviorLifecycle(pid)
+        }
+      }
+    }
+    state.tabCache.behaviorLifecycleBound = true
+  }
+
+  setBehaviorLifecyclePidInput(state.behaviorLifecycle.pid)
+  setBehaviorLifecycleView(state.behaviorLifecycle.view)
+  updateBehaviorLifecycleButtons()
 }
 
 async function refreshBehaviorProcesses() {
@@ -1453,8 +1934,10 @@ function initBehavior() {
 
   const btnRefresh = document.getElementById('behavior-btn-refresh-processes')
   const btnRefreshEvents = document.getElementById('behavior-btn-refresh-events')
+  const btnClearAll = document.getElementById('behavior-btn-clear-all')
   const btnApply = document.getElementById('behavior-btn-apply')
   const btnClear = document.getElementById('behavior-btn-clear')
+  const btnLifecycle = document.getElementById('behavior-btn-lifecycle')
 
   if (!state.tabCache.behaviorBound) {
     const sel = document.getElementById('behavior-process-select')
@@ -1478,6 +1961,60 @@ function initBehavior() {
         await loadBehaviorEvents()
       }
     }
+    if (btnClearAll) {
+      btnClearAll.onclick = async () => {
+        if (!window.api || !window.api.behavior) return
+        if (!window.api.behavior.pauseEtw || !window.api.behavior.clearDb || !window.api.behavior.resumeEtw) return
+        if (state.behavior.loading) return
+        const ok = confirm(t('behavior_clear_all_confirm'))
+        if (!ok) return
+
+        state.behavior.loading = true
+        setBehaviorError('')
+        updateBehaviorButtons()
+        let paused = false
+        try {
+          await showLoading(t('behavior_clearing'), t('please_wait'), 0, '')
+          const pauseOk = await window.api.behavior.pauseEtw()
+          paused = pauseOk === true
+          if (!paused) {
+            alert(t('behavior_clear_all_failed'))
+            return
+          }
+
+          const cleared = await window.api.behavior.clearDb()
+          if (!cleared) {
+            alert(t('behavior_clear_all_failed'))
+            return
+          }
+
+          state.behavior.pid = null
+          setBehaviorPidInput(null)
+          setBehaviorProcessSelect(null)
+          state.tabCache.behaviorProcesses = []
+          state.tabCache.behaviorEvents = []
+
+          await renderBehaviorProcessesAsync([])
+          renderBehaviorEvents([], false)
+          setBehaviorMeta(`${t('behavior_filter_all')} · ${t('behavior_shown')}: 0`)
+          setBehaviorStatus('')
+        } catch {
+          alert(t('behavior_clear_all_failed'))
+        } finally {
+          if (paused) {
+            try {
+              const resumed = await window.api.behavior.resumeEtw()
+              if (!resumed) alert(t('behavior_clear_all_failed'))
+            } catch {
+              alert(t('behavior_clear_all_failed'))
+            }
+          }
+          hideLoading()
+          state.behavior.loading = false
+          updateBehaviorButtons()
+        }
+      }
+    }
     if (btnApply) {
       btnApply.onclick = async () => {
         const pid = getBehaviorPidFromInput()
@@ -1492,6 +2029,16 @@ function initBehavior() {
         setBehaviorPidInput(null)
         setBehaviorProcessSelect(null)
         await loadBehaviorEvents()
+      }
+    }
+    if (btnLifecycle) {
+      btnLifecycle.onclick = () => {
+        const pid = state.behavior.pid != null ? state.behavior.pid : getBehaviorPidFromInput()
+        if (pid == null) {
+          alert(t('behavior_lifecycle_pid_required'))
+          return
+        }
+        openBehaviorLifecycle(pid)
       }
     }
     state.tabCache.behaviorBound = true
@@ -1695,6 +2242,7 @@ function updateTexts() {
     if (state.page === 'scan') initScan()
     if (state.page === 'quarantine') initQuarantine()
     if (state.page === 'behavior') updateBehaviorTexts()
+    if (state.page === 'behavior-lifecycle') updateBehaviorLifecycleTexts()
     if (state.page === 'exclusions') initExclusions()
     if (state.page === 'settings') initSettings()
     updateHealthUi(lastHealthResult)

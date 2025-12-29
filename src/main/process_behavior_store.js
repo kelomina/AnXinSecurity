@@ -221,6 +221,18 @@ class ProcessBehaviorStore {
     } catch {}
   }
 
+  clearAll() {
+    try {
+      this.db.run('DELETE FROM event')
+    } catch {}
+    try {
+      this.db.run('DELETE FROM process')
+    } catch {}
+    try {
+      this.db.run(`DELETE FROM sqlite_sequence WHERE name = 'event'`)
+    } catch {}
+  }
+
   _shouldSkipEvent(provider, op) {
     const p = typeof provider === 'string' ? provider : ''
     const o = typeof op === 'string' ? op : ''

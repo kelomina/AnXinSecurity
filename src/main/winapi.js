@@ -1,3 +1,4 @@
+const fs = require('fs');
 const koffi = require('koffi');
 
 const libKernel32 = koffi.load('kernel32.dll');
@@ -66,6 +67,7 @@ const ERROR_SUCCESS = 0;
 
 const OpenProcess = libKernel32.func('__stdcall', 'OpenProcess', HANDLE, [DWORD, BOOL, DWORD]);
 const CloseHandle = libKernel32.func('__stdcall', 'CloseHandle', BOOL, [HANDLE]);
+const QueryDosDeviceW = libKernel32.func('__stdcall', 'QueryDosDeviceW', DWORD, ['string16', koffi.out(LPWSTR), DWORD]);
 const EnumProcesses = libPsapi.func('__stdcall', 'EnumProcesses', BOOL, [koffi.out('uint32_t *'), DWORD, koffi.out('uint32_t *')]);
 const EnumProcessModules = libPsapi.func('__stdcall', 'EnumProcessModules', BOOL, [HANDLE, koffi.out('void *'), DWORD, koffi.out('uint32_t *')]);
 const GetModuleFileNameExW = libPsapi.func('__stdcall', 'GetModuleFileNameExW', DWORD, [HANDLE, HMODULE, koffi.out(LPWSTR), DWORD]);
@@ -155,6 +157,69 @@ function getProcessImagePathByPid(pid) {
     } finally {
         try { CloseHandle(hProcess); } catch {}
     }
+}
+
+let driveDeviceMapCache = null;
+
+function listExistingDriveNames() {
+    const out = [];
+    const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+    for (let i = 0; i < letters.length; i++) {
+        const driveName = letters[i] + ':';
+        const root = driveName + '\\';
+        try {
+            if (fs.existsSync(root)) out.push(driveName);
+        } catch {}
+    }
+    return out;
+}
+
+function queryDosDevice(deviceName) {
+    const maxChars = 32768;
+    const buf = Buffer.alloc(maxChars * 2);
+    let n = 0;
+    try {
+        n = QueryDosDeviceW(deviceName, buf, maxChars) >>> 0;
+    } catch {
+        n = 0;
+    }
+    if (!n) return [];
+    const raw = buf.toString('utf16le', 0, n * 2);
+    return raw.split('\u0000').filter(Boolean);
+}
+
+function getDriveDeviceMap() {
+    if (driveDeviceMapCache) return driveDeviceMapCache;
+    const map = new Map();
+    const drives = listExistingDriveNames();
+    for (const driveName of drives) {
+        const targets = queryDosDevice(driveName);
+        for (const t of targets) {
+            const s = typeof t === 'string' ? t.trim() : '';
+            if (!s) continue;
+            if (!s.startsWith('\\Device\\')) continue;
+            map.set(s.toLowerCase(), driveName);
+        }
+    }
+    driveDeviceMapCache = map;
+    return map;
+}
+
+function devicePathToDosPath(p) {
+    if (typeof p !== 'string') return '';
+    let s = p.trim();
+    if (!s) return '';
+    if (s.startsWith('\\??\\')) s = s.substring(4);
+    if (/^[a-zA-Z]:[\\/]/.test(s)) return s;
+    const lower = s.toLowerCase();
+    if (!lower.startsWith('\\device\\')) return s;
+
+    const map = getDriveDeviceMap();
+    for (const [dev, driveName] of map.entries()) {
+        if (lower === dev) return driveName + '\\';
+        if (lower.startsWith(dev + '\\')) return driveName + s.substring(dev.length);
+    }
+    return s;
 }
 
 
@@ -261,5 +326,7 @@ function getProcessPaths() {
 
 module.exports = {
     getProcessPaths,
-    getProcessImagePathByPid
+    getProcessImagePathByPid,
+    getDriveDeviceMap,
+    devicePathToDosPath
 };

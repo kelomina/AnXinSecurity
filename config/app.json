@@ -77,11 +77,92 @@
   "behaviorAnalyzer": {
     "enabled": true,
     "flushIntervalMs": 100,
-    "sqlite": { "mode": "file", "directory": "%TEMP%", "fileName": "anxin_etw_behavior.db" },
+    "sqlite": {
+      "mode": "file",
+      "directory": "%TEMP%",
+      "fileName": "anxin_etw_behavior.db"
+    },
     "filters": {
-      "Registry": { "skipOps": ["OpenKey", "CloseKey", "QueryValue", "QueryKey", "EnumerateKey","SetInformationKey","EnumerateValue"] },
-      "Process": { "skipOps": ["Stop"] },
-      "File": { "skipOps": [] }
+      "Registry": {
+        "skipOps": [
+          "OpenKey",
+          "CloseKey",
+          "QueryValue",
+          "QueryKey",
+          "EnumerateKey",
+          "SetInformationKey",
+          "EnumerateValue"
+        ]
+      },
+      "Process": {
+        "skipOps": [
+          "Stop"
+        ]
+      },
+      "File": {
+        "skipOps": []
+      }
     }
+  },
+  "behaviorMitre": {
+    "enabled": true,
+    "tactics": [
+      "Initial Access",
+      "Execution",
+      "Persistence",
+      "Privilege Escalation",
+      "Defense Evasion",
+      "Credential Access",
+      "Discovery",
+      "Lateral Movement",
+      "Collection",
+      "Command and Control",
+      "Exfiltration",
+      "Impact"
+    ],
+    "rules": [
+      {
+        "provider": "Process",
+        "op": "Start",
+        "tactic": "Execution",
+        "techniqueId": "T1106",
+        "techniqueName": "Native API"
+      },
+      {
+        "provider": "Process",
+        "op": "Stop",
+        "tactic": "Impact",
+        "techniqueId": "T1485",
+        "techniqueName": "Data Destruction"
+      },
+      {
+        "provider": "File",
+        "op": "Create",
+        "tactic": "Collection",
+        "techniqueId": "T1005",
+        "techniqueName": "Data from Local System"
+      },
+      {
+        "provider": "File",
+        "op": "Delete",
+        "tactic": "Defense Evasion",
+        "techniqueId": "T1070",
+        "techniqueName": "Indicator Removal"
+      },
+      {
+        "provider": "File",
+        "op": "Rename",
+        "tactic": "Defense Evasion",
+        "techniqueId": "T1070",
+        "techniqueName": "Indicator Removal"
+      },
+      {
+        "provider": "Registry",
+        "op": "SetValue",
+        "tactic": "Persistence",
+        "techniqueId": "T1112",
+        "techniqueName": "Modify Registry"
+      }
+    ]
   }
 }

@@ -11,6 +11,7 @@
   },
   "build": {
     "appId": "com.anxin.security",
+    "icon": "favicon.ico",
     "directories": {
       "output": "dist"
     },
