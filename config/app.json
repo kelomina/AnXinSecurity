@@ -72,7 +72,12 @@
     "processNameCacheMax": 2048,
     "processNameCacheTtlMs": 300000,
     "processNameResolveMaxPerSecond": 20,
-    "consoleMaxPerSecond": 200
+    "consoleMaxPerSecond": 200,
+    "network": {
+      "enabled": true,
+      "filterPrivateIps": true,
+      "skipLoopback": true
+    }
   },
   "behaviorAnalyzer": {
     "enabled": true,
@@ -95,9 +100,7 @@
         ]
       },
       "Process": {
-        "skipOps": [
-          "Stop"
-        ]
+        "skipOps": []
       },
       "File": {
         "skipOps": []

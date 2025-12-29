@@ -38,6 +38,13 @@ const GUID_KernelRegistry = {
     Data4: [0xA0, 0x51, 0x33, 0xD1, 0x3D, 0x54, 0x13, 0xBD]
 };
 
+const GUID_KernelNetwork = {
+    Data1: 0x7DD42A49,
+    Data2: 0x5329,
+    Data3: 0x4832,
+    Data4: [0x8D, 0xFD, 0x43, 0xD9, 0x79, 0x15, 0x3A, 0x88]
+};
+
 const ULONG = 'uint32_t';
 const ULONG64 = 'uint64_t';
 const USHORT = 'uint16_t';
@@ -242,7 +249,12 @@ const DEFAULT_ETW_CFG = {
     stopTimeoutMs: 2500,
     startRetries: 2,
     retryDelayMs: 150,
-    emitRegistryRawHex: false
+    emitRegistryRawHex: false,
+    network: {
+        enabled: true,
+        filterPrivateIps: true,
+        skipLoopback: true
+    }
 };
 
 function loadAppConfig() {
@@ -269,6 +281,16 @@ function resolveEtwCfg(payloadCfg) {
     merged.startRetries = Number.isFinite(merged.startRetries) ? Math.max(0, Math.min(20, merged.startRetries)) : DEFAULT_ETW_CFG.startRetries;
     merged.retryDelayMs = Number.isFinite(merged.retryDelayMs) ? Math.max(0, Math.min(5000, merged.retryDelayMs)) : DEFAULT_ETW_CFG.retryDelayMs;
     merged.emitRegistryRawHex = !!merged.emitRegistryRawHex;
+
+    const baseNet = (DEFAULT_ETW_CFG.network && typeof DEFAULT_ETW_CFG.network === 'object') ? DEFAULT_ETW_CFG.network : {};
+    const fileNet = (etw.network && typeof etw.network === 'object') ? etw.network : {};
+    const incomingNet = (incoming.network && typeof incoming.network === 'object') ? incoming.network : {};
+    const network = { ...baseNet, ...fileNet, ...incomingNet };
+    network.enabled = network.enabled !== false;
+    network.filterPrivateIps = network.filterPrivateIps !== false;
+    network.skipLoopback = network.skipLoopback !== false;
+    merged.network = network;
+
     return merged;
 }
 
@@ -569,6 +591,106 @@ function readUInt32LESafe(bytes, offset) {
     return Buffer.from(bytes.slice(off, off + 4)).readUInt32LE(0);
 }
 
+function readUInt16BESafe(bytes, offset) {
+    const off = offset >>> 0;
+    if (!bytes || off + 2 > bytes.length) return null;
+    return Buffer.from(bytes.slice(off, off + 2)).readUInt16BE(0);
+}
+
+function ipv4ToString(a, b, c, d) {
+    return `${a >>> 0}.${b >>> 0}.${c >>> 0}.${d >>> 0}`;
+}
+
+function isLoopbackIpv4(a) {
+    return (a >>> 0) === 127;
+}
+
+function isPrivateIpv4(a, b) {
+    const x = a >>> 0;
+    const y = b >>> 0;
+    if (x === 10) return true;
+    if (x === 172 && y >= 16 && y <= 31) return true;
+    if (x === 192 && y === 168) return true;
+    if (x === 169 && y === 254) return true;
+    return false;
+}
+
+function isBadIpv4(a, b, c, d) {
+    const x = a >>> 0;
+    const y = b >>> 0;
+    const z = c >>> 0;
+    const w = d >>> 0;
+    if (x === 0) return true;
+    if (x === 255) return true;
+    if (x === 224) return true;
+    if (x === 239) return true;
+    if (x === 127 && y === 0 && z === 0 && w === 1) return false;
+    return false;
+}
+
+function parseNetworkUserDataHeuristic(bytes, cfg) {
+    const netCfg = (cfg && cfg.network && typeof cfg.network === 'object') ? cfg.network : (DEFAULT_ETW_CFG.network || {});
+    if (!netCfg || netCfg.enabled === false) return null;
+
+    const buf = Buffer.from(bytes);
+    const limit = Math.max(0, buf.length - 12);
+    let best = null;
+
+    for (let off = 0; off <= limit; off++) {
+        const a1 = buf[off];
+        const b1 = buf[off + 1];
+        const c1 = buf[off + 2];
+        const d1 = buf[off + 3];
+        const a2 = buf[off + 4];
+        const b2 = buf[off + 5];
+        const c2 = buf[off + 6];
+        const d2 = buf[off + 7];
+
+        if (isBadIpv4(a1, b1, c1, d1) || isBadIpv4(a2, b2, c2, d2)) continue;
+
+        const sport = readUInt16BESafe(buf, off + 8);
+        const dport = readUInt16BESafe(buf, off + 10);
+        if (!sport || !dport) continue;
+        if (sport < 1 || sport > 65535) continue;
+        if (dport < 1 || dport > 65535) continue;
+
+        const localIsLoop = isLoopbackIpv4(a1);
+        const remoteIsLoop = isLoopbackIpv4(a2);
+        if (netCfg.skipLoopback && (localIsLoop || remoteIsLoop)) continue;
+
+        const localIsPrivate = isPrivateIpv4(a1, b1);
+        const remoteIsPrivate = isPrivateIpv4(a2, b2);
+        if (netCfg.filterPrivateIps && remoteIsPrivate) continue;
+
+        let score = 0;
+        if (localIsPrivate && !remoteIsPrivate) score += 20;
+        if (!localIsPrivate && !remoteIsPrivate) score += 10;
+        if (dport === 80 || dport === 443 || dport === 53) score += 6;
+        score += Math.min(20, Math.floor(dport / 1000));
+
+        const candidate = {
+            protocol: 'TCP',
+            remoteIp: ipv4ToString(a2, b2, c2, d2),
+            remotePort: dport,
+            direction: 'outbound',
+            target: `TCP ${ipv4ToString(a2, b2, c2, d2)}:${dport}`
+        };
+
+        if (!best || score > best.score) best = { score, data: candidate };
+    }
+
+    return best ? best.data : null;
+}
+
+function mapNetworkOp(descriptor) {
+    const opcode = descriptor && Number.isFinite(descriptor.Opcode) ? descriptor.Opcode : null;
+    const id = descriptor && Number.isFinite(descriptor.Id) ? descriptor.Id : null;
+    const candidates = new Set([10, 11, 12, 13, 14, 15, 16]);
+    if (opcode != null && candidates.has(opcode)) return 'Connect';
+    if (id != null && candidates.has(id)) return 'Connect';
+    return null;
+}
+
 function pickBestPathCandidate(strings) {
     const list = filterLikelyStrings(strings);
     const scored = list.map((s) => {
@@ -666,14 +788,15 @@ function createEventCallback() {
             const isProcess = sameGuid(providerId, GUID_KernelProcess);
             const isFile = sameGuid(providerId, GUID_KernelFile);
             const isRegistry = sameGuid(providerId, GUID_KernelRegistry);
+            const isNetwork = !!(etwCfg && etwCfg.network && etwCfg.network.enabled !== false) && sameGuid(providerId, GUID_KernelNetwork);
 
-            if (!isProcess && !isFile && !isRegistry) return;
+            if (!isProcess && !isFile && !isRegistry && !isNetwork) return;
 
             const eventData = {
                 timestamp: filetimeToIso(header.TimeStamp),
                 pid: header.ProcessId,
                 tid: header.ThreadId,
-                provider: isProcess ? 'Process' : (isFile ? 'File' : 'Registry'),
+                provider: isProcess ? 'Process' : (isFile ? 'File' : (isRegistry ? 'Registry' : 'Network')),
                 opcode: descriptor.Opcode,
                 id: descriptor.Id,
                 data: {}
@@ -719,6 +842,14 @@ function createEventCallback() {
                         return;
                     }
                     eventData.data = parseRegistryUserData(bytes, descriptor, etwCfg);
+                    postMessage({ type: 'log', event: eventData });
+                } else if (isNetwork) {
+                    const netType = mapNetworkOp(descriptor);
+                    if (!netType) return;
+                    if (shouldSkipByCfg('Network', netType)) return;
+                    const parsed = parseNetworkUserDataHeuristic(bytes, etwCfg);
+                    if (!parsed) return;
+                    eventData.data = Object.assign({ type: netType }, parsed);
                     postMessage({ type: 'log', event: eventData });
                 }
             }
@@ -900,6 +1031,11 @@ async function startSessionOnce() {
         const s3 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelRegistry), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
         if (!checkStatus('EnableTraceEx2(Registry)', s3, { sessionName })) throw new Error('EnableTraceEx2(Registry) failed: ' + s3);
 
+        if (etwCfg && etwCfg.network && etwCfg.network.enabled !== false) {
+            const s4 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelNetwork), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
+            if (!checkStatus('EnableTraceEx2(Network)', s4, { sessionName })) throw new Error('EnableTraceEx2(Network) failed: ' + s4);
+        }
+
         logfile = {
             LogFileName: null,
             LoggerName: sessionName,
@@ -1004,9 +1140,11 @@ module.exports = {
         filetimeToIso,
         extractUtf16Strings,
         parseRegistryUserData,
+        parseNetworkUserDataHeuristic,
         pickBestPathCandidate,
         resolveEtwCfg,
         mapRegistryOp,
+        mapNetworkOp,
         readUInt32LESafe,
         tryDecodeEventRecord,
         normalizeEventRecordPtr,

@@ -117,6 +117,15 @@ class ProcessBehaviorStore {
       if (actorPid != null) {
         this._upsertProcess(actorPid, { seenAt: ts })
       }
+    } else if (provider === 'Network') {
+      const target = typeof data.target === 'string' ? data.target : null
+      const remoteIp = typeof data.remoteIp === 'string' ? data.remoteIp : null
+      const remotePort = Number.isFinite(data.remotePort) ? data.remotePort : null
+      const protocol = typeof data.protocol === 'string' ? data.protocol : null
+      filePath = target || (remoteIp && remotePort != null ? `${protocol || ''} ${remoteIp}:${remotePort}`.trim() : null)
+      if (actorPid != null) {
+        this._upsertProcess(actorPid, { seenAt: ts })
+      }
     } else {
       if (actorPid != null) {
         this._upsertProcess(actorPid, { seenAt: ts })
