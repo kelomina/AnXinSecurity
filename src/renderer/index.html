@@ -402,6 +402,28 @@
         </div>
       </div>
     </div>
+    <div class="modal fade" id="intercept-modal" tabindex="-1" aria-hidden="true" data-bs-backdrop="static" data-bs-keyboard="false">
+      <div class="modal-dialog modal-dialog-centered modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 id="intercept-title" class="modal-title"></h5>
+          </div>
+          <div class="modal-body">
+            <div id="intercept-desc" class="mb-2"></div>
+            <div class="small text-muted mb-2">
+              <div><span id="intercept-label-pid"></span><span id="intercept-pid"></span></div>
+              <div><span id="intercept-label-process"></span><span id="intercept-process"></span></div>
+              <div><span id="intercept-label-rule"></span><span id="intercept-rule"></span></div>
+            </div>
+            <pre id="intercept-event-json" class="small mb-0" style="white-space: pre-wrap;"></pre>
+          </div>
+          <div class="modal-footer">
+            <button id="intercept-btn-terminate" type="button" class="btn btn-danger"></button>
+            <button id="intercept-btn-resume" type="button" class="btn btn-primary"></button>
+          </div>
+        </div>
+      </div>
+    </div>
     <script src="../../node_modules/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
     <script src="./monitor.js"></script>
     <script src="./scan_pre_tasks.js"></script>

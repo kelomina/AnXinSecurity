@@ -10,6 +10,9 @@ const scanCache = require('./scan_cache')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
 const { resolveMainWindowOptions } = require('./window_options')
 const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter, sanitizeText, isCleanText, isLikelyProcessImageText, resolveFileFromBaseDirs } = require('./utils')
+const { createEtwPidCache } = require('./etw_pid_cache')
+const { createEtwTrustedPidFilter } = require('./etw_trusted_pid_filter')
+const { createInterceptionQueue } = require('./interception_manager')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
 
 let winapi = null
@@ -99,11 +102,57 @@ let etwWorker = null
 const eventLogs = []
 let etwConsoleLimiter = null
 let etwConsoleLimiterMax = null
-const etwPidCache = new Map()
-let etwPidCacheMax = null
-let etwPidCacheTtlMs = null
-let etwPidResolveLimiter = null
-let etwPidResolveLimiterMax = null
+const etwPidCache = createEtwPidCache()
+const etwTrustedPidFilter = createEtwTrustedPidFilter({
+  verifyTrust: (p) => {
+    if (!winapi || typeof winapi.verifyTrust !== 'function') return false
+    return winapi.verifyTrust(p) === true
+  },
+  devicePathToDosPath: (p) => {
+    if (!winapi || typeof winapi.devicePathToDosPath !== 'function') return p
+    return winapi.devicePathToDosPath(p) || p
+  }
+})
+let interceptionSnapshotWorker = null
+let interceptionSnapshotStarted = false
+let isSnapshotScanning = false
+let scanPromiseResolve = null
+const scanPromise = new Promise((resolve) => { scanPromiseResolve = resolve })
+let interceptionResumeInFlight = false
+const interceptionQueue = createInterceptionQueue({
+  showFn: (payload) => {
+    if (isSnapshotScanning) return false
+    if (splash && !splash.isDestroyed()) return false
+    if (!win || win.isDestroyed()) return false
+    const wc = win.webContents
+    if (!wc) return false
+    try {
+      if (typeof wc.isLoading === 'function' && wc.isLoading()) return false
+      if (typeof wc.getURL === 'function' && !wc.getURL()) return false
+    } catch {
+      return false
+    }
+    try {
+      if (win.isMinimized()) win.restore()
+      win.show()
+      win.focus()
+    } catch {}
+    try {
+      console.log('主进程: 发送拦截弹窗', payload.pid)
+      win.webContents.send('intercept:show', payload)
+      return true
+    } catch {
+      return false
+    }
+  }
+})
+try {
+  const etwCfg = (config && config.etw) ? config.etw : {}
+  const icfg = (etwCfg && etwCfg.interception && typeof etwCfg.interception === 'object') ? etwCfg.interception : null
+  interceptionQueue.configure(icfg)
+} catch {}
+let etwPidSnapshotAt = 0
+let etwPidSnapshotInFlight = false
 let etwControlSeq = 1
 const etwControlPending = new Map()
 let etwStartPending = null
@@ -127,63 +176,276 @@ function getProcessNameFromPath(p) {
 }
 
 function refreshEtwPidCacheConfig(etwCfg) {
-  const max = Number.isFinite(etwCfg.processNameCacheMax) ? Math.max(64, Math.floor(etwCfg.processNameCacheMax)) : 2048
+  const max = Number.isFinite(etwCfg.processNameCacheMax) ? Math.max(0, Math.floor(etwCfg.processNameCacheMax)) : 2048
   const ttlMs = Number.isFinite(etwCfg.processNameCacheTtlMs) ? Math.max(0, Math.floor(etwCfg.processNameCacheTtlMs)) : 300000
-  const perSec = Number.isFinite(etwCfg.processNameResolveMaxPerSecond) ? Math.max(0, Math.floor(etwCfg.processNameResolveMaxPerSecond)) : 20
-  if (etwPidCacheMax !== max) etwPidCacheMax = max
-  if (etwPidCacheTtlMs !== ttlMs) etwPidCacheTtlMs = ttlMs
-  if (etwPidResolveLimiterMax !== perSec || !etwPidResolveLimiter) {
-    etwPidResolveLimiterMax = perSec
-    etwPidResolveLimiter = createRateLimiter(perSec)
-  }
+  etwPidCache.configure({ max, ttlMs })
 }
 
 function pruneEtwPidCache(now) {
-  const ttl = Number.isFinite(etwPidCacheTtlMs) ? etwPidCacheTtlMs : 300000
-  const max = Number.isFinite(etwPidCacheMax) ? etwPidCacheMax : 2048
-  if (ttl > 0) {
-    for (const [pid, v] of etwPidCache) {
-      if (!v || !Number.isFinite(v.at) || now - v.at > ttl) etwPidCache.delete(pid)
-    }
-  }
-  while (etwPidCache.size > max) {
-    const firstKey = etwPidCache.keys().next().value
-    if (firstKey == null) break
-    etwPidCache.delete(firstKey)
-  }
+  etwPidCache.prune(now)
 }
 
 function upsertEtwPid(pid, imagePath, now) {
-  if (!Number.isFinite(pid) || pid <= 0) return
-  const rawImg = (typeof imagePath === 'string' && imagePath) ? imagePath : null
-  const img = rawImg ? sanitizeText(rawImg) : null
-  if (img && !isLikelyProcessImageText(img)) return
-  const name = img ? getProcessNameFromPath(img) : ''
-  etwPidCache.delete(pid)
-  etwPidCache.set(pid, { imagePath: img, name, at: now })
+  etwPidCache.upsert(pid, imagePath, now)
+}
+
+function removeEtwPid(pid) {
+  etwPidCache.remove(pid)
 }
 
 function resolveEtwProcessInfo(pid, now, etwCfg) {
-  if (!Number.isFinite(pid) || pid <= 0) return null
-  const existed = etwPidCache.get(pid)
-  if (existed && (!etwPidCacheTtlMs || (now - existed.at <= etwPidCacheTtlMs))) {
-    const cachedImage = (typeof existed.imagePath === 'string' && existed.imagePath) ? existed.imagePath : ''
-    const cachedName = (typeof existed.name === 'string' && existed.name) ? existed.name : ''
-    const ok = (cachedImage && isLikelyProcessImageText(cachedImage)) || (cachedName && isLikelyProcessImageText(cachedName))
-    if (ok) {
-      etwPidCache.delete(pid)
-      etwPidCache.set(pid, { imagePath: existed.imagePath, name: existed.name, at: now })
-      return existed
-    }
-    etwPidCache.delete(pid)
-  }
+  return etwPidCache.resolve(pid, now)
+}
 
-  if (!winapi || typeof winapi.getProcessImagePathByPid !== 'function') return null
-  if (!etwPidResolveLimiter || !etwPidResolveLimiter()) return null
-  const img = winapi.getProcessImagePathByPid(pid)
-  if (!img || !isCleanText(img)) return null
-  upsertEtwPid(pid, img, now)
-  return etwPidCache.get(pid) || null
+async function takeEtwPidSnapshot() {
+  if (etwPidSnapshotInFlight) return
+  const etwCfg = (config && config.etw) ? config.etw : {}
+  const snapCfg = (etwCfg && etwCfg.pidSnapshot && typeof etwCfg.pidSnapshot === 'object') ? etwCfg.pidSnapshot : {}
+  const enabled = snapCfg.enabled !== false
+  if (!enabled) return
+  const w = ensureInterceptionSnapshotWorker()
+  const canSync = !!(winapi && typeof winapi.getProcessImageSnapshot === 'function')
+  if (!w && !canSync) return
+
+  const maxPids = Number.isFinite(snapCfg.maxPids) ? Math.max(256, Math.floor(snapCfg.maxPids)) : 8192
+  const now = Date.now()
+  if (etwPidSnapshotAt && now - etwPidSnapshotAt < 10000) return
+  etwPidSnapshotAt = now
+  etwPidSnapshotInFlight = true
+  try {
+    refreshEtwPidCacheConfig(etwCfg)
+    let list = []
+    if (w) {
+      const reqId = String(interceptionControlSeq++)
+      const out = await requestInterceptionPidSnapshot(w, reqId, maxPids, 12000)
+      list = out && out.ok && Array.isArray(out.list) ? out.list : []
+    }
+    if ((!list || !list.length) && canSync) {
+      list = winapi.getProcessImageSnapshot(maxPids)
+    }
+    etwPidCache.bulkUpsert(list, now)
+    try {
+      const fcfg = (etwCfg && etwCfg.signedPidFilter && typeof etwCfg.signedPidFilter === 'object') ? etwCfg.signedPidFilter : null
+      etwTrustedPidFilter.configure(fcfg)
+      etwTrustedPidFilter.seedFromSnapshot(list)
+    } catch {}
+    pruneEtwPidCache(now)
+  } catch {
+  } finally {
+    etwPidSnapshotInFlight = false
+  }
+}
+
+let interceptionControlSeq = 1
+const interceptionControlPending = new Map()
+
+function ensureInterceptionSnapshotWorker() {
+  if (interceptionSnapshotWorker) return interceptionSnapshotWorker
+  try {
+    const workerPath = path.join(__dirname, 'workers/interception_snapshot_worker.js')
+    if (!fs.existsSync(workerPath)) return null
+    interceptionSnapshotWorker = new Worker(workerPath)
+    interceptionSnapshotWorker.on('message', (msg) => {
+      const m = msg && typeof msg === 'object' ? msg : null
+      const typ = m && typeof m.type === 'string' ? m.type : ''
+      if (typ === 'paused') {
+        const pid = Number.isFinite(m.pid) ? m.pid : parseInt(String(m.pid), 10)
+        if (!Number.isFinite(pid) || pid <= 0) return
+        const imagePath = typeof m.imagePath === 'string' ? m.imagePath : ''
+        const unsignedDlls = Array.isArray(m.unsignedDlls) ? m.unsignedDlls.filter(x => typeof x === 'string' && x) : []
+        const payload = {
+          pid,
+          paused: m.paused === true,
+          triggeredAt: Date.now(),
+          match: { ruleId: 'unsigned_dll', provider: 'Process', op: 'Snapshot', target: '' },
+          process: { name: getProcessNameFromPath(imagePath), imagePath },
+          event: { provider: 'Process', data: { type: 'UnsignedDll', unsignedDlls } }
+        }
+        interceptionQueue.enqueuePausedProcess(payload)
+        return
+      }
+      if (typ === 'pid_snapshot_done') {
+        const requestId = typeof m.requestId === 'string' ? m.requestId : ''
+        if (!requestId) return
+        const pending = interceptionControlPending.get(requestId)
+        if (!pending) return
+        interceptionControlPending.delete(requestId)
+        try { if (pending.timer) clearTimeout(pending.timer) } catch {}
+        try { pending.resolve(m) } catch {}
+        return
+      }
+      if (typ === 'scan_done') {
+        isSnapshotScanning = false
+        handleSnapshotScanDone().finally(() => {
+          if (scanPromiseResolve) scanPromiseResolve(true)
+        })
+        return
+      }
+      if (typ === 'resume_many_done') {
+        const requestId = typeof m.requestId === 'string' ? m.requestId : ''
+        if (!requestId) return
+        const pending = interceptionControlPending.get(requestId)
+        if (!pending) return
+        interceptionControlPending.delete(requestId)
+        try { if (pending.timer) clearTimeout(pending.timer) } catch {}
+        try { pending.resolve(m) } catch {}
+      }
+    })
+    interceptionSnapshotWorker.on('error', () => {
+      interceptionSnapshotWorker = null
+    })
+    interceptionSnapshotWorker.on('exit', () => {
+      interceptionSnapshotWorker = null
+    })
+    return interceptionSnapshotWorker
+  } catch {
+    interceptionSnapshotWorker = null
+    return null
+  }
+}
+
+function requestInterceptionPidSnapshot(w, requestId, maxPids, timeoutMs) {
+  const rid = typeof requestId === 'string' ? requestId : ''
+  if (!rid || !w) return Promise.resolve({ ok: false })
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (interceptionControlPending.has(rid)) interceptionControlPending.delete(rid)
+      resolve({ ok: false, timeout: true })
+    }, Math.max(250, timeoutMs || 0))
+    try { if (timer.unref) timer.unref() } catch {}
+    interceptionControlPending.set(rid, { resolve, timer })
+    try { w.postMessage({ type: 'pid_snapshot', requestId: rid, maxPids }) } catch {
+      try { clearTimeout(timer) } catch {}
+      if (interceptionControlPending.has(rid)) interceptionControlPending.delete(rid)
+      resolve({ ok: false })
+    }
+  })
+}
+
+function requestInterceptionResumeMany(pids, timeoutMs = 15000) {
+  const ps = Array.isArray(pids) ? pids : []
+  const list = ps.map(x => (Number.isFinite(x) ? x : parseInt(String(x), 10))).filter(x => Number.isFinite(x) && x > 0)
+  if (list.length === 0) return Promise.resolve({ ok: true, skipped: true, total: 0, resumed: 0 })
+  const w = ensureInterceptionSnapshotWorker()
+  if (!w) return Promise.resolve({ ok: false, error: 'NO_WORKER' })
+  const requestId = String(interceptionControlSeq++)
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (interceptionControlPending.has(requestId)) interceptionControlPending.delete(requestId)
+      resolve({ ok: false, timeout: true })
+    }, Math.max(250, timeoutMs || 0))
+    try { if (timer.unref) timer.unref() } catch {}
+    interceptionControlPending.set(requestId, { resolve, timer })
+    try { w.postMessage({ type: 'resume_many', requestId, pids: list }) } catch {
+      try { clearTimeout(timer) } catch {}
+      if (interceptionControlPending.has(requestId)) interceptionControlPending.delete(requestId)
+      resolve({ ok: false })
+    }
+  })
+}
+
+async function resumeAllInterceptedProcesses() {
+  if (interceptionResumeInFlight) return false
+  interceptionResumeInFlight = true
+  try {
+    const pids = interceptionQueue.getPausedPids()
+    if (pids.length === 0) return true
+    const res = await requestInterceptionResumeMany(pids, 20000)
+    interceptionQueue.clearAll()
+    return !!(res && res.ok !== false)
+  } catch {
+    interceptionQueue.clearAll()
+    return false
+  } finally {light = false
+  }
+}
+
+async function handleSnapshotScanDone() {
+  try {
+    const paused = interceptionQueue.getAllPausedPayloads()
+    const etwCfg = (config && config.etw) ? config.etw : {}
+    const icfg = (etwCfg && etwCfg.interception && typeof etwCfg.interception === 'object') ? etwCfg.interception : {}
+    const threshold = Number.isFinite(icfg.snapshotTrustThreshold) ? icfg.snapshotTrustThreshold : 3
+
+    if (paused.length > threshold && win && !win.isDestroyed()) {
+      try {
+        if (win.isMinimized()) win.restore()
+        win.show()
+        win.focus()
+      } catch {}
+
+      const result = await dialog.showMessageBox(win, {
+        type: 'question',
+        title: t('scan_trust_title'),
+        message: t('scan_trust_message_part1') + paused.length + t('scan_trust_message_part2'),
+        detail: t('scan_trust_detail'),
+        buttons: [t('scan_trust_yes'), t('scan_trust_no')],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true
+      })
+
+      if (result.response === 0) {
+        const allowPaths = new Set()
+        for (const p of paused) {
+          if (p && p.process && typeof p.process.imagePath === 'string' && p.process.imagePath) {
+            allowPaths.add(p.process.imagePath)
+            etwTrustedPidFilter.addUserTrustedPath(p.process.imagePath)
+            if (p.pid) etwTrustedPidFilter.addTrustedPid(p.pid)
+          }
+          const dlls = p && p.event && p.event.data && Array.isArray(p.event.data.unsignedDlls) ? p.event.data.unsignedDlls : []
+          for (const d of dlls) {
+            if (typeof d === 'string' && d) allowPaths.add(d)
+          }
+        }
+
+        if (allowPaths.size > 0 && interceptionSnapshotWorker) {
+          interceptionSnapshotWorker.postMessage({ type: 'allow_dlls', paths: Array.from(allowPaths) })
+        }
+
+        await resumeAllInterceptedProcesses()
+        return
+      }
+    }
+
+    interceptionQueue.tryShowNext()
+  } catch (e) {
+    console.error('Snapshot scan done handler error:', e)
+    interceptionQueue.tryShowNext()
+  }
+}
+
+
+function startInterceptionSnapshotScan() {
+  try {
+    const etwCfg = (config && config.etw) ? config.etw : {}
+    const icfg = (etwCfg && etwCfg.interception && typeof etwCfg.interception === 'object') ? etwCfg.interception : {}
+    interceptionQueue.configure(icfg)
+    if (icfg.enabled !== true) { isSnapshotScanning = false; if (scanPromiseResolve) scanPromiseResolve(true); return }
+    if (icfg.snapshotVerifyOnEtwStart === false) { isSnapshotScanning = false; if (scanPromiseResolve) scanPromiseResolve(true); return }
+    if (interceptionSnapshotStarted) return
+    interceptionSnapshotStarted = true
+    isSnapshotScanning = true
+    const w = ensureInterceptionSnapshotWorker()
+    if (!w) { isSnapshotScanning = false; if (scanPromiseResolve) scanPromiseResolve(true); return }
+    const maxPids = Number.isFinite(icfg.snapshotMaxPids) ? Math.max(256, Math.floor(icfg.snapshotMaxPids)) : 8192
+    const modulesBufferBytes = Number.isFinite(icfg.modulesBufferBytes) ? Math.max(4096, Math.floor(icfg.modulesBufferBytes)) : 65536
+    const skipSystemDll = icfg.skipSystemDll !== false
+    const maxUnsignedDllsPerProcess = Number.isFinite(icfg.maxUnsignedDllsPerProcess) ? Math.max(1, Math.floor(icfg.maxUnsignedDllsPerProcess)) : 16
+
+    const exclusionPaths = []
+    try {
+      const sysRoot = process.env.SystemRoot || process.env.WINDIR
+      if (sysRoot) exclusionPaths.push(sysRoot)
+      exclusionPaths.push(path.dirname(app.getPath('exe')))
+      exclusionPaths.push(app.getAppPath())
+    } catch {}
+
+    w.postMessage({ type: 'scan', config: { maxPids, modulesBufferBytes, skipSystemDll, maxUnsignedDllsPerProcess, exclusionPaths } })
+  } catch {
+    isSnapshotScanning = false
+    if (scanPromiseResolve) scanPromiseResolve(true)
+  }
 }
 
 function startEtwWorker() {
@@ -208,50 +470,55 @@ function startEtwWorker() {
         return
       }
       if (msg.type === 'log') {
+        const ev = msg.event && typeof msg.event === 'object' ? msg.event : null
+        const p = ev && typeof ev.provider === 'string' ? ev.provider : ''
+        const d = ev && ev.data && typeof ev.data === 'object' ? ev.data : null
+        const etwCfg = (config && config.etw) ? config.etw : {}
+        try {
+          const fcfg = (etwCfg && etwCfg.signedPidFilter && typeof etwCfg.signedPidFilter === 'object') ? etwCfg.signedPidFilter : null
+          etwTrustedPidFilter.configure(fcfg)
+        } catch {}
+
+        try {
+          if (p === 'Process' && d) {
+            refreshEtwPidCacheConfig(etwCfg)
+            const now = Date.now()
+            pruneEtwPidCache(now)
+            const typ = typeof d.type === 'string' ? d.type : ''
+            const subjectPid = Number.isFinite(d.processId) ? d.processId : null
+            if (typ === 'Start') {
+              const pid = subjectPid
+              if (pid != null) {
+                let img = null
+                if (winapi && typeof winapi.getProcessImagePathByPid === 'function') {
+                  try { img = winapi.getProcessImagePathByPid(pid) } catch {}
+                }
+                if (!img) img = (typeof d.imageName === 'string' && d.imageName) ? d.imageName : null
+                if (img) upsertEtwPid(pid, img, now)
+                try { if (img) etwTrustedPidFilter.onProcessStart(pid, img) } catch {}
+              }
+            } else if (typ === 'Stop') {
+              if (subjectPid != null) {
+                removeEtwPid(subjectPid)
+                try { etwTrustedPidFilter.onProcessStop(subjectPid) } catch {}
+              }
+            }
+          }
+        } catch {}
+
+        let shouldSkip = false
+        try { shouldSkip = etwTrustedPidFilter.shouldSkipEvent(ev) } catch {}
+        if (shouldSkip) return
+
         eventLogs.unshift(msg.event)
         if (eventLogs.length > 500) eventLogs.pop()
         try { behavior.ingest(msg.event) } catch {}
 
         const isDev = !app.isPackaged
-        const etwCfg = (config && config.etw) ? config.etw : {}
         const logToConsole = isDev && (etwCfg.logToConsole !== false)
         const logParsedToConsole = isDev && (etwCfg.logParsedToConsole === true)
         const resolveProcessName = isDev && (etwCfg.resolveProcessName === true)
         const maxPerSecond = Number.isFinite(etwCfg.consoleMaxPerSecond) ? Math.max(0, Math.floor(etwCfg.consoleMaxPerSecond)) : 200
-        if (logToConsole) {
-          if (etwConsoleLimiterMax !== maxPerSecond || !etwConsoleLimiter) {
-            etwConsoleLimiterMax = maxPerSecond
-            etwConsoleLimiter = createRateLimiter(maxPerSecond)
-          }
-          if (etwConsoleLimiter && etwConsoleLimiter()) {
-            const now = Date.now()
-            if (resolveProcessName || logParsedToConsole) {
-              refreshEtwPidCacheConfig(etwCfg)
-              pruneEtwPidCache(now)
-              const p = msg.event && msg.event.provider
-              const d = msg.event && msg.event.data
-              if (p === 'Process' && d && typeof d === 'object') {
-                const subjectPid = Number.isFinite(d.processId) ? d.processId : null
-                const imageName = typeof d.imageName === 'string' ? d.imageName : null
-                if (subjectPid != null && imageName) upsertEtwPid(subjectPid, imageName, now)
-              }
-            }
-            const line = formatEtwEventForConsole(msg.event)
-            if (line) process.stdout.write(Buffer.from('ETW: ' + line + '\n', 'utf8'))
-            else process.stdout.write(Buffer.from('ETW: ' + JSON.stringify(msg.event) + '\n', 'utf8'))
-            if (logParsedToConsole) {
-              const parsedEvent = Object.assign({}, msg.event)
-              parsedEvent.opMeaning = resolveEtwOpMeaning(msg.event)
-              if (resolveProcessName && parsedEvent && Number.isFinite(parsedEvent.pid)) {
-                const info = resolveEtwProcessInfo(parsedEvent.pid, now, etwCfg)
-                if (info && info.name) parsedEvent.processName = info.name
-                if (info && info.imagePath) parsedEvent.processImage = info.imagePath
-              }
-              const parsedLine = formatEtwEventForParsedConsole(parsedEvent)
-              if (parsedLine) process.stdout.write(Buffer.from('ETW_PARSED: ' + parsedLine + '\n', 'utf8'))
-            }
-          }
-        }
         
         if (win && !win.isDestroyed()) {
           win.webContents.send('etw-log', msg.event)
@@ -265,8 +532,6 @@ function startEtwWorker() {
           try { if (p.timer) clearTimeout(p.timer) } catch {}
           try { p.resolve(false) } catch {}
         }
-        console.error('主进程: ETW Worker 错误:', code, msg && msg.message ? msg.message : msg)
-        if (msg && msg.details) console.error('主进程: ETW Worker 详情:', msg.details)
       } else if (msg.type === 'status') {
         etwLastStatus = { at: Date.now(), message: msg.message }
         if (etwStartPending) {
@@ -277,14 +542,17 @@ function startEtwWorker() {
             etwStartPending = null
             try { if (p.timer) clearTimeout(p.timer) } catch {}
             try { p.resolve(true) } catch {}
+            try { setImmediate(() => { takeEtwPidSnapshot(); startInterceptionSnapshotScan() }) } catch {}
           }
         }
-        console.log('主进程: ETW Worker 状态:', msg.message)
+        try {
+          const text2 = msg && msg.message ? String(msg.message) : ''
+          if (text2.includes('Monitoring started')) setImmediate(() => { takeEtwPidSnapshot(); startInterceptionSnapshotScan() })
+        } catch {}
       }
     })
     
     etwWorker.on('error', (err) => {
-      console.error('主进程: ETW Worker 崩溃:', err)
       etwLastError = { at: Date.now(), code: 'ETW_WORKER_CRASH', message: err && err.message ? String(err.message) : String(err || ''), details: null }
       if (etwStartPending) {
         const p = etwStartPending
@@ -296,7 +564,6 @@ function startEtwWorker() {
     })
     
     etwWorker.on('exit', (code) => {
-      console.log('主进程: ETW Worker 退出，代码', code)
       etwLastStatus = { at: Date.now(), message: `worker exited (${code})` }
       if (etwStartPending) {
         const p = etwStartPending
@@ -497,11 +764,15 @@ async function handleTrayExitClick() {
 
   const trayCfg = (config && config.tray) ? config.tray : {}
   try {
-    if (trayCfg.exitKeepScannerServicePrompt === false) return quitAllFromTray()
+    if (trayCfg.exitKeepScannerServicePrompt === false) {
+      try { await resumeAllInterceptedProcesses() } catch {}
+      return quitAllFromTray()
+    }
 
     const defaultKeep = trayCfg.exitKeepScannerServiceDefault !== false
     const keep = await showTrayExitPrompt(defaultKeep)
     const mode = resolveTrayExitMode({ keep, defaultKeep })
+    try { await resumeAllInterceptedProcesses() } catch {}
     if (mode === 'keep_service') return quitAppOnlyFromTray()
     return quitAllFromTray()
   } finally {
@@ -570,10 +841,14 @@ app.whenReady().then(() => {
       const check = async () => {
         const ok = await checkEngineHealth({ ipc })
         if (ok || retries > 100) {
+          const timeoutPromise = new Promise(resolve => setTimeout(resolve, 5000))
+          await Promise.race([scanPromise, timeoutPromise])
+
           if (splash && !splash.isDestroyed()) splash.destroy()
           if (win && !win.isDestroyed()) {
             win.show()
             win.focus()
+            try { setImmediate(() => interceptionQueue.tryShowNext()) } catch {}
           }
         } else {
           retries++
@@ -590,6 +865,11 @@ app.whenReady().then(() => {
     try { i18nDict = loadI18n() } catch {}
     etwConsoleLimiter = null
     etwConsoleLimiterMax = null
+    try {
+      const etwCfg = (config && config.etw) ? config.etw : {}
+      const icfg = (etwCfg && etwCfg.interception && typeof etwCfg.interception === 'object') ? etwCfg.interception : null
+      interceptionQueue.configure(icfg)
+    } catch {}
     try { if (etwWorker) etwWorker.postMessage({ type: 'config', config: (config && config.etw) ? config.etw : null }) } catch {}
   })
   ipcMain.handle('open-file-dialog', async () => {
@@ -619,6 +899,55 @@ app.whenReady().then(() => {
   ipcMain.handle('quarantine-isolate', (event, filePath) => quarantineManager.quarantine(filePath))
   ipcMain.handle('quarantine-restore', (event, id) => quarantineManager.restore(id))
   ipcMain.handle('quarantine-delete', (event, id) => quarantineManager.delete(id))
+  ipcMain.handle('process-suspend', async (_event, pid) => {
+    const p = Number.isFinite(pid) ? pid : parseInt(String(pid), 10)
+    if (!Number.isFinite(p) || p <= 0) return false
+    if (!winapi || typeof winapi.suspendProcessByPid !== 'function') return false
+    try { return winapi.suspendProcessByPid(p) === true } catch { return false }
+  })
+  ipcMain.handle('process-resume', async (_event, pid) => {
+    const p = Number.isFinite(pid) ? pid : parseInt(String(pid), 10)
+    if (!Number.isFinite(p) || p <= 0) return false
+    
+    let wasPaused = false
+    try {
+      const pausedPids = interceptionQueue.getPausedPids()
+      wasPaused = pausedPids.includes(p)
+    } catch {}
+
+    const payload = interceptionQueue.markActionResult(p, true)
+
+    if (wasPaused) {
+      try {
+        if (payload && payload.pid === p) {
+          const evt = payload.event
+          if (evt && evt.data && evt.data.type === 'UnsignedDll' && Array.isArray(evt.data.unsignedDlls)) {
+            const w = ensureInterceptionSnapshotWorker()
+            if (w) w.postMessage({ type: 'allow_dlls', paths: evt.data.unsignedDlls })
+          }
+        }
+      } catch {}
+
+      if (winapi && typeof winapi.resumeProcessByPid === 'function') {
+        try { winapi.resumeProcessByPid(p) } catch {}
+      }
+    }
+    
+    return true
+  })
+  ipcMain.handle('process-terminate', async (_event, pid) => {
+    const p = Number.isFinite(pid) ? pid : parseInt(String(pid), 10)
+    if (!Number.isFinite(p) || p <= 0) return false
+    
+    try { interceptionQueue.markActionResult(p, true) } catch {}
+
+    if (!winapi || typeof winapi.terminateProcessByPid !== 'function') return false
+    try {
+      return winapi.terminateProcessByPid(p) === true
+    } catch {
+      return false
+    }
+  })
   ipcMain.handle('logs:list', () => eventLogs)
   ipcMain.handle('system-get-running-processes', () => processes.getRunningProcesses())
   ipcMain.handle('behavior-get-db-path', () => behavior.getDbPath())
@@ -789,7 +1118,6 @@ app.on('before-quit', (e) => {
   if (etwWorker) {
     e.preventDefault()
     isQuitting = true
-    console.log('主进程: 正在停止 ETW Worker...')
     
     const forceQuit = setTimeout(() => {
       console.warn('主进程: ETW Worker 停止超时，将断开连接并退出')

@@ -3,6 +3,12 @@ const koffi = require('koffi');
 
 const libKernel32 = koffi.load('kernel32.dll');
 const libPsapi = koffi.load('psapi.dll');
+let libNtdll = null;
+try {
+    libNtdll = koffi.load('ntdll.dll');
+} catch (e) {
+    console.warn('Failed to load ntdll.dll', e);
+}
 let libWintrust = null;
 try {
     libWintrust = koffi.load('wintrust.dll');
@@ -51,6 +57,8 @@ const PROCESS_QUERY_INFORMATION = 0x0400;
 const PROCESS_VM_READ = 0x0010;
 const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
 const SYNCHRONIZE = 0x00100000;
+const PROCESS_SUSPEND_RESUME = 0x0800;
+const PROCESS_TERMINATE = 0x0001;
 const MAX_PATH = 260;
 
 const WTD_UI_NONE = 2;
@@ -67,11 +75,25 @@ const ERROR_SUCCESS = 0;
 
 const OpenProcess = libKernel32.func('__stdcall', 'OpenProcess', HANDLE, [DWORD, BOOL, DWORD]);
 const CloseHandle = libKernel32.func('__stdcall', 'CloseHandle', BOOL, [HANDLE]);
+const TerminateProcess = libKernel32.func('__stdcall', 'TerminateProcess', BOOL, [HANDLE, DWORD]);
 const QueryDosDeviceW = libKernel32.func('__stdcall', 'QueryDosDeviceW', DWORD, ['string16', koffi.out(LPWSTR), DWORD]);
 const EnumProcesses = libPsapi.func('__stdcall', 'EnumProcesses', BOOL, [koffi.out('uint32_t *'), DWORD, koffi.out('uint32_t *')]);
 const EnumProcessModules = libPsapi.func('__stdcall', 'EnumProcessModules', BOOL, [HANDLE, koffi.out('void *'), DWORD, koffi.out('uint32_t *')]);
 const GetModuleFileNameExW = libPsapi.func('__stdcall', 'GetModuleFileNameExW', DWORD, [HANDLE, HMODULE, koffi.out(LPWSTR), DWORD]);
 const QueryFullProcessImageNameW = libKernel32.func('__stdcall', 'QueryFullProcessImageNameW', BOOL, [HANDLE, DWORD, koffi.out(LPWSTR), koffi.inout('uint32_t *')]);
+
+let NtSuspendProcess = null;
+let NtResumeProcess = null;
+if (libNtdll) {
+    try {
+        NtSuspendProcess = libNtdll.func('__stdcall', 'NtSuspendProcess', LONG, [HANDLE]);
+        NtResumeProcess = libNtdll.func('__stdcall', 'NtResumeProcess', LONG, [HANDLE]);
+    } catch (e) {
+        console.warn('Failed to bind NtSuspendProcess/NtResumeProcess', e);
+        NtSuspendProcess = null;
+        NtResumeProcess = null;
+    }
+}
 
 let WinVerifyTrust = null;
 if (libWintrust) {
@@ -154,6 +176,77 @@ function getProcessImagePathByPid(pid) {
         return p || null;
     } catch {
         return null;
+    } finally {
+        try { CloseHandle(hProcess); } catch {}
+    }
+}
+
+function getProcessImageSnapshot(maxPids) {
+    const maxProcesses = Number.isFinite(maxPids) ? Math.max(256, Math.min(65536, Math.floor(maxPids))) : 8192;
+    const pidsBuffer = Buffer.alloc(maxProcesses * 4);
+    const bytesReturned = Buffer.alloc(4);
+
+    const ret = EnumProcesses(pidsBuffer, pidsBuffer.length, bytesReturned);
+    if (!ret) return [];
+
+    const bytesUsed = bytesReturned.readUInt32LE(0);
+    const numProcesses = Math.floor(bytesUsed / 4);
+    const out = [];
+    for (let i = 0; i < numProcesses; i++) {
+        const pid = pidsBuffer.readUInt32LE(i * 4);
+        if (!pid) continue;
+        const imagePath = getProcessImagePathByPid(pid);
+        if (imagePath) out.push({ pid, imagePath });
+    }
+    return out;
+}
+
+function getProcessModules(pid, maxBufferBytes = 65536) {
+    if (!Number.isFinite(pid) || pid <= 0) return [];
+    const maxBytes = Number.isFinite(maxBufferBytes) ? Math.max(4096, Math.min(1024 * 1024, Math.floor(maxBufferBytes))) : 65536;
+    let hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, 0, pid >>> 0);
+    if (!hProcess) hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid >>> 0);
+    if (!hProcess) return [];
+    try {
+        const ptrSize = process.arch === 'x64' ? 8 : 4;
+        const modulesBuffer = Buffer.alloc(maxBytes);
+        const cbNeeded = Buffer.alloc(4);
+
+        const ok = EnumProcessModules(hProcess, modulesBuffer, modulesBuffer.length, cbNeeded);
+        if (!ok) {
+            const img = getProcessImagePathByPid(pid);
+            return img ? [img] : [];
+        }
+
+        const bytesNeeded = cbNeeded.readUInt32LE(0);
+        const count = Math.floor(Math.min(bytesNeeded, modulesBuffer.length) / ptrSize);
+        const out = [];
+        const seen = new Set();
+        for (let i = 0; i < count; i++) {
+            let hMod;
+            if (ptrSize === 8) hMod = modulesBuffer.readBigUInt64LE(i * 8);
+            else hMod = modulesBuffer.readUInt32LE(i * 4);
+            if (!hMod) continue;
+
+            const pathBuffer = Buffer.alloc(4096);
+            const len = GetModuleFileNameExW(hProcess, hMod, pathBuffer, 2048);
+            if (!len) continue;
+            let p = pathBuffer.toString('utf16le', 0, len * 2);
+            p = (p || '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim();
+            if (p.startsWith('\\??\\')) p = p.substring(4);
+            if (!p) continue;
+            const key = p.toLowerCase();
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(p);
+        }
+        if (!out.length) {
+            const img = getProcessImagePathByPid(pid);
+            return img ? [img] : [];
+        }
+        return out;
+    } catch {
+        return [];
     } finally {
         try { CloseHandle(hProcess); } catch {}
     }
@@ -324,9 +417,61 @@ function getProcessPaths() {
     return Array.from(paths);
 }
 
+function suspendProcessByPid(pid) {
+    if (!NtSuspendProcess) return false;
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    const hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, 0, pid >>> 0);
+    if (!hProcess) return false;
+    try {
+        const st = NtSuspendProcess(hProcess);
+        return st === 0;
+    } catch {
+        return false;
+    } finally {
+        try { CloseHandle(hProcess); } catch {}
+    }
+}
+
+function resumeProcessByPid(pid) {
+    if (!NtResumeProcess) return false;
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    const hProcess = OpenProcess(PROCESS_SUSPEND_RESUME, 0, pid >>> 0);
+    if (!hProcess) return false;
+    try {
+        const st = NtResumeProcess(hProcess);
+        return st === 0;
+    } catch {
+        return false;
+    } finally {
+        try { CloseHandle(hProcess); } catch {}
+    }
+}
+
+function terminateProcessByPid(pid, exitCode = 1) {
+    if (!Number.isFinite(pid) || pid <= 0) return false;
+    const hProcess = OpenProcess(PROCESS_TERMINATE, 0, pid >>> 0);
+    if (!hProcess) return false;
+    try {
+        const code = Number.isFinite(exitCode) ? (exitCode >>> 0) : 1;
+        return !!TerminateProcess(hProcess, code);
+    } catch {
+        return false;
+    } finally {
+        try { CloseHandle(hProcess); } catch {}
+    }
+}
+
 module.exports = {
+    verifyTrust,
     getProcessPaths,
     getProcessImagePathByPid,
+    getProcessImageSnapshot,
+    getProcessModules,
     getDriveDeviceMap,
-    devicePathToDosPath
+    devicePathToDosPath,
+    suspendProcessByPid,
+    resumeProcessByPid,
+    terminateProcessByPid,
+    PROCESS_SUSPEND_RESUME,
+    PROCESS_TERMINATE
 };

@@ -28,6 +28,8 @@ const state = {
 }
 
 let behaviorDetailModal = null
+let interceptModal = null
+let interceptLastPayload = null
 
 function setTheme() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : { themeColor: '#1677ff' }
@@ -45,6 +47,103 @@ window.t = t
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
   return String(s).replace(/[&<>"']/g, c => map[c] || c)
+}
+
+function ensureInterceptModal() {
+  const el = document.getElementById('intercept-modal')
+  if (!el) return null
+  if (!interceptModal) {
+    interceptModal = new bootstrap.Modal(el, { backdrop: 'static', keyboard: false })
+  }
+  return interceptModal
+}
+
+function formatInterceptRule(payload) {
+  const p = payload && typeof payload === 'object' ? payload : null
+  const m = p && p.match && typeof p.match === 'object' ? p.match : null
+  if (!m) return ''
+  const ruleId = typeof m.ruleId === 'string' ? m.ruleId : ''
+  if (ruleId === 'unsigned_dll') return t('intercept_rule_unsigned_dll')
+  const provider = typeof m.provider === 'string' ? m.provider : ''
+  const op = typeof m.op === 'string' ? m.op : ''
+  if (ruleId) return ruleId
+  return provider && op ? `${provider}:${op}` : ''
+}
+
+function showInterceptModal(payload) {
+  interceptLastPayload = payload
+  const m = ensureInterceptModal()
+  if (!m) return
+
+  const titleEl = document.getElementById('intercept-title')
+  const descEl = document.getElementById('intercept-desc')
+  const labelPid = document.getElementById('intercept-label-pid')
+  const pidEl = document.getElementById('intercept-pid')
+  const labelProc = document.getElementById('intercept-label-process')
+  const procEl = document.getElementById('intercept-process')
+  const labelRule = document.getElementById('intercept-label-rule')
+  const ruleEl = document.getElementById('intercept-rule')
+  const pre = document.getElementById('intercept-event-json')
+  const btnResume = document.getElementById('intercept-btn-resume')
+  const btnTerminate = document.getElementById('intercept-btn-terminate')
+
+  const p = payload && typeof payload === 'object' ? payload : {}
+  const pid = Number.isFinite(p.pid) ? p.pid : null
+  const proc = p.process && typeof p.process === 'object' ? p.process : {}
+  const procName = typeof proc.name === 'string' ? proc.name : ''
+  const procImage = typeof proc.imagePath === 'string' ? proc.imagePath : ''
+  const ruleText = formatInterceptRule(p)
+  const paused = p.paused === true
+
+  if (titleEl) titleEl.textContent = t('intercept_title')
+  if (descEl) descEl.textContent = paused ? t('intercept_desc_paused') : t('intercept_desc_detected')
+  if (labelPid) labelPid.textContent = t('intercept_label_pid')
+  if (pidEl) pidEl.textContent = pid != null ? String(pid) : t('unknown')
+  if (labelProc) labelProc.textContent = t('intercept_label_process')
+  if (procEl) procEl.textContent = (procName || procImage) ? `${procName}${procName && procImage ? ' ' : ''}${procImage ? '(' + procImage + ')' : ''}` : t('unknown')
+  if (labelRule) labelRule.textContent = t('intercept_label_rule')
+  if (ruleEl) ruleEl.textContent = ruleText || t('unknown')
+
+  if (pre) {
+    let text = ''
+    try {
+      const obj = p.event && typeof p.event === 'object' ? p.event : null
+      text = obj ? JSON.stringify(obj, null, 2) : ''
+    } catch {}
+    pre.textContent = text || ''
+  }
+
+  if (btnResume) {
+    btnResume.textContent = t('intercept_btn_resume')
+    btnResume.disabled = pid == null
+    btnResume.onclick = async () => {
+      if (pid == null) return
+      try {
+        const ok = await window.api.process.resume(pid)
+        try { m.hide() } catch {}
+      } catch {
+        return alert(t('intercept_resume_failed'))
+      }
+    }
+  }
+
+  if (btnTerminate) {
+    btnTerminate.textContent = t('intercept_btn_terminate')
+    btnTerminate.disabled = pid == null
+    btnTerminate.onclick = async () => {
+      if (pid == null) return
+      const okConfirm = confirm(t('intercept_confirm_terminate'))
+      if (!okConfirm) return
+      try {
+        const ok = await window.api.process.terminate(pid)
+        try { m.hide() } catch {}
+      } catch {
+        return alert(t('intercept_terminate_failed'))
+      }
+    }
+  }
+
+  m.show()
 }
 
 function initNav() {
@@ -2497,4 +2596,9 @@ window.addEventListener('DOMContentLoaded', () => {
   updateTexts()
   showPage('overview')
   startHealthPoll()
+  try {
+    if (window.api && window.api.intercept && typeof window.api.intercept.onShow === 'function') {
+      window.api.intercept.onShow((payload) => showInterceptModal(payload))
+    }
+  } catch {}
 })

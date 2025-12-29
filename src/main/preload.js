@@ -317,6 +317,18 @@ const api = {
       return () => ipcRenderer.removeListener('etw-log', handler)
     }
   },
+  intercept: {
+    onShow: (callback) => {
+      const handler = (_event, data) => callback(data)
+      ipcRenderer.on('intercept:show', handler)
+      return () => ipcRenderer.removeListener('intercept:show', handler)
+    }
+  },
+  process: {
+    suspend: (pid) => ipcRenderer.invoke('process-suspend', pid),
+    resume: (pid) => ipcRenderer.invoke('process-resume', pid),
+    terminate: (pid) => ipcRenderer.invoke('process-terminate', pid)
+  },
   behavior: {
     getDbPath: () => ipcRenderer.invoke('behavior-get-db-path'),
     listProcesses: (query) => ipcRenderer.invoke('behavior-list-processes', query || {}),

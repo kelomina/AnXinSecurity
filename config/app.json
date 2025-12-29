@@ -73,10 +73,29 @@
     "processNameCacheTtlMs": 300000,
     "processNameResolveMaxPerSecond": 20,
     "consoleMaxPerSecond": 200,
+    "pidSnapshot": {
+      "enabled": true,
+      "maxPids": 8192
+    },
+    "signedPidFilter": {
+      "enabled": true,
+      "applyToSnapshot": true,
+      "applyToNewProcesses": true,
+      "maxVerifyPids": 0
+    },
     "network": {
       "enabled": true,
       "filterPrivateIps": true,
       "skipLoopback": true
+    },
+    "interception": {
+      "enabled": true,
+      "snapshotVerifyOnEtwStart": true,
+      "snapshotTrustThreshold": 3,
+      "snapshotMaxPids": 8192,
+      "modulesBufferBytes": 65536,
+      "skipSystemDll": true,
+      "maxUnsignedDllsPerProcess": 16
     }
   },
   "behaviorAnalyzer": {
@@ -92,11 +111,7 @@
         "skipOps": [
           "OpenKey",
           "CloseKey",
-          "QueryValue",
-          "QueryKey",
-          "EnumerateKey",
-          "SetInformationKey",
-          "EnumerateValue"
+          "QueryKey"
         ]
       },
       "Process": {

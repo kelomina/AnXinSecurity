@@ -775,90 +775,93 @@ function mapRegistryOp(opcode, id) {
 function createEventCallback() {
     if (eventCallback) return eventCallback;
     eventCallback = koffi.register((recordPtr) => {
-        if (isStopping) return;
         try {
-            const record = normalizeEventRecordPtr(recordPtr);
-            if (!record) return;
-            const header = record.EventHeader;
-            if (!header) return;
-            const providerId = header.ProviderId;
-            const descriptor = header.EventDescriptor;
-            if (!providerId || !descriptor) return;
+            if (isStopping) return;
+            try {
+                const record = normalizeEventRecordPtr(recordPtr);
+                if (!record) return;
+                const header = record.EventHeader;
+                if (!header) return;
+                const providerId = header.ProviderId;
+                const descriptor = header.EventDescriptor;
+                if (!providerId || !descriptor) return;
 
-            const isProcess = sameGuid(providerId, GUID_KernelProcess);
-            const isFile = sameGuid(providerId, GUID_KernelFile);
-            const isRegistry = sameGuid(providerId, GUID_KernelRegistry);
-            const isNetwork = !!(etwCfg && etwCfg.network && etwCfg.network.enabled !== false) && sameGuid(providerId, GUID_KernelNetwork);
+                const isProcess = sameGuid(providerId, GUID_KernelProcess);
+                const isFile = sameGuid(providerId, GUID_KernelFile);
+                const isRegistry = sameGuid(providerId, GUID_KernelRegistry);
+                const isNetwork = !!(etwCfg && etwCfg.network && etwCfg.network.enabled !== false) && sameGuid(providerId, GUID_KernelNetwork);
 
-            if (!isProcess && !isFile && !isRegistry && !isNetwork) return;
+                if (!isProcess && !isFile && !isRegistry && !isNetwork) return;
 
-            const eventData = {
-                timestamp: filetimeToIso(header.TimeStamp),
-                pid: header.ProcessId,
-                tid: header.ThreadId,
-                provider: isProcess ? 'Process' : (isFile ? 'File' : (isRegistry ? 'Registry' : 'Network')),
-                opcode: descriptor.Opcode,
-                id: descriptor.Id,
-                data: {}
-            };
+                const eventData = {
+                    timestamp: filetimeToIso(header.TimeStamp),
+                    pid: header.ProcessId,
+                    tid: header.ThreadId,
+                    provider: isProcess ? 'Process' : (isFile ? 'File' : (isRegistry ? 'Registry' : 'Network')),
+                    opcode: descriptor.Opcode,
+                    id: descriptor.Id,
+                    data: {}
+                };
 
-            const userDataPtr = record.UserData;
-            const userDataLen = (record.UserDataLength >>> 0);
-            const maxBytes = (etwCfg && Number.isFinite(etwCfg.userDataMaxBytes)) ? etwCfg.userDataMaxBytes : DEFAULT_ETW_CFG.userDataMaxBytes;
-            const cappedLen = Math.min(userDataLen, maxBytes);
+                const userDataPtr = record.UserData;
+                const userDataLen = (record.UserDataLength >>> 0);
+                const maxBytes = (etwCfg && Number.isFinite(etwCfg.userDataMaxBytes)) ? etwCfg.userDataMaxBytes : DEFAULT_ETW_CFG.userDataMaxBytes;
+                const cappedLen = Math.min(userDataLen, maxBytes);
 
-            if (cappedLen > 0 && userDataPtr) {
-                const bytes = koffi.decode(userDataPtr, koffi.array('uint8_t', cappedLen));
+                if (cappedLen > 0 && userDataPtr) {
+                    const bytes = koffi.decode(userDataPtr, koffi.array('uint8_t', cappedLen));
 
-                if (isProcess) {
-                    if (descriptor.Opcode === 1 || descriptor.Opcode === 2) {
-                        const pid = readUInt32LESafe(bytes, 0);
-                        const ppid = readUInt32LESafe(bytes, 4);
-                        const strings = extractUtf16Strings(bytes, 3);
-                        const imageName = pickBestPathCandidate(strings);
-                        eventData.data = {
-                            processId: pid,
-                            parentProcessId: ppid,
-                            imageName,
-                            type: descriptor.Opcode === 1 ? 'Start' : 'Stop'
-                        };
-                        postMessage({ type: 'log', event: eventData });
-                    }
-                } else if (isFile) {
-                    if (descriptor.Opcode === 32 || descriptor.Opcode === 35 || descriptor.Opcode === 36) {
-                        const strings = extractUtf16Strings(bytes, 3);
-                        const fileName = pickBestPathCandidate(strings);
-                        if (fileName) {
+                    if (isProcess) {
+                        if (descriptor.Opcode === 1 || descriptor.Opcode === 2) {
+                            const pid = readUInt32LESafe(bytes, 0);
+                            const ppid = readUInt32LESafe(bytes, 4);
+                            const strings = extractUtf16Strings(bytes, 3);
+                            const imageName = pickBestPathCandidate(strings);
                             eventData.data = {
-                                fileName,
-                                type: descriptor.Opcode === 32 ? 'Create' : (descriptor.Opcode === 35 ? 'Delete' : 'Rename')
+                                processId: pid,
+                                parentProcessId: ppid,
+                                imageName,
+                                type: descriptor.Opcode === 1 ? 'Start' : 'Stop'
                             };
                             postMessage({ type: 'log', event: eventData });
                         }
+                    } else if (isFile) {
+                        if (descriptor.Opcode === 32 || descriptor.Opcode === 35 || descriptor.Opcode === 36) {
+                            const strings = extractUtf16Strings(bytes, 3);
+                            const fileName = pickBestPathCandidate(strings);
+                            if (fileName) {
+                                eventData.data = {
+                                    fileName,
+                                    type: descriptor.Opcode === 32 ? 'Create' : (descriptor.Opcode === 35 ? 'Delete' : 'Rename')
+                                };
+                                postMessage({ type: 'log', event: eventData });
+                            }
+                        }
+                    } else if (isRegistry) {
+                        const regType = mapRegistryOp(descriptor.Opcode, descriptor.Id);
+                        if (shouldSkipByCfg('Registry', regType)) {
+                            return;
+                        }
+                        eventData.data = parseRegistryUserData(bytes, descriptor, etwCfg);
+                        postMessage({ type: 'log', event: eventData });
+                    } else if (isNetwork) {
+                        const netType = mapNetworkOp(descriptor);
+                        if (!netType) return;
+                        if (shouldSkipByCfg('Network', netType)) return;
+                        const parsed = parseNetworkUserDataHeuristic(bytes, etwCfg);
+                        if (!parsed) return;
+                        eventData.data = Object.assign({ type: netType }, parsed);
+                        postMessage({ type: 'log', event: eventData });
                     }
-                } else if (isRegistry) {
-                    const regType = mapRegistryOp(descriptor.Opcode, descriptor.Id);
-                    if (shouldSkipByCfg('Registry', regType)) {
-                        return;
-                    }
-                    eventData.data = parseRegistryUserData(bytes, descriptor, etwCfg);
-                    postMessage({ type: 'log', event: eventData });
-                } else if (isNetwork) {
-                    const netType = mapNetworkOp(descriptor);
-                    if (!netType) return;
-                    if (shouldSkipByCfg('Network', netType)) return;
-                    const parsed = parseNetworkUserDataHeuristic(bytes, etwCfg);
-                    if (!parsed) return;
-                    eventData.data = Object.assign({ type: netType }, parsed);
-                    postMessage({ type: 'log', event: eventData });
+                }
+            } catch (e) {
+                const now = Date.now();
+                if (now - lastCallbackErrorAt > 1000) {
+                    lastCallbackErrorAt = now;
+                    postError('ETW_CALLBACK_ERROR', (e && e.message) ? e.message : String(e || 'callback_error'), { stack: e && e.stack ? String(e.stack) : '' });
                 }
             }
-        } catch (e) {
-            const now = Date.now();
-            if (now - lastCallbackErrorAt > 1000) {
-                lastCallbackErrorAt = now;
-                postError('ETW_CALLBACK_ERROR', (e && e.message) ? e.message : String(e || 'callback_error'), { stack: e && e.stack ? String(e.stack) : '' });
-            }
+        } catch (fatal) {
         }
     }, EventRecordCallbackType);
     return eventCallback;
@@ -941,7 +944,6 @@ function cleanupResources() {
     sessionHandle = 0n;
     logfile = null;
     currentHandleBuffer = null;
-    unregisterCallback();
 }
 
 async function stopSession(timeoutMs) {

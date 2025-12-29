@@ -148,5 +148,17 @@
   "behavior_mitre_empty": "No behaviors mapped to ATT&CK",
   "behavior_mitre_no_hits": "No hits",
   "behavior_mitre_matched": "Mapped",
-  "behavior_mitre_unmatched": "Unmapped"
+  "behavior_mitre_unmatched": "Unmapped",
+  "intercept_title": "Threat Interception",
+  "intercept_desc_detected": "Unsigned DLL loaded by process.",
+  "intercept_desc_paused": "Unsigned DLL loaded by process. The process has been suspended.",
+  "intercept_label_pid": "PID: ",
+  "intercept_label_process": "Process: ",
+  "intercept_label_rule": "Rule: ",
+  "intercept_rule_unsigned_dll": "Unsigned DLL (startup snapshot)",
+  "intercept_btn_resume": "Resume",
+  "intercept_btn_terminate": "Terminate",
+  "intercept_confirm_terminate": "Terminate this process?",
+  "intercept_resume_failed": "Failed to resume process",
+  "intercept_terminate_failed": "Failed to terminate process"
 }
