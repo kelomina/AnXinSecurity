@@ -6,27 +6,28 @@ function getBehaviorCfg(appConfig = {}) {
   const enabled = cfg.enabled !== false
   const flushIntervalMs = Number.isFinite(cfg.flushIntervalMs) ? cfg.flushIntervalMs : 500
   const sqlite = cfg && cfg.sqlite ? cfg.sqlite : {}
-  const filters = cfg && cfg.filters ? cfg.filters : {}
   const sqliteCfg = {
     mode: sqlite.mode === 'file' ? 'file' : 'memory',
     directory: typeof sqlite.directory === 'string' ? sqlite.directory : '%TEMP%',
     fileName: typeof sqlite.fileName === 'string' ? sqlite.fileName : 'anxin_etw_behavior.db'
   }
-  return { enabled, flushIntervalMs, sqlite: sqliteCfg, filters }
+  return { enabled, flushIntervalMs, sqlite: sqliteCfg }
 }
 
-function createBehaviorAnalyzer(appConfig = {}) {
+function createBehaviorAnalyzer(appConfig = {}, deps = {}) {
   const cfg = getBehaviorCfg(appConfig)
+  const WorkerCtor = deps && deps.Worker ? deps.Worker : Worker
+  const behaviorWorkerPath = deps && typeof deps.workerPath === 'string' && deps.workerPath ? deps.workerPath : path.join(__dirname, 'workers/behavior_db_worker.js')
   let worker = null
   let dbPath = null
   let requestSeq = 1
   const pending = new Map()
+  let writeEnabled = true
 
   function start() {
     if (!cfg.enabled) return
     if (worker) return
-    const workerPath = path.join(__dirname, 'workers/behavior_db_worker.js')
-    worker = new Worker(workerPath)
+    worker = new WorkerCtor(behaviorWorkerPath)
 
     worker.on('message', (msg) => {
       if (msg && msg.type === 'ready') {
@@ -71,13 +72,21 @@ function createBehaviorAnalyzer(appConfig = {}) {
     })
 
     worker.postMessage({ type: 'init', config: cfg })
+    try { worker.postMessage({ type: 'write_enabled', enabled: writeEnabled }) } catch {}
   }
 
   function ingest(event) {
     if (!worker) return
+    if (!writeEnabled) return
     try {
       worker.postMessage({ type: 'ingest', event })
     } catch {}
+  }
+
+  function setWriteEnabled(enabled) {
+    writeEnabled = enabled !== false
+    if (!worker) return
+    try { worker.postMessage({ type: 'write_enabled', enabled: writeEnabled }) } catch {}
   }
 
   function call(type, query) {
@@ -123,6 +132,7 @@ function createBehaviorAnalyzer(appConfig = {}) {
     start,
     stop,
     ingest,
+    setWriteEnabled,
     getDbPath: () => dbPath,
     listProcesses: (q) => call('listProcesses', q),
     listEvents: (q) => call('listEvents', q),

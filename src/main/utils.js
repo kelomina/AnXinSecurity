@@ -273,6 +273,25 @@ function sanitizeText(s) {
   return s.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/g, '').trim()
 }
 
+function normalizeWindowsPathText(v, devicePathToDosPath) {
+  if (typeof v !== 'string' || !v) return v
+  let s = sanitizeText(v)
+  if (!s) return s
+  if (typeof devicePathToDosPath === 'function') {
+    try {
+      const converted = devicePathToDosPath(s)
+      if (typeof converted === 'string' && converted) s = converted
+    } catch {}
+  }
+  return sanitizeText(s)
+}
+
+function isBehaviorMonitoringEnabled(appConfig) {
+  const cfg = appConfig && typeof appConfig === 'object' ? appConfig : {}
+  const bm = cfg && cfg.behaviorMonitoring && typeof cfg.behaviorMonitoring === 'object' ? cfg.behaviorMonitoring : {}
+  return bm.enabled !== false
+}
+
 function isCleanText(s) {
   if (typeof s !== 'string' || !s) return false
   return !/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]/.test(s)
@@ -318,6 +337,8 @@ module.exports = {
   parseEtwEventFromConsoleLine,
   createRateLimiter,
   sanitizeText,
+  normalizeWindowsPathText,
+  isBehaviorMonitoringEnabled,
   isCleanText,
   isLikelyWindowsPath,
   isLikelyProcessImagePath,

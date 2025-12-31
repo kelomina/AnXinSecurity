@@ -3,6 +3,8 @@ const { createProcessBehaviorStore } = require('../process_behavior_store')
 
 let store = null
 let flushTimer = null
+let flushIntervalMs = 500
+let writeEnabled = true
 
 function postMessage(msg) {
   if (!parentPort) return
@@ -15,29 +17,41 @@ function clearFlushTimer() {
   flushTimer = null
 }
 
+function resetFlushTimer() {
+  clearFlushTimer()
+  if (!store) return
+  if (!writeEnabled) return
+  if (!(flushIntervalMs > 0)) return
+  flushTimer = setInterval(() => {
+    if (!store) return
+    if (!writeEnabled) return
+    try { store.exportToFileIfNeeded() } catch {}
+  }, flushIntervalMs)
+  if (flushTimer.unref) flushTimer.unref()
+}
+
 async function init(payload) {
   const cfg = payload && payload.config ? payload.config : {}
   const sqliteCfg = cfg && cfg.sqlite ? cfg.sqlite : {}
-  const filters = cfg && cfg.filters ? cfg.filters : {}
-  store = await createProcessBehaviorStore(sqliteCfg, filters)
+  store = await createProcessBehaviorStore(sqliteCfg)
 
-  const flushIntervalMs = Number.isFinite(cfg.flushIntervalMs) ? cfg.flushIntervalMs : 500
-  clearFlushTimer()
-  if (flushIntervalMs > 0) {
-    flushTimer = setInterval(() => {
-      try { store.exportToFileIfNeeded() } catch {}
-    }, flushIntervalMs)
-    if (flushTimer.unref) flushTimer.unref()
-  }
+  flushIntervalMs = Number.isFinite(cfg.flushIntervalMs) ? cfg.flushIntervalMs : 500
+  resetFlushTimer()
 
   postMessage({ type: 'ready', dbPath: store.getDbPath() })
 }
 
 function ingest(payload) {
   if (!store) return
+  if (!writeEnabled) return
   try {
     store.ingest(payload && payload.event)
   } catch {}
+}
+
+function setWriteEnabled(payload) {
+  writeEnabled = !!(payload && payload.enabled)
+  resetFlushTimer()
 }
 
 function handleListProcesses(payload) {
@@ -91,6 +105,8 @@ if (parentPort) {
     const type = msg && msg.type
     if (type === 'init') {
       init(msg).catch((e) => postMessage({ type: 'error', message: e && e.message ? e.message : String(e) }))
+    } else if (type === 'write_enabled') {
+      setWriteEnabled(msg)
     } else if (type === 'ingest') {
       ingest(msg)
     } else if (type === 'listProcesses') {

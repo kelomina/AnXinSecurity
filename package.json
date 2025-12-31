@@ -1,6 +1,6 @@
 {
   "name": "anxin-security",
-  "version": "0.1.1",
+  "version": "0.3.0",
   "description": "AnXin Security Electron app",
   "main": "src/main/main.js",
   "scripts": {
@@ -58,12 +58,12 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^31.7.7",
+    "electron": "^39.2.7",
     "electron-builder": "^26.0.12"
   },
   "dependencies": {
-    "bootstrap": "^5.3.3",
-    "koffi": "^2.14.1",
-    "sql.js": "^1.11.0"
+    "bootstrap": "^5.3.8",
+    "koffi": "^2.15.0",
+    "sql.js": "^1.13.0"
   }
 }

@@ -1,6 +1,6 @@
 function asPid(v) {
   const n = typeof v === 'number' ? v : parseInt(String(v), 10)
-  if (!Number.isFinite(n) || n <= 0) return null
+  if (!Number.isFinite(n) || n < 0) return null
   return n
 }
 

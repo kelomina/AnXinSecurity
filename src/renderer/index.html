@@ -36,6 +36,9 @@
             <h3 id="overview-title"></h3>
             <p id="overview-desc"></p>
             <div id="overview-health-status" class="mt-3"></div>
+            <div id="overview-etw-file-event-row" class="mt-3">
+              <span id="overview-etw-file-event" class="badge bg-secondary path-fade overview-etw-file-event">等待 ETW 文件事件...</span>
+            </div>
           </div>
         </section>
 
@@ -272,6 +275,10 @@
               </select>
             </div>
             <div id="perf-settings" class="mt-2">
+              <div class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" id="toggle-behavior-monitoring" />
+                <label class="form-check-label" for="toggle-behavior-monitoring" id="label-behavior-monitoring"></label>
+              </div>
               <div class="form-check form-switch">
                 <input class="form-check-input" type="checkbox" id="toggle-auto-tune" />
                 <label class="form-check-label" for="toggle-auto-tune" id="label-auto-tune"></label>

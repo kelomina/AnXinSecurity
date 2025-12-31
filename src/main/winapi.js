@@ -298,6 +298,15 @@ function getDriveDeviceMap() {
     return map;
 }
 
+function primeDriveDeviceMap() {
+    try {
+        getDriveDeviceMap();
+        return true;
+    } catch {
+        return false;
+    }
+}
+
 function devicePathToDosPath(p) {
     if (typeof p !== 'string') return '';
     let s = p.trim();
@@ -308,9 +317,18 @@ function devicePathToDosPath(p) {
     if (!lower.startsWith('\\device\\')) return s;
 
     const map = getDriveDeviceMap();
-    for (const [dev, driveName] of map.entries()) {
-        if (lower === dev) return driveName + '\\';
-        if (lower.startsWith(dev + '\\')) return driveName + s.substring(dev.length);
+    const prefixStart = 8;
+    const prefixEnd = lower.indexOf('\\', prefixStart);
+    const devKey = prefixEnd === -1 ? lower : lower.slice(0, prefixEnd);
+    const driveName = map.get(devKey);
+    if (driveName) {
+        const rest = s.substring(devKey.length);
+        return rest ? (driveName + rest) : (driveName + '\\');
+    }
+
+    for (const [dev, driveName2] of map.entries()) {
+        if (lower === dev) return driveName2 + '\\';
+        if (lower.startsWith(dev + '\\')) return driveName2 + s.substring(dev.length);
     }
     return s;
 }
@@ -468,6 +486,7 @@ module.exports = {
     getProcessImageSnapshot,
     getProcessModules,
     getDriveDeviceMap,
+    primeDriveDeviceMap,
     devicePathToDosPath,
     suspendProcessByPid,
     resumeProcessByPid,

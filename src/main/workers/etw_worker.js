@@ -2,6 +2,8 @@ const { parentPort } = require('worker_threads');
 const fs = require('fs');
 const path = require('path');
 const koffi = require('koffi');
+const { createEtwTrustedPidFilter } = require('../etw_trusted_pid_filter');
+const winapi = require('../winapi');
 
 const libAdvapi32 = koffi.load('advapi32.dll');
 const libKernel32 = koffi.load('kernel32.dll');
@@ -50,10 +52,10 @@ const ULONG64 = 'uint64_t';
 const USHORT = 'uint16_t';
 const UCHAR = 'uint8_t';
 const LONGLONG = 'int64_t';
-const HANDLE = koffi.pointer('HANDLE', koffi.opaque());
+const HANDLE = koffi.pointer('ETW_HANDLE', koffi.opaque());
 const PVOID = 'void *';
 
-const GUID = koffi.struct('GUID', {
+const GUID = koffi.struct('ETW_GUID', {
     Data1: 'uint32_t',
     Data2: 'uint16_t',
     Data3: 'uint16_t',
@@ -242,6 +244,109 @@ let lastCallbackErrorAt = 0;
 let etwCfg = null;
 let lastPayloadCfg = null;
 
+let trustedPidFilter = createEtwTrustedPidFilter({
+    verifyTrust: (p) => {
+        if (!winapi || typeof winapi.verifyTrust !== 'function') return false;
+        return winapi.verifyTrust(p) === true;
+    },
+    devicePathToDosPath: (p) => {
+        if (!winapi || typeof winapi.devicePathToDosPath !== 'function') return p;
+        return winapi.devicePathToDosPath(p) || p;
+    }
+});
+
+let extraTrustedPids = new Set();
+let trustedSkipProviders = null;
+let didPrimeDeviceMap = false;
+
+function primeDriveDeviceMapOnce() {
+    if (didPrimeDeviceMap) return;
+    didPrimeDeviceMap = true;
+    try {
+        if (winapi && typeof winapi.primeDriveDeviceMap === 'function') {
+            winapi.primeDriveDeviceMap();
+        } else if (winapi && typeof winapi.getDriveDeviceMap === 'function') {
+            winapi.getDriveDeviceMap();
+        }
+    } catch {}
+}
+
+function normalizeEtwPathValue(v) {
+    if (typeof v !== 'string' || !v) return v;
+    let s = v.trim();
+    if (!s) return s;
+    if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+        s = s.slice(1, -1).trim();
+        if (!s) return s;
+    }
+    if (!winapi || typeof winapi.devicePathToDosPath !== 'function') return s;
+    primeDriveDeviceMapOnce();
+    try { return winapi.devicePathToDosPath(s) || s; } catch { return s; }
+}
+
+function asPid(v) {
+    const n = typeof v === 'number' ? v : parseInt(String(v), 10);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return n;
+}
+
+function getRelevantPidForEvent(ev) {
+    const e = ev && typeof ev === 'object' ? ev : null;
+    if (!e) return null;
+    const provider = typeof e.provider === 'string' ? e.provider : '';
+    const data = e.data && typeof e.data === 'object' ? e.data : null;
+    if (provider === 'Process' && data) {
+        const typ = typeof data.type === 'string' ? data.type : '';
+        if (typ === 'Start' || typ === 'Stop') {
+            const subjectPid = asPid(data.processId);
+            if (subjectPid != null) return subjectPid;
+        }
+    }
+    return asPid(e.pid);
+}
+
+function getTrustedPidCfg(filters) {
+    const f = (filters && typeof filters === 'object') ? filters : {};
+    return (f.trustedPid && typeof f.trustedPid === 'object') ? f.trustedPid : {};
+}
+
+function applyTrustedPidCfg(filters) {
+    const cfg = getTrustedPidCfg(filters);
+    try { trustedPidFilter.configure(cfg); } catch {}
+    try { trustedPidFilter.setUserTrustedPaths(cfg.userTrustedPaths); } catch {}
+    extraTrustedPids = new Set();
+    trustedSkipProviders = null;
+    if (cfg && Array.isArray(cfg.skipProviders)) {
+        const set = new Set();
+        for (const it of cfg.skipProviders) {
+            const s = String(it || '').trim().toLowerCase();
+            if (s) set.add(s);
+        }
+        trustedSkipProviders = set;
+    }
+    const list = Array.isArray(cfg.extraTrustedPids) ? cfg.extraTrustedPids : [];
+    for (const it of list) {
+        const p = asPid(it);
+        if (p != null) extraTrustedPids.add(p);
+    }
+}
+
+function shouldSkipTrustedEvent(ev) {
+    const filters = (etwCfg && etwCfg.filters && typeof etwCfg.filters === 'object') ? etwCfg.filters : {};
+    const cfg = getTrustedPidCfg(filters);
+    if (cfg && cfg.enabled === false) return false;
+    try {
+        if (trustedPidFilter.shouldSkipEvent(ev)) return true;
+    } catch {}
+    const pid = getRelevantPidForEvent(ev);
+    if (pid == null) return false;
+    if (!extraTrustedPids.has(pid)) return false;
+    if (!trustedSkipProviders) return true;
+    const provider = (ev && typeof ev.provider === 'string') ? ev.provider.trim().toLowerCase() : '';
+    if (!provider) return true;
+    return trustedSkipProviders.has(provider);
+}
+
 const DEFAULT_ETW_CFG = {
     enabled: true,
     sessionName: 'AnXinSecuritySession',
@@ -250,12 +355,69 @@ const DEFAULT_ETW_CFG = {
     startRetries: 2,
     retryDelayMs: 150,
     emitRegistryRawHex: false,
+    providers: {
+        Process: { anyKeyword: '0x0', allKeyword: '0x0' },
+        File: { anyKeyword: '0xFFFFFFFFFFFFFFFF', allKeyword: '0x0' },
+        Registry: { anyKeyword: '0x0', allKeyword: '0x0' },
+        Network: { anyKeyword: '0x0', allKeyword: '0x0' }
+    },
     network: {
         enabled: true,
         filterPrivateIps: true,
         skipLoopback: true
     }
 };
+
+function canonicalProviderKey(k) {
+    const s = String(k || '').trim().toLowerCase();
+    if (s === 'process') return 'Process';
+    if (s === 'file') return 'File';
+    if (s === 'registry') return 'Registry';
+    if (s === 'network') return 'Network';
+    return null;
+}
+
+function normalizeProvidersObj(obj) {
+    const out = {};
+    if (!obj || typeof obj !== 'object') return out;
+    for (const k of Object.keys(obj)) {
+        const ck = canonicalProviderKey(k);
+        if (!ck) continue;
+        const v = obj[k];
+        if (v && typeof v === 'object') out[ck] = { ...v };
+    }
+    return out;
+}
+
+function mergeProviders(base, fromFile, incoming) {
+    const b = normalizeProvidersObj(base);
+    const f = normalizeProvidersObj(fromFile);
+    const i = normalizeProvidersObj(incoming);
+    const keys = ['Process', 'File', 'Registry', 'Network'];
+    const out = {};
+    for (const k of keys) {
+        out[k] = { ...(b[k] || {}), ...(f[k] || {}), ...(i[k] || {}) };
+    }
+    return out;
+}
+
+function parseKeyword64(v) {
+    if (typeof v === 'bigint') return v;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return BigInt(Math.floor(v));
+    const s = (typeof v === 'string') ? v.trim() : '';
+    if (!s) return 0n;
+    try {
+        return BigInt(s);
+    } catch {
+        return 0n;
+    }
+}
+
+function getProviderKeywords(cfg, providerKey) {
+    const providers = (cfg && cfg.providers && typeof cfg.providers === 'object') ? cfg.providers : {};
+    const p = (providers && providers[providerKey] && typeof providers[providerKey] === 'object') ? providers[providerKey] : {};
+    return { any: parseKeyword64(p.anyKeyword), all: parseKeyword64(p.allKeyword) };
+}
 
 function loadAppConfig() {
     const p = path.join(__dirname, '../../../config/app.json');
@@ -271,9 +433,14 @@ function resolveEtwCfg(payloadCfg) {
     const fromFile = loadAppConfig();
     const cfg = (fromFile && typeof fromFile === 'object' ? fromFile : {});
     const etw = (cfg.etw && typeof cfg.etw === 'object') ? cfg.etw : {};
-    const filters = (cfg.behaviorAnalyzer && cfg.behaviorAnalyzer.filters && typeof cfg.behaviorAnalyzer.filters === 'object') ? cfg.behaviorAnalyzer.filters : {};
     const incoming = (payloadCfg && typeof payloadCfg === 'object') ? payloadCfg : {};
-    const merged = { ...DEFAULT_ETW_CFG, ...etw, ...incoming, filters };
+    const fileEtwFilters = (etw.filters && typeof etw.filters === 'object') ? etw.filters : {};
+    const compatFilters = (cfg.behaviorAnalyzer && cfg.behaviorAnalyzer.filters && typeof cfg.behaviorAnalyzer.filters === 'object') ? cfg.behaviorAnalyzer.filters : {};
+    const incomingFilters = (incoming.filters && typeof incoming.filters === 'object') ? incoming.filters : {};
+    const filters = { ...compatFilters, ...fileEtwFilters, ...incomingFilters };
+
+    const merged = { ...DEFAULT_ETW_CFG, ...etw, ...incoming };
+    merged.filters = filters;
     merged.enabled = merged.enabled !== false;
     merged.sessionName = typeof merged.sessionName === 'string' && merged.sessionName.trim() ? merged.sessionName.trim() : DEFAULT_ETW_CFG.sessionName;
     merged.userDataMaxBytes = Number.isFinite(merged.userDataMaxBytes) ? Math.max(1024, Math.min(1024 * 1024, merged.userDataMaxBytes)) : DEFAULT_ETW_CFG.userDataMaxBytes;
@@ -291,6 +458,9 @@ function resolveEtwCfg(payloadCfg) {
     network.skipLoopback = network.skipLoopback !== false;
     merged.network = network;
 
+    merged.providers = mergeProviders(DEFAULT_ETW_CFG.providers, etw.providers, incoming.providers);
+
+    applyTrustedPidCfg(merged.filters);
     return merged;
 }
 
@@ -691,6 +861,21 @@ function mapNetworkOp(descriptor) {
     return null;
 }
 
+function mapFileOp(descriptor) {
+    const opcode = descriptor && Number.isFinite(descriptor.Opcode) ? descriptor.Opcode : null;
+    const id = descriptor && Number.isFinite(descriptor.Id) ? descriptor.Id : null;
+    if (id != null) {
+        if (id === 30 || id === 12 || id === 10) return 'Create';
+        if (id === 26 || id === 11) return 'Delete';
+        if (id === 27 || id === 19) return 'Rename';
+    }
+    const op = (opcode === 32 || opcode === 35 || opcode === 36) ? opcode : ((id === 32 || id === 35 || id === 36) ? id : null);
+    if (op === 32) return 'Create';
+    if (op === 35) return 'Delete';
+    if (op === 36) return 'Rename';
+    return null;
+}
+
 function pickBestPathCandidate(strings) {
     const list = filterLikelyStrings(strings);
     const scored = list.map((s) => {
@@ -816,26 +1001,35 @@ function createEventCallback() {
                             const pid = readUInt32LESafe(bytes, 0);
                             const ppid = readUInt32LESafe(bytes, 4);
                             const strings = extractUtf16Strings(bytes, 3);
-                            const imageName = pickBestPathCandidate(strings);
+                            const imageName = normalizeEtwPathValue(pickBestPathCandidate(strings));
+                            const typ = descriptor.Opcode === 1 ? 'Start' : 'Stop';
                             eventData.data = {
                                 processId: pid,
                                 parentProcessId: ppid,
                                 imageName,
-                                type: descriptor.Opcode === 1 ? 'Start' : 'Stop'
+                                type: typ
                             };
+                            if (shouldSkipByCfg('Process', typ)) {
+                                return;
+                            }
+                            if (typ === 'Start') {
+                                try { trustedPidFilter.onProcessStart(pid, imageName); } catch {}
+                            } else {
+                                try { trustedPidFilter.onProcessStop(pid); } catch {}
+                            }
+                            if (shouldSkipTrustedEvent(eventData)) return;
                             postMessage({ type: 'log', event: eventData });
                         }
                     } else if (isFile) {
-                        if (descriptor.Opcode === 32 || descriptor.Opcode === 35 || descriptor.Opcode === 36) {
-                            const strings = extractUtf16Strings(bytes, 3);
-                            const fileName = pickBestPathCandidate(strings);
-                            if (fileName) {
-                                eventData.data = {
-                                    fileName,
-                                    type: descriptor.Opcode === 32 ? 'Create' : (descriptor.Opcode === 35 ? 'Delete' : 'Rename')
-                                };
-                                postMessage({ type: 'log', event: eventData });
-                            }
+                        const typ = mapFileOp(descriptor);
+                        if (!typ) return;
+                        const strings = extractUtf16Strings(bytes, 3);
+                        const fileName = normalizeEtwPathValue(pickBestPathCandidate(strings));
+                        if (fileName) {
+                            eventData.data = { fileName, type: typ };
+                            if (shouldSkipByCfg('File', typ)) return;
+                            if (shouldSkipTrustedEvent(eventData)) return;
+                            postMessage({ type: 'log', event: eventData });
                         }
                     } else if (isRegistry) {
                         const regType = mapRegistryOp(descriptor.Opcode, descriptor.Id);
@@ -843,6 +1037,7 @@ function createEventCallback() {
                             return;
                         }
                         eventData.data = parseRegistryUserData(bytes, descriptor, etwCfg);
+                        if (shouldSkipTrustedEvent(eventData)) return;
                         postMessage({ type: 'log', event: eventData });
                     } else if (isNetwork) {
                         const netType = mapNetworkOp(descriptor);
@@ -851,6 +1046,7 @@ function createEventCallback() {
                         const parsed = parseNetworkUserDataHeuristic(bytes, etwCfg);
                         if (!parsed) return;
                         eventData.data = Object.assign({ type: netType }, parsed);
+                        if (shouldSkipTrustedEvent(eventData)) return;
                         postMessage({ type: 'log', event: eventData });
                     }
                 }
@@ -967,6 +1163,8 @@ async function startWithRetry(payloadCfg) {
         return;
     }
 
+    primeDriveDeviceMapOnce();
+
     const elev = getElevationState();
     if (elev.ok && !elev.isElevated) {
         postError('ETW_PERMISSION', '权限不足：需要管理员权限才能启动 ETW 监听', { suggestion: '请以管理员身份运行程序或启用安装包的提权选项', isElevated: false });
@@ -1024,17 +1222,21 @@ async function startSessionOnce() {
         }
         sessionHandle = handlePtr[0];
 
-        const s1 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelProcess), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
+        const kw1 = getProviderKeywords(etwCfg, 'Process');
+        const s1 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelProcess), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw1.any, kw1.all, 0, null);
         if (!checkStatus('EnableTraceEx2(Process)', s1, { sessionName })) throw new Error('EnableTraceEx2(Process) failed: ' + s1);
 
-        const s2 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelFile), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
+        const kw2 = getProviderKeywords(etwCfg, 'File');
+        const s2 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelFile), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw2.any, kw2.all, 0, null);
         if (!checkStatus('EnableTraceEx2(File)', s2, { sessionName })) throw new Error('EnableTraceEx2(File) failed: ' + s2);
 
-        const s3 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelRegistry), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
+        const kw3 = getProviderKeywords(etwCfg, 'Registry');
+        const s3 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelRegistry), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw3.any, kw3.all, 0, null);
         if (!checkStatus('EnableTraceEx2(Registry)', s3, { sessionName })) throw new Error('EnableTraceEx2(Registry) failed: ' + s3);
 
         if (etwCfg && etwCfg.network && etwCfg.network.enabled !== false) {
-            const s4 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelNetwork), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, 0n, 0n, 0, null);
+            const kw4 = getProviderKeywords(etwCfg, 'Network');
+            const s4 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelNetwork), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw4.any, kw4.all, 0, null);
             if (!checkStatus('EnableTraceEx2(Network)', s4, { sessionName })) throw new Error('EnableTraceEx2(Network) failed: ' + s4);
         }
 
@@ -1126,6 +1328,26 @@ if (parentPort) {
                 etwCfg = resolveEtwCfg(msg.config);
                 return;
             }
+            if (msg && typeof msg === 'object' && msg.type === 'trusted_seed_snapshot') {
+                const list = Array.isArray(msg.list) ? msg.list : [];
+                try { trustedPidFilter.seedFromSnapshot(list); } catch {}
+                return;
+            }
+            if (msg && typeof msg === 'object' && msg.type === 'trusted_add') {
+                const paths = Array.isArray(msg.paths) ? msg.paths : [];
+                for (const p of paths) {
+                    try { trustedPidFilter.addUserTrustedPath(p); } catch {}
+                }
+                const pids = Array.isArray(msg.pids) ? msg.pids : [];
+                for (const pid of pids) {
+                    const p = asPid(pid);
+                    if (p != null) {
+                        try { trustedPidFilter.addTrustedPid(p); } catch {}
+                        extraTrustedPids.add(p);
+                    }
+                }
+                return;
+            }
         } catch (e) {
             postError('ETW_MESSAGE_HANDLER_ERROR', (e && e.message) ? e.message : String(e || 'message_error'), { stack: e && e.stack ? String(e.stack) : '' });
         }
@@ -1139,6 +1361,9 @@ module.exports = {
     WNODE_HEADER,
     EVENT_TRACE_REAL_TIME_MODE,
     __test: {
+        parseKeyword64,
+        mergeProviders,
+        getProviderKeywords,
         filetimeToIso,
         extractUtf16Strings,
         parseRegistryUserData,
@@ -1147,6 +1372,7 @@ module.exports = {
         resolveEtwCfg,
         mapRegistryOp,
         mapNetworkOp,
+        mapFileOp,
         readUInt32LESafe,
         tryDecodeEventRecord,
         normalizeEventRecordPtr,

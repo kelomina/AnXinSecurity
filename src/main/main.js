@@ -8,12 +8,13 @@ const quarantineManager = require('./quarantine_manager')
 const processes = require('./processes')
 const scanCache = require('./scan_cache')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
+const { runStartupSequence } = require('./startup_sequence')
 const { resolveMainWindowOptions } = require('./window_options')
-const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter, sanitizeText, isCleanText, isLikelyProcessImageText, resolveFileFromBaseDirs } = require('./utils')
+const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMeaning, createRateLimiter, sanitizeText, normalizeWindowsPathText, isBehaviorMonitoringEnabled, isCleanText, isLikelyProcessImageText, resolveFileFromBaseDirs } = require('./utils')
 const { createEtwPidCache } = require('./etw_pid_cache')
-const { createEtwTrustedPidFilter } = require('./etw_trusted_pid_filter')
 const { createInterceptionQueue } = require('./interception_manager')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
+const { normalizePathKey, getPayloadPaths, decideSnapshotActions } = require('./snapshot_engine_policy')
 
 let winapi = null
 try {
@@ -53,6 +54,7 @@ function loadConfig() {
         maxFileSizeMB: 500,
         ipc: { enabled: true, prefer: true, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 }
       },
+      behaviorMonitoring: { enabled: true },
       behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
     }
   }
@@ -61,7 +63,12 @@ function loadConfig() {
 let tray
 let win
 let splash
+let splashStatusText = ''
+let allowBacklogDuringSplash = false
+let mainWindowReadyResolve = null
+const mainWindowReadyPromise = new Promise((resolve) => { mainWindowReadyResolve = resolve })
 let config = loadConfig()
+let startupEngineEnsured = false
 const behavior = createBehaviorAnalyzer(config)
 const scannerClient = createScannerClient(() => config)
 let i18nDict = {}
@@ -103,16 +110,7 @@ const eventLogs = []
 let etwConsoleLimiter = null
 let etwConsoleLimiterMax = null
 const etwPidCache = createEtwPidCache()
-const etwTrustedPidFilter = createEtwTrustedPidFilter({
-  verifyTrust: (p) => {
-    if (!winapi || typeof winapi.verifyTrust !== 'function') return false
-    return winapi.verifyTrust(p) === true
-  },
-  devicePathToDosPath: (p) => {
-    if (!winapi || typeof winapi.devicePathToDosPath !== 'function') return p
-    return winapi.devicePathToDosPath(p) || p
-  }
-})
+const pendingTrustedAdd = { paths: new Set(), pids: new Set() }
 let interceptionSnapshotWorker = null
 let interceptionSnapshotStarted = false
 let isSnapshotScanning = false
@@ -122,7 +120,7 @@ let interceptionResumeInFlight = false
 const interceptionQueue = createInterceptionQueue({
   showFn: (payload) => {
     if (isSnapshotScanning) return false
-    if (splash && !splash.isDestroyed()) return false
+    if (splash && !splash.isDestroyed() && !allowBacklogDuringSplash) return false
     if (!win || win.isDestroyed()) return false
     const wc = win.webContents
     if (!wc) return false
@@ -132,11 +130,13 @@ const interceptionQueue = createInterceptionQueue({
     } catch {
       return false
     }
-    try {
-      if (win.isMinimized()) win.restore()
-      win.show()
-      win.focus()
-    } catch {}
+    if (!allowBacklogDuringSplash) {
+      try {
+        if (win.isMinimized()) win.restore()
+        win.show()
+        win.focus()
+      } catch {}
+    }
     try {
       console.log('主进程: 发送拦截弹窗', payload.pid)
       win.webContents.send('intercept:show', payload)
@@ -225,9 +225,7 @@ async function takeEtwPidSnapshot() {
     }
     etwPidCache.bulkUpsert(list, now)
     try {
-      const fcfg = (etwCfg && etwCfg.signedPidFilter && typeof etwCfg.signedPidFilter === 'object') ? etwCfg.signedPidFilter : null
-      etwTrustedPidFilter.configure(fcfg)
-      etwTrustedPidFilter.seedFromSnapshot(list)
+      if (etwWorker) etwWorker.postMessage({ type: 'trusted_seed_snapshot', list })
     } catch {}
     pruneEtwPidCache(now)
   } catch {
@@ -275,9 +273,10 @@ function ensureInterceptionSnapshotWorker() {
         return
       }
       if (typ === 'scan_done') {
-        isSnapshotScanning = false
         handleSnapshotScanDone().finally(() => {
+          isSnapshotScanning = false
           if (scanPromiseResolve) scanPromiseResolve(true)
+          try { interceptionQueue.tryShowNext() } catch {}
         })
         return
       }
@@ -356,63 +355,88 @@ async function resumeAllInterceptedProcesses() {
   } catch {
     interceptionQueue.clearAll()
     return false
-  } finally {light = false
+  } finally {
+    interceptionResumeInFlight = false
   }
 }
 
 async function handleSnapshotScanDone() {
   try {
     const paused = interceptionQueue.getAllPausedPayloads()
-    const etwCfg = (config && config.etw) ? config.etw : {}
-    const icfg = (etwCfg && etwCfg.interception && typeof etwCfg.interception === 'object') ? etwCfg.interception : {}
-    const threshold = Number.isFinite(icfg.snapshotTrustThreshold) ? icfg.snapshotTrustThreshold : 3
+    if (!paused.length) return
 
-    if (paused.length > threshold && win && !win.isDestroyed()) {
-      try {
-        if (win.isMinimized()) win.restore()
-        win.show()
-        win.focus()
-      } catch {}
-
-      const result = await dialog.showMessageBox(win, {
-        type: 'question',
-        title: t('scan_trust_title'),
-        message: t('scan_trust_message_part1') + paused.length + t('scan_trust_message_part2'),
-        detail: t('scan_trust_detail'),
-        buttons: [t('scan_trust_yes'), t('scan_trust_no')],
-        defaultId: 0,
-        cancelId: 1,
-        noLink: true
-      })
-
-      if (result.response === 0) {
-        const allowPaths = new Set()
-        for (const p of paused) {
-          if (p && p.process && typeof p.process.imagePath === 'string' && p.process.imagePath) {
-            allowPaths.add(p.process.imagePath)
-            etwTrustedPidFilter.addUserTrustedPath(p.process.imagePath)
-            if (p.pid) etwTrustedPidFilter.addTrustedPid(p.pid)
-          }
-          const dlls = p && p.event && p.event.data && Array.isArray(p.event.data.unsignedDlls) ? p.event.data.unsignedDlls : []
-          for (const d of dlls) {
-            if (typeof d === 'string' && d) allowPaths.add(d)
-          }
-        }
-
-        if (allowPaths.size > 0 && interceptionSnapshotWorker) {
-          interceptionSnapshotWorker.postMessage({ type: 'allow_dlls', paths: Array.from(allowPaths) })
-        }
-
-        await resumeAllInterceptedProcesses()
-        return
-      }
+    const scanTargets = new Set()
+    for (const p of paused) {
+      const list = getPayloadPaths(p)
+      for (const x of list) scanTargets.add(x)
     }
 
-    interceptionQueue.tryShowNext()
+    const scanByPath = await scanPathsWithEngine(Array.from(scanTargets))
+    const plan = decideSnapshotActions(paused, scanByPath)
+
+    if (plan.allowPaths.length > 0 && interceptionSnapshotWorker) {
+      interceptionSnapshotWorker.postMessage({ type: 'allow_dlls', paths: plan.allowPaths })
+    }
+
+    if (plan.clearPids.length > 0) {
+      for (const pid of plan.clearPids) interceptionQueue.clearPid(pid)
+    }
+
+    if (plan.resumePids.length > 0) {
+      await requestInterceptionResumeMany(plan.resumePids, 20000)
+    }
   } catch (e) {
     console.error('Snapshot scan done handler error:', e)
-    interceptionQueue.tryShowNext()
   }
+}
+
+async function scanPathsWithEngine(paths) {
+  const list = Array.isArray(paths) ? paths.filter(x => typeof x === 'string' && x) : []
+  if (!list.length) return new Map()
+
+  const cfg = (config && config.scanner) ? config.scanner : {}
+  const maxMB = Number.isFinite(cfg.maxFileSizeMB) ? Math.max(1, Math.floor(cfg.maxFileSizeMB)) : 500
+  const fsMod = fs
+
+  const unique = []
+  const seen = new Set()
+  for (const p of list) {
+    const k = normalizePathKey(p)
+    if (!k || seen.has(k)) continue
+    seen.add(k)
+    unique.push(p)
+  }
+
+  const results = new Map()
+  let idx = 0
+  const concurrency = Math.min(12, Math.max(2, require('os').cpus().length || 4))
+
+  async function scanOne(p) {
+    const key = normalizePathKey(p)
+    if (!key || results.has(key)) return
+    try {
+      const stat = await fsMod.promises.stat(p)
+      if (stat && Number.isFinite(stat.size) && stat.size > maxMB * 1024 * 1024) return
+    } catch {
+      return
+    }
+    try {
+      const requestId = String(Date.now()) + '-' + String(Math.random())
+      const res = await scannerClient.scanFile(p, requestId)
+      if (res && typeof res === 'object') results.set(key, res)
+    } catch {
+    }
+  }
+
+  const workers = Array.from({ length: concurrency }).map(async () => {
+    while (true) {
+      const cur = idx++
+      if (cur >= unique.length) break
+      await scanOne(unique[cur])
+    }
+  })
+  await Promise.all(workers)
+  return results
 }
 
 
@@ -457,6 +481,16 @@ function startEtwWorker() {
       return
     }
     etwWorker = new Worker(workerPath)
+
+    try {
+      const paths = Array.from(pendingTrustedAdd.paths)
+      const pids = Array.from(pendingTrustedAdd.pids)
+      if ((paths && paths.length) || (pids && pids.length)) {
+        etwWorker.postMessage({ type: 'trusted_add', paths, pids })
+        pendingTrustedAdd.paths.clear()
+        pendingTrustedAdd.pids.clear()
+      }
+    } catch {}
     
     etwWorker.on('message', (msg) => {
       if (msg && (msg.type === 'paused' || msg.type === 'resumed')) {
@@ -474,10 +508,6 @@ function startEtwWorker() {
         const p = ev && typeof ev.provider === 'string' ? ev.provider : ''
         const d = ev && ev.data && typeof ev.data === 'object' ? ev.data : null
         const etwCfg = (config && config.etw) ? config.etw : {}
-        try {
-          const fcfg = (etwCfg && etwCfg.signedPidFilter && typeof etwCfg.signedPidFilter === 'object') ? etwCfg.signedPidFilter : null
-          etwTrustedPidFilter.configure(fcfg)
-        } catch {}
 
         try {
           if (p === 'Process' && d) {
@@ -495,30 +525,43 @@ function startEtwWorker() {
                 }
                 if (!img) img = (typeof d.imageName === 'string' && d.imageName) ? d.imageName : null
                 if (img) upsertEtwPid(pid, img, now)
-                try { if (img) etwTrustedPidFilter.onProcessStart(pid, img) } catch {}
               }
             } else if (typ === 'Stop') {
               if (subjectPid != null) {
                 removeEtwPid(subjectPid)
-                try { etwTrustedPidFilter.onProcessStop(subjectPid) } catch {}
               }
             }
           }
         } catch {}
 
-        let shouldSkip = false
-        try { shouldSkip = etwTrustedPidFilter.shouldSkipEvent(ev) } catch {}
-        if (shouldSkip) return
-
         eventLogs.unshift(msg.event)
         if (eventLogs.length > 500) eventLogs.pop()
-        try { behavior.ingest(msg.event) } catch {}
+        if (isBehaviorMonitoringEnabled(config)) {
+          try { behavior.ingest(msg.event) } catch {}
+        }
 
-        const isDev = !app.isPackaged
-        const logToConsole = isDev && (etwCfg.logToConsole !== false)
-        const logParsedToConsole = isDev && (etwCfg.logParsedToConsole === true)
-        const resolveProcessName = isDev && (etwCfg.resolveProcessName === true)
+        const logToConsole = etwCfg.logToConsole !== false
+        const logParsedToConsole = etwCfg.logParsedToConsole === true
+        const resolveProcessName = etwCfg.resolveProcessName === true
         const maxPerSecond = Number.isFinite(etwCfg.consoleMaxPerSecond) ? Math.max(0, Math.floor(etwCfg.consoleMaxPerSecond)) : 200
+
+        if ((logToConsole || logParsedToConsole) && maxPerSecond > 0) {
+          if (!etwConsoleLimiter || etwConsoleLimiterMax !== maxPerSecond) {
+            etwConsoleLimiter = createRateLimiter(maxPerSecond)
+            etwConsoleLimiterMax = maxPerSecond
+          }
+          const allow = etwConsoleLimiter ? etwConsoleLimiter() : true
+          if (allow) {
+            if (logToConsole) {
+              const line = formatEtwEventForConsole(msg.event)
+              if (line) console.log('ETW:', line)
+            }
+            if (logParsedToConsole) {
+              const line = formatEtwEventForParsedConsole(msg.event)
+              if (line) console.log('ETW:', line)
+            }
+          }
+        }
         
         if (win && !win.isDestroyed()) {
           win.webContents.send('etw-log', msg.event)
@@ -647,9 +690,21 @@ function createSplash() {
     try {
       const locale = (config && config.locale) ? config.locale : 'zh-CN'
       splash.webContents.executeJavaScript(`document.documentElement.lang=${JSON.stringify(locale)}`)
-      splash.webContents.executeJavaScript(`(function(){var b=document.getElementById('splash-brand');if(b)b.textContent=${JSON.stringify(t('brand_name'))};var s=document.getElementById('splash-status');if(s)s.textContent=${JSON.stringify(t('splash_starting'))};})()`)
+      const statusText = splashStatusText || t('splash_starting')
+      console.log('主进程: Splash dom-ready, 设置状态:', statusText)
+      splash.webContents.executeJavaScript(`(function(){var b=document.getElementById('splash-brand');if(b)b.textContent=${JSON.stringify(t('brand_name'))};var s=document.getElementById('splash-status');if(s)s.textContent=${JSON.stringify(statusText)};})()`)
     } catch {}
   })
+}
+
+function updateSplashStatus(text) {
+   splashStatusText = text
+   console.log('主进程: 更新Splash状态:', text)
+   if (splash && !splash.isDestroyed()) {
+    try {
+      splash.webContents.executeJavaScript(`(function(){var s=document.getElementById('splash-status');if(s)s.textContent=${JSON.stringify(text)};})()`)
+    } catch {}
+  }
 }
 
 function createWindow() {
@@ -674,6 +729,7 @@ function createWindow() {
   try { win.removeMenu() } catch {}
   win.webContents.once('did-finish-load', () => {
     console.log('主进程: 窗口内容加载完成')
+    try { if (mainWindowReadyResolve) mainWindowReadyResolve(true) } catch {}
   })
   win.on('close', (e) => {
     if (config.minimizeToTray) {
@@ -811,22 +867,58 @@ function getEngineBaseDirs() {
   return [...new Set(out.filter(Boolean))]
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)))
+}
+
+async function waitForEngineHealthy(ipc, pollIntervalMs) {
+  let retries = 0
+  const interval = Number.isFinite(pollIntervalMs) ? Math.max(50, Math.floor(pollIntervalMs)) : 3000
+  while (true) {
+    const ok = await checkEngineHealth({ ipc })
+    if (ok) return true
+    if (retries > 100) return false
+    retries++
+    await sleep(interval)
+  }
+}
+
 app.whenReady().then(() => {
   try { Menu.setApplicationMenu(null) } catch {}
-  i18nDict = loadI18n()
-  createSplash()
-  createWindow()
-  createTray()
-  try { behavior.start() } catch {}
-  startEtwWorker()
-  try {
-    const engineCfg = (config && config.engine) ? config.engine : {}
-    const scannerCfg = (config && config.scanner) ? config.scanner : {}
-    const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
-    const pollIntervalMs = Number.isFinite(scannerCfg.healthPollIntervalMs) ? scannerCfg.healthPollIntervalMs : 300
+  const engineCfg = (config && config.engine) ? config.engine : {}
+  const scannerCfg = (config && config.scanner) ? config.scanner : {}
+  const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
+  const pollIntervalMs = Number.isFinite(scannerCfg.healthPollIntervalMs) ? scannerCfg.healthPollIntervalMs : 3000
 
-    const bootstrap = async () => {
+  runStartupSequence({
+    prepareUi: async () => {
+      i18nDict = loadI18n()
+      createSplash()
+      createWindow()
+      createTray()
+    },
+    runBlockingScan: async () => {
       if (engineCfg.autoStart !== false) {
+        const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
+        await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
+        await waitForEngineHealthy(ipc, pollIntervalMs)
+        startupEngineEnsured = true
+      }
+      updateSplashStatus(t('splash_initializing_scan'))
+      await takeEtwPidSnapshot()
+      startInterceptionSnapshotScan()
+      await scanPromise
+    },
+    startBacklogProcessing: async () => {
+      await mainWindowReadyPromise
+      allowBacklogDuringSplash = true
+      try { interceptionQueue.tryShowNext() } catch {}
+    },
+    startSecurityComponents: async () => {
+      try { behavior.start() } catch {}
+      try { behavior.setWriteEnabled(isBehaviorMonitoringEnabled(config)) } catch {}
+      startEtwWorker()
+      if (engineCfg.autoStart !== false && !startupEngineEnsured) {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
         const res = await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
         if (res) {
@@ -836,32 +928,24 @@ app.whenReady().then(() => {
           else if (res.reason === 'spawn_failed') console.log('主进程: 启动 Axon_ml.exe 失败', res.path)
         }
       }
-
-      let retries = 0
-      const check = async () => {
-        const ok = await checkEngineHealth({ ipc })
-        if (ok || retries > 100) {
-          const timeoutPromise = new Promise(resolve => setTimeout(resolve, 5000))
-          await Promise.race([scanPromise, timeoutPromise])
-
-          if (splash && !splash.isDestroyed()) splash.destroy()
-          if (win && !win.isDestroyed()) {
-            win.show()
-            win.focus()
-            try { setImmediate(() => interceptionQueue.tryShowNext()) } catch {}
-          }
-        } else {
-          retries++
-          setTimeout(check, pollIntervalMs)
-        }
+    },
+    waitSecurityReady: async () => {
+      if (engineCfg.autoStart === false) return
+      await waitForEngineHealthy(ipc, pollIntervalMs)
+    },
+    finalizeUi: async () => {
+      if (splash && !splash.isDestroyed()) splash.destroy()
+      allowBacklogDuringSplash = false
+      if (win && !win.isDestroyed()) {
+        win.show()
+        win.focus()
       }
-      check()
     }
-    bootstrap()
-  } catch {}
+  }).catch(() => {})
   ipcMain.on('config-updated', (_event, nextCfg) => {
     if (!nextCfg || typeof nextCfg !== 'object') return
     config = nextCfg
+    try { behavior.setWriteEnabled(isBehaviorMonitoringEnabled(config)) } catch {}
     try { i18nDict = loadI18n() } catch {}
     etwConsoleLimiter = null
     etwConsoleLimiterMax = null
@@ -1005,14 +1089,15 @@ app.whenReady().then(() => {
     if (!resolveProcessName) return arr
     refreshEtwPidCacheConfig(etwCfg)
     pruneEtwPidCache(now)
+    const devicePathToDosPath = (winapi && typeof winapi.devicePathToDosPath === 'function') ? winapi.devicePathToDosPath : null
     return arr.map((p) => {
       const pid = Number.isFinite(p && p.pid) ? p.pid : null
       const out = Object.assign({}, p)
-      if (typeof out.image === 'string' && out.image) out.image = sanitizeText(out.image)
+      if (typeof out.image === 'string' && out.image) out.image = normalizeWindowsPathText(out.image, devicePathToDosPath)
       if (typeof out.name === 'string' && out.name) out.name = sanitizeText(out.name)
       if (pid != null) {
         const info = resolveEtwProcessInfo(pid, now, etwCfg)
-        if (info && info.imagePath && !out.image) out.image = info.imagePath
+        if (info && info.imagePath && !out.image) out.image = normalizeWindowsPathText(info.imagePath, devicePathToDosPath)
         if (info && info.name) out.name = sanitizeText(info.name)
       }
       if (out.name && !isCleanText(out.name)) out.name = ''
@@ -1031,14 +1116,9 @@ app.whenReady().then(() => {
     if (!resolveProcessName) return arr
     refreshEtwPidCacheConfig(etwCfg)
     pruneEtwPidCache(now)
-    const hasDeviceResolver = !!(winapi && typeof winapi.devicePathToDosPath === 'function')
+    const devicePathToDosPath = (winapi && typeof winapi.devicePathToDosPath === 'function') ? winapi.devicePathToDosPath : null
     const normalizePath = (v) => {
-      if (typeof v !== 'string' || !v) return v
-      let s = sanitizeText(v)
-      if (hasDeviceResolver) {
-        try { s = winapi.devicePathToDosPath(s) || s } catch {}
-      }
-      return s
+      return normalizeWindowsPathText(v, devicePathToDosPath)
     }
     return arr.map((ev) => {
       const out = Object.assign({}, ev)

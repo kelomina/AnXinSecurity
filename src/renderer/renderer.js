@@ -42,11 +42,73 @@ function t(key) {
   const fn = window.api && window.api.i18n && window.api.i18n.t
   return fn ? fn(key) : key
 }
-window.t = t
+if (typeof window !== 'undefined') window.t = t
 
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
   return String(s).replace(/[&<>"']/g, c => map[c] || c)
+}
+
+let overviewEtwLogUnsub = null
+let lastOverviewEtwFileEventText = ''
+let overviewEtwFileEventUpdatePending = false
+
+function formatEtwFileOpLabel(typ) {
+  const t2 = typeof typ === 'string' ? typ.trim() : ''
+  if (!t2) return ''
+  const k = t2.toLowerCase()
+  if (k === 'create' || k === 'open') return '打开'
+  if (k === 'delete') return '删除'
+  if (k === 'rename') return '重命名'
+  return t2
+}
+
+function formatEtwFileEventText(ev) {
+  const e = ev && typeof ev === 'object' ? ev : null
+  if (!e) return ''
+  if (e.provider !== 'File') return ''
+  const d = e.data && typeof e.data === 'object' ? e.data : null
+  if (!d) return ''
+  const fileName = typeof d.fileName === 'string' ? d.fileName : ''
+  const typ = typeof d.type === 'string' ? d.type : ''
+  if (!fileName || !typ) return ''
+  const op = formatEtwFileOpLabel(typ)
+  if (!op) return ''
+  return `[${op}]${fileName}`
+}
+
+function updateOverviewEtwFileEventUi() {
+  const row = document.getElementById('overview-etw-file-event-row')
+  const badge = document.getElementById('overview-etw-file-event')
+  if (!row || !badge) return
+  const text = lastOverviewEtwFileEventText
+  if (!text) {
+    row.style.display = 'block'
+    badge.textContent = '等待 ETW 文件事件...'
+    badge.title = ''
+    return
+  }
+  row.style.display = 'block'
+  badge.textContent = text
+  badge.title = text
+}
+
+function initOverviewEtwFileEventTag() {
+  if (overviewEtwLogUnsub) return
+  const onLog = window.api && window.api.logs && typeof window.api.logs.onLog === 'function' ? window.api.logs.onLog : null
+  if (!onLog) return
+  overviewEtwLogUnsub = onLog((ev) => {
+    const text = formatEtwFileEventText(ev)
+    if (!text) return
+    lastOverviewEtwFileEventText = text
+    if (!overviewEtwFileEventUpdatePending) {
+      overviewEtwFileEventUpdatePending = true
+      setTimeout(() => {
+        overviewEtwFileEventUpdatePending = false
+        uiThread(() => updateOverviewEtwFileEventUi())
+      }, 1000)
+    }
+  })
 }
 
 function ensureInterceptModal() {
@@ -217,6 +279,7 @@ function initOverview() {
   document.getElementById('overview-desc').textContent = t('overview_desc')
   const btn = document.getElementById('btn-start-quick')
   if (btn) btn.style.display = 'none'
+  updateOverviewEtwFileEventUi()
 }
 
 function uiThread(fn) {
@@ -2516,6 +2579,9 @@ function initSettings() {
     const optEn = document.querySelector('#select-locale option[value="en-US"]');
     if (optEn) optEn.textContent = t('locale_en_US');
 
+    const labelBehaviorMonitoring = document.getElementById('label-behavior-monitoring');
+    if (labelBehaviorMonitoring) labelBehaviorMonitoring.textContent = t('settings_behavior_monitoring');
+
     const labelAuto = document.getElementById('label-auto-tune');
     if (labelAuto) labelAuto.textContent = t('settings_auto_tune');
 
@@ -2537,6 +2603,16 @@ function initSettings() {
             window.api.config.setLocale(val);
             updateTexts();
             initSettings();
+        };
+    }
+
+    const toggleBehaviorMonitoring = document.getElementById('toggle-behavior-monitoring');
+    const isBehaviorMonitoringEnabled = !(!cfg.behaviorMonitoring || cfg.behaviorMonitoring.enabled === false);
+    if (toggleBehaviorMonitoring) {
+        toggleBehaviorMonitoring.checked = isBehaviorMonitoringEnabled;
+        toggleBehaviorMonitoring.onchange = () => {
+            const val = toggleBehaviorMonitoring.checked;
+            window.api.config.setBehaviorMonitoringEnabled(val);
         };
     }
 
@@ -2590,15 +2666,22 @@ function startHealthPoll() {
   setInterval(poll, interval)
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-  setTheme()
-  initNav()
-  updateTexts()
-  showPage('overview')
-  startHealthPoll()
-  try {
-    if (window.api && window.api.intercept && typeof window.api.intercept.onShow === 'function') {
-      window.api.intercept.onShow((payload) => showInterceptModal(payload))
-    }
-  } catch {}
-})
+if (typeof window !== 'undefined') {
+  window.addEventListener('DOMContentLoaded', () => {
+    setTheme()
+    initNav()
+    updateTexts()
+    showPage('overview')
+    initOverviewEtwFileEventTag()
+    startHealthPoll()
+    try {
+      if (window.api && window.api.intercept && typeof window.api.intercept.onShow === 'function') {
+        window.api.intercept.onShow((payload) => showInterceptModal(payload))
+      }
+    } catch {}
+  })
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { formatEtwFileEventText, formatEtwFileOpLabel }
+}

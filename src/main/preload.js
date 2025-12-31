@@ -49,6 +49,7 @@ function loadConfig() {
       scan_cache: {
         file: 'config/scan_cache.json'
       },
+      behaviorMonitoring: { enabled: false },
       behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
     }
   }
@@ -127,6 +128,11 @@ const api = {
     setTuningEnabled: (enabled) => {
       cfg.scanner = cfg.scanner || {}
       cfg.scanner.tuningEnabled = !!enabled
+      saveConfig()
+    },
+    setBehaviorMonitoringEnabled: (enabled) => {
+      cfg.behaviorMonitoring = cfg.behaviorMonitoring || {}
+      cfg.behaviorMonitoring.enabled = !!enabled
       saveConfig()
     },
     setMaxTokens: (n) => {

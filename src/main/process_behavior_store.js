@@ -32,7 +32,6 @@ class ProcessBehaviorStore {
     this.db = db
     this.mode = options.mode || 'memory'
     this.filePath = options.filePath || null
-    this.filters = options.filters || {}
 
     this.db.run('PRAGMA journal_mode=MEMORY')
     this.db.run('PRAGMA synchronous=OFF')
@@ -89,8 +88,6 @@ class ProcessBehaviorStore {
     let regKey = null
     let regValue = null
     let rawHex = null
-
-    if (this._shouldSkipEvent(provider, op)) return
 
     if (provider === 'Process') {
       subjectPid = Number.isFinite(data.processId) ? data.processId : null
@@ -242,16 +239,6 @@ class ProcessBehaviorStore {
     } catch {}
   }
 
-  _shouldSkipEvent(provider, op) {
-    const p = typeof provider === 'string' ? provider : ''
-    const o = typeof op === 'string' ? op : ''
-    if (!p || !o) return false
-    const cfg = this.filters && typeof this.filters === 'object' ? this.filters : {}
-    const rule = cfg[p] && typeof cfg[p] === 'object' ? cfg[p] : {}
-    const skipOps = Array.isArray(rule.skipOps) ? rule.skipOps.map(String) : []
-    return skipOps.includes(o)
-  }
-
   _upsertProcess(pid, { ppid = null, image = null, seenAt = null, exitedAt = null } = {}) {
     const existed = this._get('SELECT pid, ppid, image, first_seen, last_seen, exited_at FROM process WHERE pid = ?', [pid])
     if (!existed) {
@@ -296,7 +283,7 @@ class ProcessBehaviorStore {
   }
 }
 
-async function createProcessBehaviorStore(sqliteCfg = {}, filters = {}) {
+async function createProcessBehaviorStore(sqliteCfg = {}) {
   const { mode, filePath } = normalizeSqlitePath(sqliteCfg)
   const SQL = await initSqlJsOnce()
   let db = null
@@ -311,7 +298,7 @@ async function createProcessBehaviorStore(sqliteCfg = {}, filters = {}) {
   }
   if (!db) db = new SQL.Database()
 
-  return new ProcessBehaviorStore(SQL, db, { mode, filePath, filters })
+  return new ProcessBehaviorStore(SQL, db, { mode, filePath })
 }
 
 module.exports = {

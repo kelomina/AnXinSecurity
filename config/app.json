@@ -58,6 +58,9 @@
     "processListLimit": 0,
     "resolveProcessName": true
   },
+  "behaviorMonitoring": {
+    "enabled": false
+  },
   "etw": {
     "enabled": true,
     "sessionName": "AnXinSecuritySession",
@@ -66,6 +69,24 @@
     "startRetries": 2,
     "retryDelayMs": 150,
     "emitRegistryRawHex": false,
+    "providers": {
+      "Process": {
+        "anyKeyword": "0x0",
+        "allKeyword": "0x0"
+      },
+      "File": {
+        "anyKeyword": "0xFFFFFFFFFFFFFFFF",
+        "allKeyword": "0x0"
+      },
+      "Registry": {
+        "anyKeyword": "0x0",
+        "allKeyword": "0x0"
+      },
+      "Network": {
+        "anyKeyword": "0x0",
+        "allKeyword": "0x0"
+      }
+    },
     "logToConsole": true,
     "logParsedToConsole": true,
     "resolveProcessName": true,
@@ -77,11 +98,39 @@
       "enabled": true,
       "maxPids": 8192
     },
-    "signedPidFilter": {
-      "enabled": true,
-      "applyToSnapshot": true,
-      "applyToNewProcesses": true,
-      "maxVerifyPids": 0
+    "filters": {
+      "trustedPid": {
+        "enabled": true,
+        "applyToSnapshot": true,
+        "applyToNewProcesses": true,
+        "maxVerifyPids": 0,
+        "skipProviders": [
+          "Registry",
+          "Network"
+        ],
+        "userTrustedPaths": [],
+        "baseTrustedPids": [
+          0,
+          4
+        ],
+        "extraTrustedPids": []
+      },
+      "Registry": {
+        "skipOps": [
+          "OpenKey",
+          "CloseKey",
+          "QueryKey"
+        ]
+      },
+      "Process": {
+        "skipOps": []
+      },
+      "File": {
+        "skipOps": []
+      },
+      "Network": {
+        "skipOps": []
+      }
     },
     "network": {
       "enabled": true,
@@ -105,21 +154,6 @@
       "mode": "file",
       "directory": "%TEMP%",
       "fileName": "anxin_etw_behavior.db"
-    },
-    "filters": {
-      "Registry": {
-        "skipOps": [
-          "OpenKey",
-          "CloseKey",
-          "QueryKey"
-        ]
-      },
-      "Process": {
-        "skipOps": []
-      },
-      "File": {
-        "skipOps": []
-      }
     }
   },
   "behaviorMitre": {
@@ -182,5 +216,11 @@
         "techniqueName": "Modify Registry"
       }
     ]
+  },
+  "quarantine": {
+    "salt": "94915e9ecfa2501c9037d8450040d068"
+  },
+  "exclusions": {
+    "salt": "46e70db8ac7cb38a8bbed7948d4e3d78"
   }
 }
