@@ -591,6 +591,16 @@ async function scanOneFile(filePath, session) {
   if (session.stopRequested) return
 
   const cfg = window.api && window.api.config ? window.api.config.get() : null
+  try {
+    const fn = window.shouldScanFileByConfig
+    if (typeof fn === 'function') {
+      const ok = fn(filePath, cfg)
+      if (!ok) {
+        session.scannedCount++
+        return
+      }
+    }
+  } catch {}
   const maxMB = cfg && cfg.scanner && Number.isFinite(cfg.scanner.maxFileSizeMB) ? cfg.scanner.maxFileSizeMB : 300
   try {
     const size = await window.api.fsAsync.fileSize(filePath)
@@ -2590,6 +2600,8 @@ function initSettings() {
 
     const labelFileSize = document.getElementById('label-max-file-size');
     if (labelFileSize) labelFileSize.textContent = t('settings_max_file_size_label');
+    const labelCommonExt = document.getElementById('label-common-ext-only');
+    if (labelCommonExt) labelCommonExt.textContent = t('settings_common_extensions_only');
     const cfg = window.api.config.get();
     if (!cfg) return;
 
@@ -2642,6 +2654,16 @@ function initSettings() {
         inputFileSize.value = (cfg.scanner && cfg.scanner.maxFileSizeMB) || 100;
         inputFileSize.onchange = () => {
             window.api.config.setMaxFileSizeMB(inputFileSize.value);
+        };
+    }
+
+    const toggleCommonExtOnly = document.getElementById('toggle-common-ext-only');
+    const isCommonExtOnly = !!(cfg.scan && cfg.scan.commonExtensionsOnly);
+    if (toggleCommonExtOnly) {
+        toggleCommonExtOnly.checked = isCommonExtOnly;
+        toggleCommonExtOnly.onchange = () => {
+            const val = toggleCommonExtOnly.checked;
+            window.api.config.setScanCommonExtensionsOnly(val);
         };
     }
 }

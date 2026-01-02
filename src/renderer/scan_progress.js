@@ -56,9 +56,31 @@
     return { next, push, pushMany, remaining }
   }
 
+  function getFileExtLower(p) {
+    const s = (typeof p === 'string') ? p.trim() : ''
+    if (!s) return ''
+    const name = s.replace(/^.*[\\/]/, '')
+    const i = name.lastIndexOf('.')
+    if (i <= 0 || i === name.length - 1) return ''
+    return name.slice(i + 1).toLowerCase()
+  }
+
+  function isCommonExtensionFile(p) {
+    const ext = getFileExtLower(p)
+    return ext === 'exe' || ext === 'dll'
+  }
+
+  function shouldScanFileByConfig(filePath, cfg) {
+    const onlyCommon = !!(cfg && cfg.scan && cfg.scan.commonExtensionsOnly)
+    if (!onlyCommon) return true
+    return isCommonExtensionFile(filePath)
+  }
+
   root.getScanProgressBarState = getScanProgressBarState
   root.createScanQueue = createScanQueue
+  root.isCommonExtensionFile = isCommonExtensionFile
+  root.shouldScanFileByConfig = shouldScanFileByConfig
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { getScanProgressBarState, createScanQueue }
+    module.exports = { getScanProgressBarState, createScanQueue, isCommonExtensionFile, shouldScanFileByConfig }
   }
 })(typeof window !== 'undefined' ? window : globalThis)

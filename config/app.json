@@ -50,7 +50,8 @@
     "rulesFile": "config/scan_rules.json",
     "traversalTimeoutMs": 2000,
     "walkerBatchSize": 256,
-    "cachePersistIntervalMs": 1000
+    "cachePersistIntervalMs": 1000,
+    "commonExtensionsOnly": true
   },
   "behaviorUi": {
     "pageSize": 0,

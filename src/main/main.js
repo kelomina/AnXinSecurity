@@ -48,6 +48,7 @@ function loadConfig() {
       tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, window: { minWidth: 800, minHeight: 600 } },  
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
+      scan: { commonExtensionsOnly: false },
       scanner: {
         timeoutMs: 10000,
         healthPollIntervalMs: 30000,
@@ -394,6 +395,9 @@ async function scanPathsWithEngine(paths) {
   const list = Array.isArray(paths) ? paths.filter(x => typeof x === 'string' && x) : []
   if (!list.length) return new Map()
 
+  const scanCfg = (config && config.scan) ? config.scan : {}
+  const onlyCommonExt = scanCfg.commonExtensionsOnly === true
+
   const cfg = (config && config.scanner) ? config.scanner : {}
   const maxMB = Number.isFinite(cfg.maxFileSizeMB) ? Math.max(1, Math.floor(cfg.maxFileSizeMB)) : 500
   const fsMod = fs
@@ -414,6 +418,10 @@ async function scanPathsWithEngine(paths) {
   async function scanOne(p) {
     const key = normalizePathKey(p)
     if (!key || results.has(key)) return
+    if (onlyCommonExt) {
+      const ext = path.extname(p).toLowerCase()
+      if (ext !== '.exe' && ext !== '.dll') return
+    }
     try {
       const stat = await fsMod.promises.stat(p)
       if (stat && Number.isFinite(stat.size) && stat.size > maxMB * 1024 * 1024) return

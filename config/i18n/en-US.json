@@ -35,6 +35,7 @@
   "settings_auto_tune": "Enable auto tuning for scan speed",
   "settings_tokens_label": "Token pool size (1–256)",
   "settings_max_file_size_label": "Max file size to scan (MB)",
+  "settings_common_extensions_only": "Only scan common extensions",
   "settings_language": "Interface language",
   "locale_zh_CN": "Chinese (Simplified)",
   "locale_en_US": "English",

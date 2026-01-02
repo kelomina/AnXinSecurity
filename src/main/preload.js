@@ -41,6 +41,7 @@ function loadConfig() {
         traversalTimeoutMs: 2000,
         walkerBatchSize: 256,
         rulesFile: 'config/scan_rules.json',
+        commonExtensionsOnly: false,
         cachePersistIntervalMs: 1000,
         metricsUpdateIntervalMs: 200,
         uiYieldEveryFiles: 25,
@@ -149,6 +150,11 @@ const api = {
       const clamped = Math.max(1, Math.min(10240, v))
       cfg.scanner = cfg.scanner || {}
       cfg.scanner.maxFileSizeMB = clamped
+      saveConfig()
+    },
+    setScanCommonExtensionsOnly: (enabled) => {
+      cfg.scan = cfg.scan || {}
+      cfg.scan.commonExtensionsOnly = !!enabled
       saveConfig()
     }
   },

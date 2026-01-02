@@ -1,6 +1,6 @@
 # AnXinSecurity
 
-AnXinSecurity 是基于 Electron 的 Windows 安全监控与扫描应用，集成 ETW (Event Tracing for Windows) 进行进程行为采集，并通过后台安全引擎 `Axon_ml.exe` 提供健康检查与安全能力。进程行为监控可在设置页通过 `behaviorMonitoring.enabled` 开关控制是否写入行为数据库（不影响前端 ETW 实时推送）。
+AnXinSecurity 是基于 Electron 的 Windows 安全监控与扫描应用，集成 ETW (Event Tracing for Windows) 进行进程行为采集，并通过后台安全引擎 `Axon_ml.exe` 提供健康检查与安全能力。进程行为监控可在设置页通过 `behaviorMonitoring.enabled` 开关控制是否写入行为数据库（不影响前端 ETW 实时推送）。文件检测可在设置页通过 `scan.commonExtensionsOnly` 开关控制是否仅检测 `exe/dll`（开启后其余扩展名一律跳过）。
 
 ETW 支持按 Provider 分级跳过信任进程的事件（`etw.filters.trustedPid.skipProviders`），并可通过 `etw.providers.<Provider>.anyKeyword/allKeyword` 配置各 Provider 的 ETW Keyword 掩码以控制采集范围；同时可通过 `etw.logToConsole`/`etw.logParsedToConsole` 控制主进程控制台输出 ETW 事件（默认开启，受 `etw.consoleMaxPerSecond` 限流）。
 
