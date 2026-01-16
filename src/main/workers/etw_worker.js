@@ -225,10 +225,192 @@ const OpenTraceW = libAdvapi32.func('__stdcall', 'OpenTraceW', 'uint64_t', [koff
 const ProcessTrace = libAdvapi32.func('__stdcall', 'ProcessTrace', ULONG, ['uint64_t *', ULONG, PVOID, PVOID]);
 const CloseTrace = libAdvapi32.func('__stdcall', 'CloseTrace', ULONG, ['uint64_t']);
 const GetLastError = libKernel32.func('__stdcall', 'GetLastError', ULONG, []);
+const lstrlenA = libKernel32.func('__stdcall', 'lstrlenA', 'int', ['void *']);
 const GetCurrentProcess = libKernel32.func('__stdcall', 'GetCurrentProcess', HANDLE, []);
 const CloseHandle = libKernel32.func('__stdcall', 'CloseHandle', 'int', [HANDLE]);
 const OpenProcessToken = libAdvapi32.func('__stdcall', 'OpenProcessToken', 'int', [HANDLE, ULONG, koffi.out(HANDLE)]);
 const GetTokenInformation = libAdvapi32.func('__stdcall', 'GetTokenInformation', 'int', [HANDLE, ULONG, PVOID, ULONG, koffi.out('uint32_t *')]);
+
+let etwBridgeLib = null;
+let etwBridgeHandle = null;
+let EtwBridge_Create = null;
+let EtwBridge_Start = null;
+let EtwBridge_Stop = null;
+let EtwBridge_PollJson = null;
+let EtwBridge_Free = null;
+let EtwBridge_Destroy = null;
+let bridgePollTimer = null;
+let bridgePollBusy = false;
+
+function resolveEtwBridgeDllPath() {
+    const candidates = [];
+    try {
+        if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
+            candidates.push(path.join(process.resourcesPath, 'native', 'win32-x64', 'etw_bridge.dll'));
+        }
+    } catch {}
+    try {
+        candidates.push(path.join(__dirname, '../../../native/bin/win32-x64/etw_bridge.dll'));
+    } catch {}
+    for (const p of candidates) {
+        try {
+            if (p && fs.existsSync(p)) return p;
+        } catch {}
+    }
+    return null;
+}
+
+function ensureEtwBridgeLoaded() {
+    if (etwBridgeLib) return true;
+    const dllPath = resolveEtwBridgeDllPath();
+    if (!dllPath) {
+        postError('ETW_BRIDGE_DLL_MISSING', '未找到 etw_bridge.dll', { candidates: [path.join(process.resourcesPath || '', 'native', 'win32-x64', 'etw_bridge.dll'), path.join(__dirname, '../../../native/bin/win32-x64/etw_bridge.dll')] });
+        return false;
+    }
+    try {
+        etwBridgeLib = koffi.load(dllPath);
+        EtwBridge_Create = etwBridgeLib.func('__cdecl', 'EtwBridge_Create', 'void *', ['string16']);
+        EtwBridge_Start = etwBridgeLib.func('__cdecl', 'EtwBridge_Start', 'int', ['void *', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'int', 'int', 'int', 'uint32_t']);
+        EtwBridge_Stop = etwBridgeLib.func('__cdecl', 'EtwBridge_Stop', 'int', ['void *', 'uint32_t']);
+        EtwBridge_PollJson = etwBridgeLib.func('__cdecl', 'EtwBridge_PollJson', 'int', ['void *', koffi.out(koffi.pointer('void *', 2))]);
+        EtwBridge_Free = etwBridgeLib.func('__cdecl', 'EtwBridge_Free', 'void', ['void *']);
+        EtwBridge_Destroy = etwBridgeLib.func('__cdecl', 'EtwBridge_Destroy', 'void', ['void *']);
+        return true;
+    } catch (e) {
+        postError('ETW_BRIDGE_LOAD_FAILED', (e && e.message) ? e.message : String(e || 'load_failed'), { dllPath });
+        etwBridgeLib = null;
+        return false;
+    }
+}
+
+function ensureEtwBridgeHandle() {
+    if (etwBridgeHandle) return etwBridgeHandle;
+    if (!ensureEtwBridgeLoaded()) return null;
+    const sessionName = (etwCfg && etwCfg.sessionName) ? etwCfg.sessionName : DEFAULT_ETW_CFG.sessionName;
+    try {
+        etwBridgeHandle = EtwBridge_Create(sessionName);
+        if (!etwBridgeHandle) {
+            postError('ETW_BRIDGE_CREATE_FAILED', 'EtwBridge_Create 返回空句柄', { sessionName });
+            return null;
+        }
+        return etwBridgeHandle;
+    } catch (e) {
+        postError('ETW_BRIDGE_CREATE_FAILED', (e && e.message) ? e.message : String(e || 'create_failed'), { sessionName });
+        return null;
+    }
+}
+
+function stopBridgePoller() {
+    if (!bridgePollTimer) return;
+    try { clearInterval(bridgePollTimer); } catch {}
+    bridgePollTimer = null;
+}
+
+function startBridgePoller() {
+    if (bridgePollTimer) return;
+    bridgePollTimer = setInterval(() => {
+        try { drainBridgeMessages(); } catch {}
+    }, 10);
+}
+
+function drainBridgeMessages() {
+    if (bridgePollBusy) return;
+    bridgePollBusy = true;
+    try {
+        if (!etwBridgeHandle || !EtwBridge_PollJson) return;
+        let n = 0;
+        while (n < 200) {
+            const out = [null];
+            let rc = 0;
+            try {
+                rc = EtwBridge_PollJson(etwBridgeHandle, out);
+            } catch (e) {
+                postError('ETW_BRIDGE_POLL_FAILED', (e && e.message) ? e.message : String(e || 'poll_failed'));
+                break;
+            }
+            if (rc !== 1) break;
+            const ptr = out[0];
+            let text = '';
+            try {
+                if (!ptr) break;
+                const len = lstrlenA(ptr) | 0;
+                if (len <= 0 || len > (1024 * 1024)) {
+                    try { EtwBridge_Free(ptr); } catch {}
+                    n++;
+                    continue;
+                }
+                const bytes = koffi.decode(ptr, koffi.array('uint8_t', len));
+                text = Buffer.from(bytes).toString('utf8');
+            } catch (e) {
+                try { EtwBridge_Free(ptr); } catch {}
+                break;
+            }
+            try { EtwBridge_Free(ptr); } catch {}
+            if (!text) { n++; continue; }
+            let obj = null;
+            try { obj = JSON.parse(String(text)); } catch { obj = null; }
+            if (!obj || typeof obj !== 'object') { n++; continue; }
+            handleBridgeMessage(obj);
+            n++;
+        }
+    } finally {
+        bridgePollBusy = false;
+    }
+}
+
+function handleBridgeMessage(msg) {
+    try {
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'status' || msg.type === 'error') {
+            postMessage(msg);
+            return;
+        }
+        if (msg.type !== 'log' || !msg.event) return;
+        const ev = msg.event;
+        if (ev && ev.data && typeof ev.data === 'object') {
+            if (typeof ev.data.imageName === 'string') ev.data.imageName = normalizeEtwPathValue(ev.data.imageName);
+            if (typeof ev.data.fileName === 'string') ev.data.fileName = normalizeEtwPathValue(ev.data.fileName);
+        }
+        const provider = typeof ev.provider === 'string' ? ev.provider : '';
+        const data = ev.data && typeof ev.data === 'object' ? ev.data : null;
+        if (provider === 'Process' && data) {
+            const typ = typeof data.type === 'string' ? data.type : '';
+            if (shouldSkipByCfg('Process', typ)) return;
+            const pid = asPid(data.processId);
+            const img = typeof data.imageName === 'string' ? data.imageName : '';
+            if (typ === 'Start') {
+                try { trustedPidFilter.onProcessStart(pid, img); } catch {}
+            } else if (typ === 'Stop') {
+                try { trustedPidFilter.onProcessStop(pid); } catch {}
+            }
+            if (shouldSkipTrustedEvent(ev)) return;
+            postMessage({ type: 'log', event: ev });
+            return;
+        }
+        if (provider === 'File' && data) {
+            const typ = typeof data.type === 'string' ? data.type : '';
+            if (shouldSkipByCfg('File', typ)) return;
+            if (shouldSkipTrustedEvent(ev)) return;
+            postMessage({ type: 'log', event: ev });
+            return;
+        }
+        if (provider === 'Registry' && data) {
+            const typ = typeof data.type === 'string' ? data.type : '';
+            if (shouldSkipByCfg('Registry', typ)) return;
+            if (shouldSkipTrustedEvent(ev)) return;
+            postMessage({ type: 'log', event: ev });
+            return;
+        }
+        if (provider === 'Network' && data) {
+            const typ = typeof data.type === 'string' ? data.type : '';
+            if (shouldSkipByCfg('Network', typ)) return;
+            if (shouldSkipTrustedEvent(ev)) return;
+            postMessage({ type: 'log', event: ev });
+        }
+    } catch (e) {
+        postError('ETW_BRIDGE_MESSAGE_ERROR', (e && e.message) ? e.message : String(e || 'message_error'), { stack: e && e.stack ? String(e.stack) : '' });
+    }
+}
 
 let sessionHandle = 0n;
 let traceHandle = 0n;
@@ -1110,47 +1292,37 @@ function checkStatus(api, status, extra) {
     return false;
 }
 
-function stopSessionInternal() {
-    const sessionName = (etwCfg && etwCfg.sessionName) ? etwCfg.sessionName : DEFAULT_ETW_CFG.sessionName;
-    let status = ERROR_SUCCESS;
+function stopSessionInternal(timeoutMs) {
+    if (!ensureEtwBridgeLoaded()) return false;
+    const h = ensureEtwBridgeHandle();
+    if (!h) return false;
     try {
-        status = ControlTraceW(sessionHandle || 0n, sessionName, createPropertyBuffer(), EVENT_TRACE_CONTROL_STOP);
+        const st = EtwBridge_Stop(h, (timeoutMs >>> 0));
+        if (st !== 0) {
+            postError('ETW_BRIDGE_STOP_FAILED', 'EtwBridge_Stop failed: ' + st, { status: st });
+            return false;
+        }
+        return true;
     } catch (e) {
-        postError('ETW_CONTROLTRACE_EXCEPTION', (e && e.message) ? e.message : String(e || 'ControlTrace'), { stack: e && e.stack ? String(e.stack) : '' });
+        postError('ETW_BRIDGE_STOP_EXCEPTION', (e && e.message) ? e.message : String(e || 'EtwBridge_Stop'), { stack: e && e.stack ? String(e.stack) : '' });
         return false;
     }
-    return checkStatus('ControlTraceW(stop)', status, { sessionName });
-}
-
-async function waitForProcessTraceDone(timeoutMs) {
-    if (!processTraceDone) return true;
-    const deadline = Date.now() + Math.max(0, timeoutMs || 0);
-    while (Date.now() < deadline) {
-        const done = await Promise.race([processTraceDone.then(() => true).catch(() => true), new Promise((r) => setTimeout(() => r(false), 50))]);
-        if (done) return true;
-    }
-    return false;
 }
 
 function cleanupResources() {
-    if (traceHandle && traceHandle !== 0n) {
-        try { CloseTrace(traceHandle); } catch {}
-    }
-    traceHandle = 0n;
-    sessionHandle = 0n;
-    logfile = null;
-    currentHandleBuffer = null;
+    stopBridgePoller();
+    isSessionRunning = false;
+    isStopping = false;
 }
 
 async function stopSession(timeoutMs) {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
         isStopping = true;
-        try { stopSessionInternal(); } catch {}
-        const ok = await waitForProcessTraceDone(timeoutMs);
+        const ok = stopSessionInternal(timeoutMs);
+        try { drainBridgeMessages(); } catch {}
         cleanupResources();
-        postMessage({ type: 'status', message: ok ? 'Monitoring stopped' : 'Monitoring stopped (timeout)' });
-        return ok;
+        return !!ok;
     })();
     return stopPromise;
 }
@@ -1203,89 +1375,45 @@ async function startSessionOnce() {
     isStopping = false;
     stopPromise = null;
 
-    const sessionName = (etwCfg && etwCfg.sessionName) ? etwCfg.sessionName : DEFAULT_ETW_CFG.sessionName;
     try {
-        try { ControlTraceW(0n, sessionName, createPropertyBuffer(), EVENT_TRACE_CONTROL_STOP); } catch {}
-
-        const handlePtr = [0n];
-        let status = ERROR_SUCCESS;
-        status = StartTraceW(handlePtr, sessionName, createPropertyBuffer());
-
-        if (status === ERROR_ALREADY_EXISTS) {
-            try { ControlTraceW(0n, sessionName, createPropertyBuffer(), EVENT_TRACE_CONTROL_STOP); } catch {}
-            sleepSync((etwCfg && etwCfg.retryDelayMs) ? etwCfg.retryDelayMs : DEFAULT_ETW_CFG.retryDelayMs);
-            status = StartTraceW(handlePtr, sessionName, createPropertyBuffer());
-        }
-
-        if (!checkStatus('StartTraceW', status, { sessionName })) {
-            throw new Error('StartTraceW failed: ' + status);
-        }
-        sessionHandle = handlePtr[0];
-
+        if (!ensureEtwBridgeLoaded()) return;
+        const h = ensureEtwBridgeHandle();
+        if (!h) return;
         const kw1 = getProviderKeywords(etwCfg, 'Process');
-        const s1 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelProcess), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw1.any, kw1.all, 0, null);
-        if (!checkStatus('EnableTraceEx2(Process)', s1, { sessionName })) throw new Error('EnableTraceEx2(Process) failed: ' + s1);
-
         const kw2 = getProviderKeywords(etwCfg, 'File');
-        const s2 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelFile), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw2.any, kw2.all, 0, null);
-        if (!checkStatus('EnableTraceEx2(File)', s2, { sessionName })) throw new Error('EnableTraceEx2(File) failed: ' + s2);
-
         const kw3 = getProviderKeywords(etwCfg, 'Registry');
-        const s3 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelRegistry), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw3.any, kw3.all, 0, null);
-        if (!checkStatus('EnableTraceEx2(Registry)', s3, { sessionName })) throw new Error('EnableTraceEx2(Registry) failed: ' + s3);
+        const kw4 = getProviderKeywords(etwCfg, 'Network');
 
-        if (etwCfg && etwCfg.network && etwCfg.network.enabled !== false) {
-            const kw4 = getProviderKeywords(etwCfg, 'Network');
-            const s4 = EnableTraceEx2(sessionHandle, guidToBuffer(GUID_KernelNetwork), EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_INFORMATION, kw4.any, kw4.all, 0, null);
-            if (!checkStatus('EnableTraceEx2(Network)', s4, { sessionName })) throw new Error('EnableTraceEx2(Network) failed: ' + s4);
+        const netCfg = (etwCfg && etwCfg.network && typeof etwCfg.network === 'object') ? etwCfg.network : (DEFAULT_ETW_CFG.network || {});
+        const netEnabled = !(netCfg && netCfg.enabled === false);
+        const filterPrivateIps = !(netCfg && netCfg.filterPrivateIps === false);
+        const skipLoopback = !(netCfg && netCfg.skipLoopback === false);
+
+        const maxBytes = (etwCfg && Number.isFinite(etwCfg.userDataMaxBytes)) ? etwCfg.userDataMaxBytes : DEFAULT_ETW_CFG.userDataMaxBytes;
+        const cappedMaxBytes = Math.max(1024, Math.min(1024 * 1024, maxBytes));
+
+        const st = EtwBridge_Start(
+            h,
+            kw1.any, kw1.all,
+            kw2.any, kw2.all,
+            kw3.any, kw3.all,
+            kw4.any, kw4.all,
+            netEnabled ? 1 : 0,
+            filterPrivateIps ? 1 : 0,
+            skipLoopback ? 1 : 0,
+            cappedMaxBytes >>> 0
+        );
+        if (st !== 0) {
+            postError('ETW_BRIDGE_START_FAILED', 'EtwBridge_Start failed: ' + st, { status: st });
+            return;
         }
 
-        logfile = {
-            LogFileName: null,
-            LoggerName: sessionName,
-            CurrentTime: 0n,
-            BuffersRead: 0,
-            ProcessTraceMode: PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD,
-            CurrentEvent: {},
-            LogfileHeader: {},
-            BufferCallback: null,
-            BufferSize: 0,
-            Filled: 0,
-            EventsLost: 0,
-            EventRecordCallback: createEventCallback(),
-            IsKernelTrace: 0,
-            Context: null
-        };
-
-        traceHandle = OpenTraceW(logfile);
-        if (traceHandle === 0xFFFFFFFFFFFFFFFFn || traceHandle === -1n) {
-            const le = GetLastError();
-            checkStatus('OpenTraceW', le, { lastError: le, sessionName });
-            throw new Error('OpenTraceW failed: ' + le);
-        }
-
-        currentHandleBuffer = createTraceHandleArrayBuffer(traceHandle);
         isSessionRunning = true;
-        processTraceDone = new Promise((resolve) => { resolveProcessTraceDone = resolve; });
-
-        postMessage({ type: 'status', message: 'Monitoring started' });
-
-        ProcessTrace.async(currentHandleBuffer, 1, null, null, (err, st) => {
-            currentHandleBuffer = null;
-            isSessionRunning = false;
-
-            if (err) {
-                postError('ETW_PROCESSTRACE_EXCEPTION', (err && err.message) ? err.message : String(err || 'ProcessTrace'), { stack: err && err.stack ? String(err.stack) : '' });
-            } else if (st !== ERROR_SUCCESS && !isStopping) {
-                postError('ETW_PROCESSTRACE_FAILED', 'ProcessTrace failed: ' + st + (st === ERROR_ACCESS_DENIED ? '，可能需要以管理员权限运行' : ''), { status: st });
-            }
-
-            try { if (typeof resolveProcessTraceDone === 'function') resolveProcessTraceDone(); } catch {}
-            resolveProcessTraceDone = null;
-        });
+        startBridgePoller();
+        drainBridgeMessages();
     } catch (e) {
         try { isStopping = true; } catch {}
-        try { stopSessionInternal(); } catch {}
+        try { stopSessionInternal((etwCfg && etwCfg.stopTimeoutMs) ? etwCfg.stopTimeoutMs : DEFAULT_ETW_CFG.stopTimeoutMs); } catch {}
         try { cleanupResources(); } catch {}
         throw e;
     }
@@ -1302,6 +1430,10 @@ if (parentPort) {
             if (msg === 'stop' || (msg && typeof msg === 'object' && msg.type === 'stop')) {
                 const timeoutMs = (etwCfg && etwCfg.stopTimeoutMs) ? etwCfg.stopTimeoutMs : DEFAULT_ETW_CFG.stopTimeoutMs;
                 stopSession(timeoutMs).finally(() => {
+                    try {
+                        if (EtwBridge_Destroy && etwBridgeHandle) EtwBridge_Destroy(etwBridgeHandle);
+                    } catch {}
+                    etwBridgeHandle = null;
                     setImmediate(() => process.exit(0));
                 });
                 return;
