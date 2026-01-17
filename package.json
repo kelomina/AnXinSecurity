@@ -68,18 +68,20 @@
   "author": "",
   "license": "MIT",
   "devDependencies": {
-    "electron": "^39.2.7",
-    "electron-builder": "^26.0.12",
-    "@storybook/addon-essentials": "^8.6.14",
-    "@storybook/html-vite": "^8.6.14",
-    "storybook": "^8.6.14",
-    "vite": "^5.4.11"
+    "electron": "^40.0.0",
+    "electron-builder": "^26.4.0",
+    "@storybook/html-vite": "^10.1.11",
+    "storybook": "^10.1.11",
+    "vite": "^7.3.1"
   },
   "dependencies": {
     "bootstrap": "^5.3.8",
-    "gsap": "^3.13.0",
+    "gsap": "^3.14.2",
     "koffi": "^2.15.0",
-    "lottie-web": "^5.12.2",
-    "sql.js": "^1.13.0"
+    "lottie-web": "^5.13.0"
+  },
+  "overrides": {
+    "esbuild": "^0.25.12",
+    "tar": "^7.5.3"
   }
 }
