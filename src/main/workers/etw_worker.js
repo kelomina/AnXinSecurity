@@ -1404,6 +1404,11 @@ async function startSessionOnce() {
             cappedMaxBytes >>> 0
         );
         if (st !== 0) {
+            if (st === 5 || st === -1073741790 || st === 3221225506) {
+                const codeHex = (st >>> 0).toString(16).toUpperCase();
+                postError('ETW_PERMISSION', `权限不足：需要管理员权限才能启动 ETW 监听 (错误代码: 0x${codeHex})`, { suggestion: '请以管理员身份运行程序', status: st });
+                return;
+            }
             postError('ETW_BRIDGE_START_FAILED', 'EtwBridge_Start failed: ' + st, { status: st });
             return;
         }

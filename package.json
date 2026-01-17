@@ -54,7 +54,8 @@
       }
     ],
     "win": {
-      "target": "nsis"
+      "target": "nsis",
+      "requestedExecutionLevel": "requireAdministrator"
     },
     "nsis": {
       "artifactName": "${productName}-Setup-${version}.${ext}",
