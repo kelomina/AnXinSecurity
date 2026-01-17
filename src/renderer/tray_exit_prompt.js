@@ -101,11 +101,11 @@ window.addEventListener('DOMContentLoaded', () => {
 
   if (btnYes) btnYes.onclick = () => submit(true)
   if (btnNo) btnNo.onclick = () => submit(false)
-  if (btnClose) btnClose.onclick = () => submit(null)
+  if (btnClose) btnClose.onclick = () => { try { window.close() } catch {} }
 
   window.addEventListener('keydown', (e) => {
     const key = e && e.key ? e.key : ''
-    if (key === 'Escape') submit(null)
+    if (key === 'Escape') { try { window.close() } catch {} }
     if (key === 'Enter') submit(defaultKeep)
   })
 

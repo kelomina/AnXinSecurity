@@ -10,16 +10,42 @@
     <link rel="stylesheet" href="./styles.css">
   </head>
   <body>
+    <div id="titlebar-drag-region"></div>
+    <div id="theme-switcher-container" class="position-fixed top-0 end-0 p-2" style="z-index: 9999; margin-right: 140px; -webkit-app-region: no-drag;">
+      <div class="dropdown">
+        <button class="btn btn-sm btn-outline-secondary border-0" type="button" id="themeDropdown" data-bs-toggle="dropdown" aria-expanded="false" style="background: transparent;">
+          <span id="theme-icon-current">
+            <!-- Icon will be injected by JS -->
+          </span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow-sm" aria-labelledby="themeDropdown" style="background: var(--panel-bg); border-color: var(--panel-border);">
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-theme-val="light">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"></circle><line x1="12" y1="1" x2="12" y2="3"></line><line x1="12" y1="21" x2="12" y2="23"></line><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"></line><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"></line><line x1="1" y1="12" x2="3" y2="12"></line><line x1="21" y1="12" x2="23" y2="12"></line><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line></svg>
+              <span class="theme-label-light">Light</span>
+            </button>
+          </li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-theme-val="dark">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path></svg>
+              <span class="theme-label-dark">Dark</span>
+            </button>
+          </li>
+          <li>
+            <button class="dropdown-item d-flex align-items-center gap-2" type="button" data-theme-val="system">
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line></svg>
+              <span class="theme-label-system">System</span>
+            </button>
+          </li>
+        </ul>
+      </div>
+    </div>
     <div class="app">
       <aside class="sidebar">
         <div class="brand" id="brand">AnXin Security</div>
         <nav>
           <button class="btn btn-outline-light nav-btn" data-page="overview" id="nav-overview"></button>
           <button class="btn btn-outline-light nav-btn" data-page="scan" id="nav-scan"></button>
-          <button class="btn btn-outline-light nav-btn" data-page="quarantine" id="nav-quarantine"></button>
-          <button class="btn btn-outline-light nav-btn" data-page="behavior" id="nav-behavior"></button>
-          <button class="btn btn-outline-light nav-btn" data-page="exclusions" id="nav-exclusions"></button>
-          <button class="btn btn-outline-light nav-btn" data-page="update" id="nav-update"></button>
           <button class="btn btn-outline-light nav-btn" data-page="settings" id="nav-settings"></button>
         </nav>
       </aside>
@@ -54,6 +80,9 @@
               <button id="scan-btn-full" class="btn btn-outline-primary scan-action scan-action-primary"></button>
               <button id="scan-btn-dir" class="btn btn-outline-secondary scan-action"></button>
               <button id="scan-btn-file" class="btn btn-outline-secondary scan-action"></button>
+              <button id="scan-btn-quarantine" class="btn btn-outline-info scan-action"></button>
+              <button id="scan-btn-exclusions" class="btn btn-outline-info scan-action"></button>
+              <button id="scan-btn-behavior" class="btn btn-outline-info scan-action"></button>
             </div>
             <div class="progress" style="height: 16px;">
               <div id="scan-progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%"></div>
@@ -313,6 +342,9 @@
                 <input class="form-check-input" type="checkbox" id="toggle-common-ext-only" />
                 <label class="form-check-label" for="toggle-common-ext-only" id="label-common-ext-only"></label>
               </div>
+            </div>
+            <div id="about-settings" class="mt-4 pt-3 border-top">
+              <button id="settings-btn-update" class="btn btn-outline-primary w-100"></button>
             </div>
           </div>
         </section>

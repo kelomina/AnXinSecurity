@@ -685,8 +685,14 @@ function createSplash() {
     ...iconOpt,
     width: 400,
     height: 300,
-    transparent: true,
+    show: false,
+    transparent: false,
+    backgroundColor: '#00000000',
+    backgroundMaterial: 'acrylic',
+    opacity: 0.98,
     frame: false,
+    hasShadow: true,
+    roundedCorners: true,
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
@@ -694,6 +700,9 @@ function createSplash() {
   })
   splash.loadFile(path.join(__dirname, '../renderer/splash.html'))
   console.log('主进程: 创建Splash窗口')
+  splash.once('ready-to-show', () => {
+    try { if (splash && !splash.isDestroyed()) splash.show() } catch {}
+  })
   splash.webContents.on('dom-ready', () => {
     try {
       const locale = (config && config.locale) ? config.locale : 'zh-CN'
@@ -722,6 +731,16 @@ function createWindow() {
   win = new BrowserWindow({
     ...bounds,
     ...iconOpt,
+    transparent: true,
+    backgroundColor: '#00000000',
+    frame: false,
+    hasShadow: true,
+    titleBarStyle: 'hidden',
+    titleBarOverlay: {
+      color: 'rgba(0,0,0,0)',
+      symbolColor: '#ffffff',
+      height: 30
+    },
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
@@ -797,7 +816,12 @@ function showTrayExitPrompt(defaultKeep) {
       show: false,
       alwaysOnTop: true,
       skipTaskbar: true,
-      backgroundColor: '#0f1115',
+      transparent: false,
+      backgroundColor: '#00000000',
+      backgroundMaterial: 'acrylic',
+      opacity: 0.98,
+      hasShadow: true,
+      roundedCorners: true,
       webPreferences: {
         preload: path.join(__dirname, './preload.js'),
         contextIsolation: true,
@@ -835,6 +859,7 @@ async function handleTrayExitClick() {
 
     const defaultKeep = trayCfg.exitKeepScannerServiceDefault !== false
     const keep = await showTrayExitPrompt(defaultKeep)
+    if (keep == null) return
     const mode = resolveTrayExitMode({ keep, defaultKeep })
     try { await resumeAllInterceptedProcesses() } catch {}
     if (mode === 'keep_service') return quitAppOnlyFromTray()

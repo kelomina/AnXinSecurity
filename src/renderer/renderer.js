@@ -63,6 +63,8 @@ function applyThemePreferences() {
   document.documentElement.setAttribute('data-bs-theme', theme)
   document.documentElement.setAttribute('data-theme', theme)
 
+  updateThemeSwitcherIcon(mode)
+
   if (!themeMediaBound) {
     try {
       themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
@@ -81,6 +83,37 @@ function applyThemePreferences() {
       }
     } catch {}
   }
+}
+
+function updateThemeSwitcherIcon(mode) {
+  const currentSpan = document.getElementById('theme-icon-current')
+  if (!currentSpan) return
+  
+  const btn = document.querySelector(`button[data-theme-val="${mode}"]`)
+  if (!btn) return
+  
+  const svg = btn.querySelector('svg')
+  if (svg) {
+    currentSpan.innerHTML = ''
+    const clone = svg.cloneNode(true)
+    clone.setAttribute('width', '20')
+    clone.setAttribute('height', '20')
+    currentSpan.appendChild(clone)
+  }
+}
+
+function initThemeSwitcher() {
+  const items = document.querySelectorAll('button[data-theme-val]')
+  items.forEach(item => {
+    item.onclick = () => {
+      const val = item.getAttribute('data-theme-val')
+      if (val) {
+        window.api.config.setThemeMode(val)
+        applyThemePreferences()
+        if (state.page === 'settings') initSettings()
+      }
+    }
+  })
 }
 
 function applyMotionPreferences() {
@@ -300,12 +333,12 @@ function initNav() {
     navScan.textContent = t('nav_scan')
     navScan.style.display = 'block'
   }
-  document.getElementById('nav-quarantine').textContent = t('nav_quarantine')
-  const navBehavior = document.getElementById('nav-behavior')
-  if (navBehavior) navBehavior.textContent = t('nav_behavior')
-  const navExcl = document.getElementById('nav-exclusions')
-  if (navExcl) navExcl.textContent = t('nav_exclusions')
-  document.getElementById('nav-update').textContent = t('nav_update')
+  // document.getElementById('nav-quarantine').textContent = t('nav_quarantine')
+  // const navBehavior = document.getElementById('nav-behavior')
+  // if (navBehavior) navBehavior.textContent = t('nav_behavior')
+  // const navExcl = document.getElementById('nav-exclusions')
+  // if (navExcl) navExcl.textContent = t('nav_exclusions')
+  // document.getElementById('nav-update').textContent = t('nav_update')
   document.getElementById('nav-settings').textContent = t('nav_settings')
   document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.onclick = async () => {
@@ -360,7 +393,12 @@ function getMotionVarPx(name, fallbackPx) {
 
 function setActiveNav(p) {
   document.querySelectorAll('.nav-btn').forEach(btn => {
-    if (btn.dataset.page === p) {
+    let target = btn.dataset.page
+    let isActive = target === p
+    if (target === 'scan' && ['quarantine', 'exclusions', 'behavior', 'behavior-lifecycle'].includes(p)) isActive = true
+    if (target === 'settings' && ['update'].includes(p)) isActive = true
+    
+    if (isActive) {
       btn.classList.add('active')
     } else {
       btn.classList.remove('active')
@@ -1300,6 +1338,19 @@ function bindScanUi() {
       startScan('custom_file', p, [], [p], null)
     }
   }
+
+  const btnQuar = document.getElementById('scan-btn-quarantine')
+  if (btnQuar) {
+    btnQuar.onclick = () => showPage('quarantine')
+  }
+  const btnExcl = document.getElementById('scan-btn-exclusions')
+  if (btnExcl) {
+    btnExcl.onclick = () => showPage('exclusions')
+  }
+  const btnBehav = document.getElementById('scan-btn-behavior')
+  if (btnBehav) {
+    btnBehav.onclick = () => showPage('behavior')
+  }
 }
 
 function initScan() {
@@ -1316,6 +1367,14 @@ function initScan() {
     if (btnDir) btnDir.textContent = t('btn_choose_dir')
     const btnFile = document.getElementById('scan-btn-file')
     if (btnFile) btnFile.textContent = t('btn_choose_file')
+    
+    const btnQuar = document.getElementById('scan-btn-quarantine')
+    if (btnQuar) btnQuar.textContent = t('nav_quarantine')
+    const btnExcl = document.getElementById('scan-btn-exclusions')
+    if (btnExcl) btnExcl.textContent = t('nav_exclusions')
+    const btnBehav = document.getElementById('scan-btn-behavior')
+    if (btnBehav) btnBehav.textContent = t('nav_behavior')
+
     const thTitle = document.getElementById('scan-threat-title')
     if (thTitle) thTitle.textContent = t('threats_detected')
     const thPath = document.getElementById('scan-th-path')
@@ -1959,8 +2018,18 @@ function renderBehaviorLifecycleTree(pid, proc, events) {
       btn.type = 'button'
       btn.className = 'tree-pid-link'
       btn.textContent = typeof node.label === 'string' ? node.label : String(node.pid)
-      btn.onclick = () => openBehaviorLifecycle(node.pid)
+      btn.onclick = (e) => {
+        try { if (e && e.stopPropagation) e.stopPropagation() } catch {}
+        openBehaviorLifecycle(node.pid)
+      }
       titleRow.appendChild(btn)
+    } else if (node && node.kind === 'event' && node.raw) {
+      titleRow.textContent = typeof node.label === 'string' ? node.label : ''
+      wrap.style.cursor = 'pointer'
+      wrap.onclick = (e) => {
+        try { if (e && e.stopPropagation) e.stopPropagation() } catch {}
+        openBehaviorDetail(node.raw)
+      }
     } else {
       titleRow.textContent = typeof node.label === 'string' ? node.label : ''
     }
@@ -1988,13 +2057,34 @@ function renderBehaviorLifecycleTree(pid, proc, events) {
     return wrap
   }
 
-  const buildDom = (node) => {
+  const buildDom = (node, depth = 0) => {
     const li = document.createElement('li')
-    li.appendChild(makeNodeEl(node))
+    const nodeEl = makeNodeEl(node)
+    li.appendChild(nodeEl)
     const children = Array.isArray(node && node.children) ? node.children : []
     if (children.length) {
       const ul = document.createElement('ul')
-      for (const ch of children) ul.appendChild(buildDom(ch))
+      if (depth > 0) li.classList.add('tree-collapsed')
+      nodeEl.classList.add('tree-toggle')
+      nodeEl.tabIndex = 0
+      nodeEl.setAttribute('role', 'button')
+      const toggle = () => {
+        const wasCollapsed = li.classList.contains('tree-collapsed')
+        if (wasCollapsed) li.classList.remove('tree-collapsed')
+        else li.classList.add('tree-collapsed')
+      }
+      nodeEl.onclick = (e) => {
+        try { if (e && e.preventDefault) e.preventDefault() } catch {}
+        toggle()
+      }
+      nodeEl.onkeydown = (e) => {
+        const k = e && (e.key || e.code)
+        if (k === 'Enter' || k === ' ' || k === 'Spacebar') {
+          try { if (e && e.preventDefault) e.preventDefault() } catch {}
+          toggle()
+        }
+      }
+      for (const ch of children) ul.appendChild(buildDom(ch, depth + 1))
       li.appendChild(ul)
     }
     return li
@@ -2002,7 +2092,7 @@ function renderBehaviorLifecycleTree(pid, proc, events) {
 
   const ul = document.createElement('ul')
   ul.className = 'tree'
-  ul.appendChild(buildDom(tree))
+  ul.appendChild(buildDom(tree, 0))
   host.appendChild(ul)
 }
 
@@ -2674,6 +2764,13 @@ function updateHealthUi(res) {
 
 function updateTexts() {
     initNav()
+    const lblLight = document.querySelector('.theme-label-light')
+    if (lblLight) lblLight.textContent = t('theme_light')
+    const lblDark = document.querySelector('.theme-label-dark')
+    if (lblDark) lblDark.textContent = t('theme_dark')
+    const lblSystem = document.querySelector('.theme-label-system')
+    if (lblSystem) lblSystem.textContent = t('theme_system')
+
     if (state.page === 'overview') initOverview()
     if (state.page === 'scan') initScan()
     if (state.page === 'quarantine') initQuarantine()
@@ -2973,6 +3070,12 @@ function initSettings() {
             window.api.config.setScanCommonExtensionsOnly(val);
         };
     }
+
+    const btnUpdate = document.getElementById('settings-btn-update');
+    if (btnUpdate) {
+        btnUpdate.textContent = t('nav_update');
+        btnUpdate.onclick = () => showPage('update');
+    }
 }
 
 
@@ -3010,6 +3113,7 @@ if (typeof window !== 'undefined') {
     } catch {}
     initNav()
     updateTexts()
+    initThemeSwitcher()
     showPage('overview')
     initOverviewEtwFileEventTag()
     startHealthPoll()
