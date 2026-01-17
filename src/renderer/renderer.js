@@ -38,6 +38,88 @@ function setTheme() {
   console.log('渲染进程: 设置主题色', color)
 }
 
+let themeMedia = null
+let themeMediaBound = false
+
+function resolveThemeMode(cfg) {
+  const m = cfg && cfg.ui && typeof cfg.ui.themeMode === 'string' ? cfg.ui.themeMode.trim() : ''
+  if (m === 'dark' || m === 'light' || m === 'system') return m
+  return 'system'
+}
+
+function resolveThemeFromSystem() {
+  try {
+    const mm = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+    return mm && mm.matches ? 'dark' : 'light'
+  } catch {
+    return 'dark'
+  }
+}
+
+function applyThemePreferences() {
+  const cfg = (window.api && window.api.config) ? window.api.config.get() : null
+  const mode = resolveThemeMode(cfg)
+  const theme = mode === 'system' ? resolveThemeFromSystem() : mode
+  document.documentElement.setAttribute('data-bs-theme', theme)
+  document.documentElement.setAttribute('data-theme', theme)
+
+  if (!themeMediaBound) {
+    try {
+      themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+      const handler = () => {
+        const cfg2 = (window.api && window.api.config) ? window.api.config.get() : null
+        const mode2 = resolveThemeMode(cfg2)
+        if (mode2 !== 'system') return
+        const theme2 = resolveThemeFromSystem()
+        document.documentElement.setAttribute('data-bs-theme', theme2)
+        document.documentElement.setAttribute('data-theme', theme2)
+      }
+      if (themeMedia) {
+        if (typeof themeMedia.addEventListener === 'function') themeMedia.addEventListener('change', handler)
+        else if (typeof themeMedia.addListener === 'function') themeMedia.addListener(handler)
+        themeMediaBound = true
+      }
+    } catch {}
+  }
+}
+
+function applyMotionPreferences() {
+  const cfg = (window.api && window.api.config) ? window.api.config.get() : null
+  const cfgAllows = !(!cfg || !cfg.ui || cfg.ui.animations === false)
+  const reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const enabled = cfgAllows && !reduce
+  const body = document.body
+  if (!body) return
+  if (enabled) {
+    body.removeAttribute('data-animations')
+  } else {
+    body.setAttribute('data-animations', 'off')
+    try {
+      pageTransitionRunning = false
+      pageTransitionPending = null
+    } catch {}
+    try {
+      const current = state && state.page ? state.page : 'overview'
+      const currentId = 'page-' + current
+      const gsapRef = typeof window !== 'undefined' ? window.gsap : null
+      document.querySelectorAll('.page').forEach(sec => {
+        if (sec && sec.id) sec.style.display = sec.id === currentId ? 'block' : 'none'
+        if (gsapRef && typeof gsapRef.set === 'function') {
+          try { gsapRef.set(sec, { clearProps: 'opacity,transform,filter' }) } catch {}
+        } else {
+          try {
+            if (sec && sec.style) {
+              sec.style.opacity = ''
+              sec.style.transform = ''
+              sec.style.filter = ''
+            }
+          } catch {}
+        }
+      })
+    } catch {}
+  }
+}
+
 function t(key) {
   const fn = window.api && window.api.i18n && window.api.i18n.t
   return fn ? fn(key) : key
@@ -238,11 +320,45 @@ function initNav() {
   })
 }
 
-function showPage(p) {
-  state.page = p
-  document.querySelectorAll('.page').forEach(sec => {
-    sec.style.display = sec.id === 'page-' + p ? 'block' : 'none'
-  })
+let pageTransitionRunning = false
+let pageTransitionPending = null
+
+function parseCssTimeMs(raw) {
+  const s = typeof raw === 'string' ? raw.trim() : ''
+  if (!s) return null
+  if (s.endsWith('ms')) {
+    const v = parseFloat(s.slice(0, -2))
+    return Number.isFinite(v) ? v : null
+  }
+  if (s.endsWith('s')) {
+    const v = parseFloat(s.slice(0, -1))
+    return Number.isFinite(v) ? v * 1000 : null
+  }
+  const v = parseFloat(s)
+  return Number.isFinite(v) ? v : null
+}
+
+function getMotionVarMs(name, fallbackMs) {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name)
+    const ms = parseCssTimeMs(v)
+    return Number.isFinite(ms) ? ms : fallbackMs
+  } catch {
+    return fallbackMs
+  }
+}
+
+function getMotionVarPx(name, fallbackPx) {
+  try {
+    const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    const n = parseFloat(v)
+    return Number.isFinite(n) ? n : fallbackPx
+  } catch {
+    return fallbackPx
+  }
+}
+
+function setActiveNav(p) {
   document.querySelectorAll('.nav-btn').forEach(btn => {
     if (btn.dataset.page === p) {
       btn.classList.add('active')
@@ -250,6 +366,12 @@ function showPage(p) {
       btn.classList.remove('active')
     }
   })
+}
+
+function runPageInit(p) {
+  if (p === 'overview') {
+    initOverview()
+  }
   if (p === 'scan') {
     initScan()
   }
@@ -269,8 +391,150 @@ function showPage(p) {
   if (p === 'update') {
     if (window.initUpdate) window.initUpdate()
   }
+  if (p === 'settings') {
+    initSettings()
+  }
+}
+
+function showPage(p) {
+  const next = typeof p === 'string' ? p : ''
+  if (!next) return
+  if (pageTransitionRunning) {
+    pageTransitionPending = next
+    state.page = next
+    setActiveNav(next)
+    return
+  }
+  const prev = state.page
+  if (prev === next) return
+
+  state.page = next
+  setActiveNav(next)
+
+  const body = document.body
+  const animationsOff = !!(body && body.getAttribute('data-animations') === 'off')
+  const gsapRef = typeof window !== 'undefined' ? window.gsap : null
+  const canAnimate = !animationsOff && gsapRef && typeof gsapRef.timeline === 'function'
+
+  const prevSec = prev ? document.getElementById('page-' + prev) : null
+  const nextSec = document.getElementById('page-' + next)
+  if (!nextSec) return
+
+  if (!canAnimate || !prevSec) {
+    document.querySelectorAll('.page').forEach(sec => {
+      sec.style.display = sec.id === 'page-' + next ? 'block' : 'none'
+    })
+    runPageInit(next)
+    updateTexts()
+    console.log('渲染进程: 切换页面', next)
+    return
+  }
+
+  pageTransitionRunning = true
+  pageTransitionPending = null
+
+  document.querySelectorAll('.page').forEach(sec => {
+    if (sec === prevSec || sec === nextSec) sec.style.display = 'block'
+    else sec.style.display = 'none'
+  })
+
+  const dur = Math.max(0.3, getMotionVarMs('--motion-dur-page', 300) / 1000)
+
+  try {
+    gsapRef.set(prevSec, { opacity: 1 })
+    gsapRef.set(nextSec, { opacity: 0 })
+  } catch {}
+
+  runPageInit(next)
   updateTexts()
-  console.log('渲染进程: 切换页面', p)
+
+  try {
+    const container = document.getElementById('page-container')
+    const restoreLayout = () => {
+      try { if (container) container.style.height = '' } catch {}
+      const restoreSec = (sec) => {
+        if (!sec) return
+        try {
+          sec.style.position = ''
+          sec.style.inset = ''
+          sec.style.top = ''
+          sec.style.left = ''
+          sec.style.right = ''
+          sec.style.bottom = ''
+          sec.style.width = ''
+          sec.style.pointerEvents = ''
+        } catch {}
+      }
+      restoreSec(prevSec)
+      restoreSec(nextSec)
+    }
+
+    if (container) {
+      try {
+        const h = Math.max(prevSec.offsetHeight || 0, nextSec.offsetHeight || 0)
+        if (h > 0) container.style.height = h + 'px'
+      } catch {}
+      try {
+        prevSec.style.position = 'absolute'
+        prevSec.style.inset = '0'
+        prevSec.style.width = '100%'
+        nextSec.style.position = 'absolute'
+        nextSec.style.inset = '0'
+        nextSec.style.width = '100%'
+      } catch {}
+    }
+    try { prevSec.style.pointerEvents = 'none' } catch {}
+
+    const tl = gsapRef.timeline({
+      defaults: { duration: dur, overwrite: true },
+      onComplete: () => {
+        try {
+          prevSec.style.display = 'none'
+        } catch {}
+        try {
+          gsapRef.set(prevSec, { clearProps: 'opacity,transform,filter' })
+          gsapRef.set(nextSec, { clearProps: 'opacity,transform,filter' })
+        } catch {}
+        restoreLayout()
+        pageTransitionRunning = false
+        const pending = pageTransitionPending
+        pageTransitionPending = null
+        if (pending && pending !== next) {
+          showPage(pending)
+        }
+      }
+    })
+    tl.to(prevSec, { opacity: 0, ease: 'power1.inOut' }, 0)
+    tl.to(nextSec, { opacity: 1, ease: 'power1.inOut' }, 0)
+  } catch {
+    try {
+      const container = document.getElementById('page-container')
+      if (container) container.style.height = ''
+      const restoreSec = (sec) => {
+        if (!sec) return
+        try {
+          sec.style.position = ''
+          sec.style.inset = ''
+          sec.style.top = ''
+          sec.style.left = ''
+          sec.style.right = ''
+          sec.style.bottom = ''
+          sec.style.width = ''
+          sec.style.pointerEvents = ''
+        } catch {}
+      }
+      restoreSec(prevSec)
+      restoreSec(nextSec)
+    } catch {}
+    document.querySelectorAll('.page').forEach(sec => {
+      sec.style.display = sec.id === 'page-' + next ? 'block' : 'none'
+    })
+    pageTransitionRunning = false
+    runPageInit(next)
+    updateTexts()
+  }
+
+  console.log('渲染进程: 切换页面', next)
 }
 
 function initOverview() {
@@ -2582,6 +2846,19 @@ function initExclusions() {
 function initSettings() {
     console.log('渲染进程: 初始化设置页');
     document.getElementById('settings-title').textContent = t('settings_title');
+
+    const labelTheme = document.getElementById('label-theme-mode');
+    if (labelTheme) labelTheme.textContent = t('settings_theme');
+    const optThemeSystem = document.querySelector('#select-theme-mode option[value="system"]');
+    if (optThemeSystem) optThemeSystem.textContent = t('theme_system');
+    const optThemeDark = document.querySelector('#select-theme-mode option[value="dark"]');
+    if (optThemeDark) optThemeDark.textContent = t('theme_dark');
+    const optThemeLight = document.querySelector('#select-theme-mode option[value="light"]');
+    if (optThemeLight) optThemeLight.textContent = t('theme_light');
+
+    const labelAnimations = document.getElementById('label-animations');
+    if (labelAnimations) labelAnimations.textContent = t('settings_enable_animations');
+
     const labelLocale = document.getElementById('label-locale');
     if (labelLocale) labelLocale.textContent = t('settings_language');
     const optZh = document.querySelector('#select-locale option[value="zh-CN"]');
@@ -2604,6 +2881,36 @@ function initSettings() {
     if (labelCommonExt) labelCommonExt.textContent = t('settings_common_extensions_only');
     const cfg = window.api.config.get();
     if (!cfg) return;
+
+    const selTheme = document.getElementById('select-theme-mode');
+    if (selTheme) {
+        const themeMode = (cfg.ui && typeof cfg.ui.themeMode === 'string' && cfg.ui.themeMode) ? cfg.ui.themeMode : 'system';
+        selTheme.value = themeMode;
+        selTheme.onchange = null;
+        selTheme.onchange = () => {
+            const val = selTheme.value;
+            window.api.config.setThemeMode(val);
+            applyThemePreferences();
+            initSettings();
+        };
+    }
+
+    const toggleAnimations = document.getElementById('toggle-animations');
+    const labelAnimationsState = document.getElementById('label-animations-state');
+    const isAnimationsEnabled = !(!cfg.ui || cfg.ui.animations === false);
+    if (toggleAnimations) {
+        toggleAnimations.checked = isAnimationsEnabled;
+        toggleAnimations.onchange = () => {
+            const val = toggleAnimations.checked;
+            window.api.config.setUiAnimationsEnabled(val);
+            applyMotionPreferences();
+            initSettings();
+        };
+    }
+    if (labelAnimationsState) {
+        labelAnimationsState.textContent = isAnimationsEnabled ? t('settings_animations_on') : t('settings_animations_off');
+        labelAnimationsState.className = 'badge ' + (isAnimationsEnabled ? 'bg-success' : 'bg-secondary') + ' ms-2';
+    }
 
     const selLocale = document.getElementById('select-locale');
     if (selLocale) {
@@ -2690,7 +2997,17 @@ function startHealthPoll() {
 
 if (typeof window !== 'undefined') {
   window.addEventListener('DOMContentLoaded', () => {
+    applyThemePreferences()
     setTheme()
+    applyMotionPreferences()
+    try {
+      const mm = window.matchMedia ? window.matchMedia('(prefers-reduced-motion: reduce)') : null
+      if (mm) {
+        const handler = () => applyMotionPreferences()
+        if (typeof mm.addEventListener === 'function') mm.addEventListener('change', handler)
+        else if (typeof mm.addListener === 'function') mm.addListener(handler)
+      }
+    } catch {}
     initNav()
     updateTexts()
     showPage('overview')

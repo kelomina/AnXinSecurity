@@ -19,7 +19,7 @@ function loadConfig() {
       defaultPage: 'overview',
       minimizeToTray: true,
       tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
-      ui: { animations: true, window: { minWidth: 400, minHeight: 800 } },
+      ui: { animations: true, themeMode: 'system', window: { minWidth: 400, minHeight: 800 } },
       engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
       scanner: {
         timeoutMs: 10000,
@@ -155,6 +155,18 @@ const api = {
     setScanCommonExtensionsOnly: (enabled) => {
       cfg.scan = cfg.scan || {}
       cfg.scan.commonExtensionsOnly = !!enabled
+      saveConfig()
+    },
+    setUiAnimationsEnabled: (enabled) => {
+      cfg.ui = cfg.ui || {}
+      cfg.ui.animations = !!enabled
+      saveConfig()
+    },
+    setThemeMode: (mode) => {
+      const m = typeof mode === 'string' ? mode.trim() : ''
+      if (m !== 'system' && m !== 'dark' && m !== 'light') return
+      cfg.ui = cfg.ui || {}
+      cfg.ui.themeMode = m
       saveConfig()
     }
   },

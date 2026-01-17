@@ -9,6 +9,51 @@ function setTheme() {
   document.documentElement.style.setProperty('--theme-color', color)
 }
 
+let themeMedia = null
+let themeMediaBound = false
+
+function resolveThemeMode(cfg) {
+  const m = cfg && cfg.ui && typeof cfg.ui.themeMode === 'string' ? cfg.ui.themeMode.trim() : ''
+  if (m === 'dark' || m === 'light' || m === 'system') return m
+  return 'system'
+}
+
+function resolveThemeFromSystem() {
+  try {
+    const mm = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+    return mm && mm.matches ? 'dark' : 'light'
+  } catch {
+    return 'dark'
+  }
+}
+
+function applyThemePreferences() {
+  const cfg = (window.api && window.api.config) ? window.api.config.get() : null
+  const mode = resolveThemeMode(cfg)
+  const theme = mode === 'system' ? resolveThemeFromSystem() : mode
+  document.documentElement.setAttribute('data-bs-theme', theme)
+  document.documentElement.setAttribute('data-theme', theme)
+
+  if (!themeMediaBound) {
+    try {
+      themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+      const handler = () => {
+        const cfg2 = (window.api && window.api.config) ? window.api.config.get() : null
+        const mode2 = resolveThemeMode(cfg2)
+        if (mode2 !== 'system') return
+        const theme2 = resolveThemeFromSystem()
+        document.documentElement.setAttribute('data-bs-theme', theme2)
+        document.documentElement.setAttribute('data-theme', theme2)
+      }
+      if (themeMedia) {
+        if (typeof themeMedia.addEventListener === 'function') themeMedia.addEventListener('change', handler)
+        else if (typeof themeMedia.addListener === 'function') themeMedia.addListener(handler)
+        themeMediaBound = true
+      }
+    } catch {}
+  }
+}
+
 function parseQuery() {
   const qs = new URLSearchParams(location.search || '')
   const requestId = qs.get('requestId') || ''
@@ -17,6 +62,7 @@ function parseQuery() {
 }
 
 window.addEventListener('DOMContentLoaded', () => {
+  applyThemePreferences()
   setTheme()
 
   try {

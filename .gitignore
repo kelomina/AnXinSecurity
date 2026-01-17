@@ -56,7 +56,18 @@ instance/
 
 .scrapy
 
-docs/_build/
+docs
+out/
+release/
+storybook-static/
+
+Engine
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+/_build/
 
 .pybuilder/
 target/
@@ -135,3 +146,4 @@ quarantine_index.json
 .trae
 ben
 output
+docs

@@ -10,6 +10,7 @@
   },
   "ui": {
     "animations": true,
+    "themeMode": "system",
     "window": {
       "minWidth": 800,
       "minHeight": 600
