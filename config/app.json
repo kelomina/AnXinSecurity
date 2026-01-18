@@ -223,11 +223,5 @@
         "techniqueName": "Modify Registry"
       }
     ]
-  },
-  "quarantine": {
-    "salt": "a0521f1c714fd134804898513249b3ff"
-  },
-  "exclusions": {
-    "salt": "45d542c2a2569a294bed848902477d0b"
   }
 }
