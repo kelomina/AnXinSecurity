@@ -56,7 +56,6 @@ instance/
 
 .scrapy
 
-docs
 out/
 release/
 storybook-static/
@@ -146,4 +145,3 @@ quarantine_index.json
 .trae
 ben
 output
-docs
