@@ -63,6 +63,7 @@ class EtwRuleEngine {
     std::string op;
     std::vector<std::string> targetContains;
     std::vector<std::string> targetPrefix;
+    std::vector<std::string> targetPatterns;
     std::uint32_t windowMs{0};
     std::vector<RuleOp> requiredOps;
   };

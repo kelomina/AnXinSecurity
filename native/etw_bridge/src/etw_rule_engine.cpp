@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <shlwapi.h>
 
 namespace anxin {
 
@@ -127,6 +128,13 @@ int EtwRuleEngine::setRulesJson(std::string_view rulesJsonUtf8) {
         if (!s.empty()) rr.targetPrefix.push_back(std::move(s));
       }
     }
+    if (const auto* a = jsonAsArray(jsonGet(*obj, "targetPattern"))) {
+      for (const auto& v : a->values) {
+        if (v.kind != JsonValue::Kind::String) continue;
+        auto s = toLowerAscii(v.asString.value);
+        if (!s.empty()) rr.targetPatterns.push_back(std::move(s));
+      }
+    }
     if (const auto* req = jsonAsArray(jsonGet(*obj, "requiredOps"))) {
       for (const auto& rv : req->values) {
         if (rv.kind != JsonValue::Kind::Object) continue;
@@ -215,6 +223,13 @@ bool EtwRuleEngine::matchRule(const Rule& r, const EtwEventInput& ev, std::vecto
       return true;
     }
   }
+  for (const auto& pat : r.targetPatterns) {
+    if (pat.empty()) continue;
+    if (::PathMatchSpecA(targetLower.c_str(), pat.c_str())) {
+      evidence.push_back(std::string("targetPattern:") + pat);
+      return true;
+    }
+  }
   for (const auto& c : r.targetContains) {
     if (c.empty()) continue;
     if (targetLower.find(c) == std::string::npos) return false;
@@ -225,7 +240,10 @@ bool EtwRuleEngine::matchRule(const Rule& r, const EtwEventInput& ev, std::vecto
   if (!r.targetPrefix.empty()) {
     for (const auto& pre : r.targetPrefix) evidence.push_back(std::string("targetPrefix:") + pre);
   }
-  if (r.targetContains.empty() && r.targetPrefix.empty()) evidence.push_back("basic");
+  if (!r.targetPatterns.empty()) {
+    for (const auto& pat : r.targetPatterns) evidence.push_back(std::string("targetPattern:") + pat);
+  }
+  if (r.targetContains.empty() && r.targetPrefix.empty() && r.targetPatterns.empty()) evidence.push_back("basic");
   return true;
 }
 

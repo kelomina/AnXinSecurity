@@ -30,8 +30,8 @@
     "severity": 5,
     "threatType": "规则引擎测试命中",
     "recommendAction": "block",
-    "targetContains": [
-      "anxin_rule_test_trigger.bin"
+    "targetPatterns": [
+      "*\\anxin_rule_test_trigger.bin"
     ]
   }
 ]

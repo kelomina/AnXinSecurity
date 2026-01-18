@@ -17,7 +17,7 @@ if (MSVC)
   target_compile_options(etw_bridge PRIVATE /W4 /EHsc)
 endif()
 
-target_link_libraries(etw_bridge PRIVATE advapi32 ole32)
+target_link_libraries(etw_bridge PRIVATE advapi32 ole32 shlwapi)
 
 target_include_directories(etw_bridge PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -34,4 +34,5 @@ if (MSVC)
   target_compile_options(etw_bridge_tests PRIVATE /W4 /EHsc)
 endif()
 target_include_directories(etw_bridge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(etw_bridge_tests PRIVATE shlwapi)
 add_test(NAME etw_bridge_tests COMMAND etw_bridge_tests)
