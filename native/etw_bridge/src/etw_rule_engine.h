@@ -19,6 +19,7 @@ struct EtwEventInput {
   ProviderKind provider{ProviderKind::Unknown};
   std::string op;
   std::string target;
+  std::string target2;
   std::string processImage;
 };
 

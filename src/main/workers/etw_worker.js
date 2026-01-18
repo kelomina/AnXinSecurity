@@ -255,12 +255,23 @@ function resolveEtwBridgeDllPath() {
     try {
         candidates.push(path.join(__dirname, '../../../native/bin/win32-x64/etw_bridge.dll'));
     } catch {}
+    const existing = [];
     for (const p of candidates) {
         try {
-            if (p && fs.existsSync(p)) return p;
+            if (p && fs.existsSync(p)) existing.push(p);
         } catch {}
     }
-    return null;
+    if (existing.length === 0) return null;
+    if (existing.length === 1) return existing[0];
+    try {
+        existing.sort((a, b) => {
+            const am = fs.statSync(a).mtimeMs || 0;
+            const bm = fs.statSync(b).mtimeMs || 0;
+            if (am !== bm) return bm - am;
+            return String(a).length - String(b).length;
+        });
+    } catch {}
+    return existing[0] || null;
 }
 
 function ensureEtwBridgeLoaded() {

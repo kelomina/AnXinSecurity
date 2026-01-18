@@ -236,10 +236,12 @@ std::optional<std::string> pickBestPathCandidate(const std::vector<std::string>&
   struct Scored {
     std::string s;
     int score;
+    std::size_t idx;
   };
   std::vector<Scored> scored;
   scored.reserve(list.size());
-  for (const auto& s : list) {
+  for (std::size_t i = 0; i < list.size(); i++) {
+    const auto& s = list[i];
     const bool hasSlash = s.find('\\') != std::string::npos;
     const bool hasDrive = s.size() >= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' && s[2] == '\\';
     const bool hasDevice = s.rfind("\\Device\\", 0) == 0 || s.rfind("\\\\?\\", 0) == 0;
@@ -248,9 +250,13 @@ std::optional<std::string> pickBestPathCandidate(const std::vector<std::string>&
     const bool looksLikeExe = lower.size() >= 4 && lower.rfind(".exe") == lower.size() - 4;
     const int score = (hasDrive ? 50 : 0) + (hasDevice ? 30 : 0) + (hasSlash ? 10 : 0) + (looksLikeExe ? 10 : 0) +
                       (static_cast<int>(s.size()) / 10 > 20 ? 20 : static_cast<int>(s.size()) / 10);
-    scored.push_back({s, score});
+    scored.push_back({s, score, i});
   }
-  std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) { return a.score > b.score; });
+  std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
+    if (a.score != b.score) return a.score > b.score;
+    if (a.s.size() != b.s.size()) return a.s.size() > b.s.size();
+    return a.idx > b.idx;
+  });
 
   auto isPathLike = [](const std::string& s) -> bool {
     if (s.empty()) return false;
@@ -266,6 +272,68 @@ std::optional<std::string> pickBestPathCandidate(const std::vector<std::string>&
     if (isPathLike(it.s)) return it.s;
   }
   return std::nullopt;
+}
+
+std::vector<std::string> pickTopPathCandidates(const std::vector<std::string>& strings, std::size_t maxN, bool penalizeExe) {
+  const auto list = filterLikelyStrings(strings);
+  struct Scored {
+    std::string s;
+    int score;
+    std::size_t idx;
+  };
+  std::vector<Scored> scored;
+  scored.reserve(list.size());
+  for (std::size_t i = 0; i < list.size(); i++) {
+    const auto& s = list[i];
+    const bool hasSlash = s.find('\\') != std::string::npos;
+    const bool hasDrive = s.size() >= 3 && ((s[0] >= 'A' && s[0] <= 'Z') || (s[0] >= 'a' && s[0] <= 'z')) && s[1] == ':' && s[2] == '\\';
+    const bool hasDevice = s.rfind("\\Device\\", 0) == 0 || s.rfind("\\\\?\\", 0) == 0;
+    std::string lower = s;
+    for (auto& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    const bool looksLikeExe = lower.size() >= 4 && lower.rfind(".exe") == lower.size() - 4;
+    int score = (hasDrive ? 50 : 0) + (hasDevice ? 30 : 0) + (hasSlash ? 10 : 0) +
+                (static_cast<int>(s.size()) / 10 > 20 ? 20 : static_cast<int>(s.size()) / 10);
+    if (!penalizeExe && looksLikeExe) score += 10;
+    if (penalizeExe && looksLikeExe) score -= 20;
+    scored.push_back({s, score, i});
+  }
+  std::sort(scored.begin(), scored.end(), [](const Scored& a, const Scored& b) {
+    if (a.score != b.score) return a.score > b.score;
+    if (a.s.size() != b.s.size()) return a.s.size() > b.s.size();
+    return a.idx > b.idx;
+  });
+
+  auto isPathLike = [](const std::string& s) -> bool {
+    if (s.empty()) return false;
+    if (s.find('\\') != std::string::npos) return true;
+    if (s.size() >= 4) {
+      std::string lower = s;
+      for (auto& ch : lower) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+      if (lower.rfind(".exe") == lower.size() - 4) return true;
+    }
+    return false;
+  };
+
+  std::vector<std::string> out;
+  out.reserve(maxN > 0 ? maxN : 1);
+  for (const auto& it : scored) {
+    if (out.size() >= maxN) break;
+    if (!isPathLike(it.s)) continue;
+    std::string key = it.s;
+    for (auto& ch : key) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+    bool dup = false;
+    for (const auto& o : out) {
+      std::string ok = o;
+      for (auto& ch : ok) ch = static_cast<char>(tolower(static_cast<unsigned char>(ch)));
+      if (ok == key) {
+        dup = true;
+        break;
+      }
+    }
+    if (dup) continue;
+    out.push_back(it.s);
+  }
+  return out;
 }
 
 std::string mapFileOp(const EVENT_DESCRIPTOR& d) {
@@ -638,6 +706,7 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
   std::uint32_t eventPpid = 0;
   std::string eventOp;
   std::string eventTarget;
+  std::string eventTarget2;
   std::string eventImage;
 
   if (isProcess) {
@@ -663,10 +732,19 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
     const auto op = mapFileOp(desc);
     if (op.empty()) return;
     const auto strings = extractStringsHeuristic(bytes, 3);
-    const auto fileName = pickBestPathCandidate(strings).value_or("");
+    std::string fileName;
+    std::string fileName2;
+    {
+      const std::size_t want = (op == "Rename") ? 2 : 1;
+      const auto cands = pickTopPathCandidates(strings, want, true);
+      if (!cands.empty()) fileName = cands[0];
+      if (cands.size() > 1) fileName2 = cands[1];
+    }
+    if (fileName.empty()) fileName = pickBestPathCandidate(strings).value_or("");
     if (fileName.empty()) return;
     eventOp = op;
     eventTarget = fileName;
+    if (op == "Rename") eventTarget2 = fileName2;
     dataJson = std::string("{\"fileName\":\"") + jsonEscape(fileName) + "\",\"type\":\"" + op + "\"}";
   } else if (isRegistry) {
     const auto reg = parseRegistryUserDataJson(bytes, desc.Opcode, desc.Id);
@@ -711,6 +789,7 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
     in.provider = providerKind;
     in.op = eventOp;
     in.target = eventTarget;
+    in.target2 = eventTarget2;
     in.processImage = eventImage;
     std::optional<anxin::EtwMatchResult> match;
     {

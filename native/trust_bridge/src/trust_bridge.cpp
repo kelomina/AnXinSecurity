@@ -8,6 +8,7 @@ int TrustBridge_VerifyFile(const wchar_t*, unsigned long*) { return -1; }
 int TrustBridge_GetSignerInfoJson(const wchar_t*, char**) { return -1; }
 int TrustBridge_ComputeFileSha256Hex(const wchar_t*, char**) { return -1; }
 int TrustBridge_ScanCacheLookupByFile(const wchar_t*, int*, char**) { return -1; }
+int TrustBridge_ScanCacheLookupByFile2(const wchar_t*, int*, char*, int) { return -1; }
 int TrustBridge_ScanCacheStore(const char*, int) { return -1; }
 void TrustBridge_Free(void*) {}
 #else
@@ -469,6 +470,50 @@ extern "C" int TrustBridge_ScanCacheLookupByFile(const wchar_t* filePath, int* o
   }
 }
 
+extern "C" int TrustBridge_ScanCacheLookupByFile2(const wchar_t* filePath, int* outVerdict, char* outUtf8HexBuf, int outCap) {
+  if (outVerdict) *outVerdict = 0;
+  if (outUtf8HexBuf && outCap > 0) outUtf8HexBuf[0] = '\0';
+  if (!filePath || !filePath[0]) return -1;
+  const auto wt = fileWriteTime100ns(filePath).value_or(0);
+  const auto key = normalizePath(std::wstring(filePath));
+  const auto now = nowMs();
+  std::string hashHex;
+  {
+    std::lock_guard<std::mutex> lk(gScanMu);
+    auto it = gPathToHash.find(key);
+    if (it != gPathToHash.end()) {
+      if (it->second.writeTime == wt && !it->second.hashHex.empty()) {
+        hashHex = it->second.hashHex;
+      }
+    }
+  }
+  if (hashHex.empty()) {
+    const auto h = sha256HexOfFile(filePath);
+    if (!h || h->empty() || !isHexLower(*h)) return -2;
+    hashHex = *h;
+    std::lock_guard<std::mutex> lk(gScanMu);
+    gPathToHash[key] = ScanHashEntry{wt, hashHex, now};
+  }
+  if (outUtf8HexBuf && outCap > 0) {
+    const int need = static_cast<int>(hashHex.size()) + 1;
+    if (need > outCap) return -3;
+    std::memcpy(outUtf8HexBuf, hashHex.data(), hashHex.size());
+    outUtf8HexBuf[hashHex.size()] = '\0';
+  }
+  {
+    std::lock_guard<std::mutex> lk(gScanMu);
+    auto it = gHashToVerdict.find(hashHex);
+    if (it == gHashToVerdict.end()) return 0;
+    const bool fresh = (now >= it->second.cachedAt) && ((now - it->second.cachedAt) <= gScanVerdictTtlMs);
+    if (!fresh) {
+      gHashToVerdict.erase(it);
+      return 0;
+    }
+    if (outVerdict) *outVerdict = it->second.verdict;
+    return 1;
+  }
+}
+
 extern "C" int TrustBridge_ScanCacheStore(const char* utf8HashHex, int verdict) {
   const std::string h = (utf8HashHex && utf8HashHex[0]) ? std::string(utf8HashHex) : std::string();
   if (!isHexLower(h)) return -1;
@@ -484,4 +529,3 @@ extern "C" void TrustBridge_Free(void* p) {
 }
 
 #endif
-

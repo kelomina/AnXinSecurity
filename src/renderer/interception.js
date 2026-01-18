@@ -226,6 +226,27 @@ function appendJsonChunk() {
   jsonRendered = end
   if (jsonRendered >= lines.length) {
     if (lines.length >= 200) pre.textContent += `\n${t('intercept_details_loaded_all')}`
+
+    // Add click-to-copy handler
+    pre.style.cursor = 'pointer'
+    pre.title = t('intercept_details_copy_hint') || 'Click to copy'
+    pre.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(pre.textContent)
+        const originalTitle = pre.title
+        pre.title = t('intercept_details_copied') || 'Copied!'
+        
+        // Visual feedback
+        const originalBg = pre.style.backgroundColor
+        pre.style.backgroundColor = 'rgba(40, 167, 69, 0.2)' // Light green
+        setTimeout(() => {
+          pre.style.backgroundColor = originalBg
+          pre.title = originalTitle
+        }, 1000)
+      } catch (err) {
+        console.error('Failed to copy: ', err)
+      }
+    }
   }
 }
 

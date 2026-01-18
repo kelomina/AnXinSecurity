@@ -10,6 +10,20 @@ namespace anxin {
 
 EtwRuleEngine::EtwRuleEngine() = default;
 
+static std::string toLowerAsciiAndBackslash(std::string_view s) {
+  std::string out;
+  out.reserve(s.size());
+  for (unsigned char ch : s) {
+    if (ch == '/') {
+      out.push_back('\\');
+      continue;
+    }
+    if (ch >= 'A' && ch <= 'Z') out.push_back(static_cast<char>(ch - 'A' + 'a'));
+    else out.push_back(static_cast<char>(ch));
+  }
+  return out;
+}
+
 std::string EtwRuleEngine::toLowerAscii(std::string_view s) {
   std::string out;
   out.reserve(s.size());
@@ -117,21 +131,21 @@ int EtwRuleEngine::setRulesJson(std::string_view rulesJsonUtf8) {
     if (const auto* a = jsonAsArray(jsonGet(*obj, "targetContains"))) {
       for (const auto& v : a->values) {
         if (v.kind != JsonValue::Kind::String) continue;
-        const auto s = toLowerAscii(v.asString.value);
+        const auto s = toLowerAsciiAndBackslash(v.asString.value);
         if (!s.empty()) rr.targetContains.push_back(s);
       }
     }
     if (const auto* a = jsonAsArray(jsonGet(*obj, "targetPrefix"))) {
       for (const auto& v : a->values) {
         if (v.kind != JsonValue::Kind::String) continue;
-        auto s = toLowerAscii(v.asString.value);
+        auto s = toLowerAsciiAndBackslash(v.asString.value);
         if (!s.empty()) rr.targetPrefix.push_back(std::move(s));
       }
     }
-    if (const auto* a = jsonAsArray(jsonGet(*obj, "targetPattern"))) {
+    if (const auto* a = jsonAsArray(jsonGet(*obj, "targetPatterns"))) {
       for (const auto& v : a->values) {
         if (v.kind != JsonValue::Kind::String) continue;
-        auto s = toLowerAscii(v.asString.value);
+        auto s = toLowerAsciiAndBackslash(v.asString.value);
         if (!s.empty()) rr.targetPatterns.push_back(std::move(s));
       }
     }
@@ -215,36 +229,67 @@ std::vector<EtwContextItem> EtwRuleEngine::snapshotContext(std::uint32_t pid) co
 bool EtwRuleEngine::matchRule(const Rule& r, const EtwEventInput& ev, std::vector<std::string>& evidence) {
   if (r.provider != ev.provider) return false;
   if (r.op != ev.op) return false;
-  const auto targetLower = toLowerAscii(ev.target);
+  const auto targetLower = toLowerAsciiAndBackslash(ev.target);
+  const auto slashPos = targetLower.find_last_of('\\');
+  const auto baseLower = (slashPos == std::string::npos) ? targetLower : targetLower.substr(slashPos + 1);
+  const auto target2Lower = ev.target2.empty() ? std::string() : toLowerAsciiAndBackslash(ev.target2);
+  const auto slash2Pos = target2Lower.find_last_of('\\');
+  const auto base2Lower = (slash2Pos == std::string::npos) ? target2Lower : target2Lower.substr(slash2Pos + 1);
+  bool hasPathLimit = !r.targetPrefix.empty() || !r.targetPatterns.empty() || !r.targetContains.empty();
+  if (!hasPathLimit) {
+    evidence.push_back("basic");
+    return true;
+  }
+
   for (const auto& pre : r.targetPrefix) {
     if (pre.empty()) continue;
     if (targetLower.rfind(pre, 0) == 0) {
       evidence.push_back(std::string("targetPrefix:") + pre);
       return true;
     }
+    if (!target2Lower.empty() && target2Lower.rfind(pre, 0) == 0) {
+      evidence.push_back(std::string("target2Prefix:") + pre);
+      return true;
+    }
   }
+
   for (const auto& pat : r.targetPatterns) {
     if (pat.empty()) continue;
     if (::PathMatchSpecA(targetLower.c_str(), pat.c_str())) {
       evidence.push_back(std::string("targetPattern:") + pat);
       return true;
     }
+    if (!target2Lower.empty() && ::PathMatchSpecA(target2Lower.c_str(), pat.c_str())) {
+      evidence.push_back(std::string("target2Pattern:") + pat);
+      return true;
+    }
+    const auto sep = pat.find_last_of('\\');
+    if (sep != std::string::npos && sep + 1 < pat.size()) {
+      const auto patBase = pat.substr(sep + 1);
+      if (!patBase.empty() && ::PathMatchSpecA(baseLower.c_str(), patBase.c_str())) {
+        evidence.push_back(std::string("targetPatternBase:") + patBase);
+        return true;
+      }
+      if (!patBase.empty() && !base2Lower.empty() && ::PathMatchSpecA(base2Lower.c_str(), patBase.c_str())) {
+        evidence.push_back(std::string("target2PatternBase:") + patBase);
+        return true;
+      }
+    }
   }
+
   for (const auto& c : r.targetContains) {
     if (c.empty()) continue;
-    if (targetLower.find(c) == std::string::npos) return false;
+    if (targetLower.find(c) != std::string::npos) {
+      evidence.push_back(std::string("targetContains:") + c);
+      return true;
+    }
+    if (!target2Lower.empty() && target2Lower.find(c) != std::string::npos) {
+      evidence.push_back(std::string("target2Contains:") + c);
+      return true;
+    }
   }
-  if (!r.targetContains.empty()) {
-    for (const auto& c : r.targetContains) evidence.push_back(std::string("targetContains:") + c);
-  }
-  if (!r.targetPrefix.empty()) {
-    for (const auto& pre : r.targetPrefix) evidence.push_back(std::string("targetPrefix:") + pre);
-  }
-  if (!r.targetPatterns.empty()) {
-    for (const auto& pat : r.targetPatterns) evidence.push_back(std::string("targetPattern:") + pat);
-  }
-  if (r.targetContains.empty() && r.targetPrefix.empty() && r.targetPatterns.empty()) evidence.push_back("basic");
-  return true;
+
+  return false;
 }
 
 bool EtwRuleEngine::matchWindowRule(const Rule& r, const EtwEventInput& ev, std::vector<std::string>& evidence) {

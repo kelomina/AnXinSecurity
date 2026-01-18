@@ -23,6 +23,7 @@ let TrustBridge_VerifyFile = null;
 let TrustBridge_GetSignerInfoJson = null;
 let TrustBridge_ComputeFileSha256Hex = null;
 let TrustBridge_ScanCacheLookupByFile = null;
+let TrustBridge_ScanCacheLookupByFile2 = null;
 let TrustBridge_ScanCacheStore = null;
 let TrustBridge_Free = null;
 
@@ -55,6 +56,7 @@ function tryLoadTrustBridge() {
         TrustBridge_GetSignerInfoJson = trustBridgeLib.func('__cdecl', 'TrustBridge_GetSignerInfoJson', 'int', ['string16', koffi.out(koffi.pointer('void *', 2))]);
         try { TrustBridge_ComputeFileSha256Hex = trustBridgeLib.func('__cdecl', 'TrustBridge_ComputeFileSha256Hex', 'int', ['string16', koffi.out(koffi.pointer('void *', 2))]); } catch { TrustBridge_ComputeFileSha256Hex = null; }
         try { TrustBridge_ScanCacheLookupByFile = trustBridgeLib.func('__cdecl', 'TrustBridge_ScanCacheLookupByFile', 'int', ['string16', koffi.out('int *'), koffi.out(koffi.pointer('void *', 2))]); } catch { TrustBridge_ScanCacheLookupByFile = null; }
+        try { TrustBridge_ScanCacheLookupByFile2 = trustBridgeLib.func('__cdecl', 'TrustBridge_ScanCacheLookupByFile2', 'int', ['string16', koffi.out('int *'), 'void *', 'int']); } catch { TrustBridge_ScanCacheLookupByFile2 = null; }
         try { TrustBridge_ScanCacheStore = trustBridgeLib.func('__cdecl', 'TrustBridge_ScanCacheStore', 'int', ['string', 'int']); } catch { TrustBridge_ScanCacheStore = null; }
         TrustBridge_Free = trustBridgeLib.func('__cdecl', 'TrustBridge_Free', 'void', ['void *']);
         try { TrustBridge_SetCacheConfig(4096, 600000); } catch {}
@@ -66,6 +68,7 @@ function tryLoadTrustBridge() {
         TrustBridge_GetSignerInfoJson = null;
         TrustBridge_ComputeFileSha256Hex = null;
         TrustBridge_ScanCacheLookupByFile = null;
+        TrustBridge_ScanCacheLookupByFile2 = null;
         TrustBridge_ScanCacheStore = null;
         TrustBridge_Free = null;
         console.warn('Failed to load trust_bridge.dll', e);
@@ -411,26 +414,37 @@ function computeFileSha256Hex(filePath) {
 }
 
 function scanCacheLookupByFile(filePath) {
-    if (!(tryLoadTrustBridge() && TrustBridge_ScanCacheLookupByFile && TrustBridge_Free)) return null;
+    if (!(tryLoadTrustBridge() && (TrustBridge_ScanCacheLookupByFile2 || TrustBridge_ScanCacheLookupByFile) && TrustBridge_Free)) return null;
     try {
-        const verdictBuf = Buffer.alloc(4);
-        verdictBuf.writeInt32LE(0, 0);
-        const outHex = [null];
-        const rc = TrustBridge_ScanCacheLookupByFile(filePath, verdictBuf, outHex);
-        const verdict = verdictBuf.readInt32LE(0);
-        let hash = null;
-        const ptr = outHex[0];
-        if (ptr) {
-            const len = lstrlenA(ptr) | 0;
-            if (len > 0 && len < 256) {
-                const bytes = koffi.decode(ptr, koffi.array('uint8_t', len));
-                hash = Buffer.from(bytes).toString('utf8') || null;
+        if (TrustBridge_ScanCacheLookupByFile2) {
+            const verdictBuf = Buffer.alloc(4);
+            verdictBuf.writeInt32LE(0, 0);
+            const hexBuf = Buffer.alloc(128);
+            hexBuf.fill(0);
+            const rc = TrustBridge_ScanCacheLookupByFile2(filePath, verdictBuf, hexBuf, hexBuf.length);
+            const verdict = verdictBuf.readInt32LE(0);
+            let hash = null;
+            const nul = hexBuf.indexOf(0);
+            const end = nul >= 0 ? nul : hexBuf.length;
+            if (end > 0) hash = hexBuf.toString('utf8', 0, end) || null;
+            if (rc === 1) return { hit: true, verdict, hash };
+            if (rc === 0) return { hit: false, verdict: 0, hash };
+            return null;
+        } else {
+            const verdictBuf = Buffer.alloc(4);
+            verdictBuf.writeInt32LE(0, 0);
+            const outHex = [null];
+            const rc = TrustBridge_ScanCacheLookupByFile(filePath, verdictBuf, outHex);
+            const verdict = verdictBuf.readInt32LE(0);
+            let hash = null;
+            const ptr = outHex[0];
+            if (ptr) {
+                try { TrustBridge_Free(ptr); } catch {}
             }
-            try { TrustBridge_Free(ptr); } catch {}
+            if (rc === 1) return { hit: true, verdict, hash };
+            if (rc === 0) return { hit: false, verdict: 0, hash };
+            return null;
         }
-        if (rc === 1) return { hit: true, verdict, hash };
-        if (rc === 0) return { hit: false, verdict: 0, hash };
-        return null;
     } catch {
         return null;
     }
