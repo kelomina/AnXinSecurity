@@ -1,4 +1,5 @@
 const { parentPort } = require('worker_threads')
+const path = require('path')
 
 const scanCache = new Map()
 
@@ -46,6 +47,28 @@ function resolveConfig(cfg) {
   }
 }
 
+function normalizeDirLower(p) {
+  let s = typeof p === 'string' ? p : ''
+  s = s.toLowerCase().replace(/\//g, '\\')
+  if (s && !s.endsWith('\\')) s += '\\'
+  return s
+}
+
+function isPathUnderDir(lowerPath, lowerDir) {
+  if (!lowerPath || !lowerDir) return false
+  return lowerPath.startsWith(lowerDir)
+}
+
+function shouldSkipInterception(lowerPath, systemRootLower, appDirLower, exclusions) {
+  if (!lowerPath) return true
+  if (isPathUnderDir(lowerPath, normalizeDirLower(systemRootLower))) return true
+  if (isPathUnderDir(lowerPath, appDirLower)) return true
+  for (const ex of exclusions) {
+    if (isPathUnderDir(lowerPath, ex)) return true
+  }
+  return false
+}
+
 async function scanSnapshot(cfg) {
   if (scanInFlight) return
   scanInFlight = true
@@ -58,11 +81,9 @@ async function scanSnapshot(cfg) {
 
     const conf = resolveConfig(cfg)
     const systemRootLower = String(process.env.SystemRoot || 'C:\\Windows').toLowerCase()
+    const appDirLower = normalizeDirLower(path.dirname(process.execPath || ''))
     const exclusions = conf.exclusionPaths.map(p => {
-      let s = p.toLowerCase()
-      s = s.replace(/\//g, '\\')
-      if (!s.endsWith('\\')) s += '\\'
-      return s
+      return normalizeDirLower(p)
     })
 
     let list = []
@@ -86,25 +107,27 @@ async function scanSnapshot(cfg) {
       }
 
       const lowerImage = imagePath.toLowerCase().replace(/\//g, '\\')
-      let isExcluded = false
-      for (const ex of exclusions) {
-        if (lowerImage.startsWith(ex)) {
-          isExcluded = true
-          break
-        }
-      }
-      if (isExcluded) continue
+      if (shouldSkipInterception(lowerImage, systemRootLower, appDirLower, exclusions)) continue
 
       try {
+        let processSigned = false
+        if (scanCache.get(lowerImage) === true) {
+          processSigned = true
+        } else {
+          try { processSigned = winapi.verifyTrust(imagePath) === true } catch {}
+          if (processSigned) scanCache.set(lowerImage, true)
+        }
+
         const modules = winapi.getProcessModules(pid, conf.modulesBufferBytes)
         const modArr = Array.isArray(modules) ? modules : []
         const unsignedDlls = []
         for (let j = 0; j < modArr.length; j++) {
           const p = typeof modArr[j] === 'string' ? modArr[j] : ''
           if (!p) continue
-          const lower = p.toLowerCase()
+          const lower = p.toLowerCase().replace(/\//g, '\\')
           if (!lower.endsWith('.dll')) continue
-          if (conf.skipSystemDll && lower.startsWith(systemRootLower)) continue
+          if (conf.skipSystemDll && lower.startsWith(normalizeDirLower(systemRootLower))) continue
+          if (shouldSkipInterception(lower, systemRootLower, appDirLower, exclusions)) continue
           
           if (scanCache.get(lower) === true) continue
           
@@ -118,16 +141,16 @@ async function scanSnapshot(cfg) {
             if (unsignedDlls.length >= conf.maxUnsignedDllsPerProcess) break
           }
         }
-        if (unsignedDlls.length) {
-        const paused = false
-        postMessage({ type: 'paused', pid, imagePath, paused, unsignedDlls })
-      } else {
-        let processSigned = false
-        try { processSigned = winapi.verifyTrust(imagePath) === true } catch {}
-        if (processSigned) {
-             scanCache.set(lowerImage, true)
+        const hasDllIssue = unsignedDlls.length > 0
+        const hasProcIssue = processSigned !== true
+        if (hasDllIssue || hasProcIssue) {
+          let paused = false
+          try { paused = winapi.suspendProcessByPid(pid) === true } catch { paused = false }
+          let scanType = 'process'
+          if (hasProcIssue && hasDllIssue) scanType = 'joint'
+          else if (hasDllIssue) scanType = 'dll'
+          postMessage({ type: 'paused', pid, imagePath, paused, unsignedDlls, processSigned, scanType })
         }
-      }
       } catch {}
       if (i % 30 === 0) await sleepImmediate()
     }

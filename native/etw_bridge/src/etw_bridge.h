@@ -31,9 +31,14 @@ ETW_BRIDGE_API int EtwBridge_Stop(void* handle, std::uint32_t timeoutMs);
 
 ETW_BRIDGE_API int EtwBridge_PollJson(void* handle, char** outUtf8Json);
 
+ETW_BRIDGE_API int EtwBridge_SetRulesJson(void* handle, const char* utf8Json);
+
+ETW_BRIDGE_API int EtwBridge_SetTrackedPids(void* handle, const std::uint32_t* pids, std::uint32_t count, int includeChildren);
+
+ETW_BRIDGE_API int EtwBridge_SetContextCapacity(void* handle, std::uint32_t perPidEvents);
+
 ETW_BRIDGE_API void EtwBridge_Free(void* p);
 
 ETW_BRIDGE_API void EtwBridge_Destroy(void* handle);
 
 }
-

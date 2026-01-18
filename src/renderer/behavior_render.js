@@ -132,6 +132,7 @@
     const t = typeof o.t === 'function' ? o.t : ((k) => k)
     const process = (o.process && typeof o.process === 'object') ? o.process : null
     const rawEvents = Array.isArray(o.events) ? o.events : []
+    const maxLeafPerOp = Number.isFinite(o.maxLeafPerOp) ? Math.max(20, Math.min(2000, Math.floor(o.maxLeafPerOp))) : 200
 
     const events = rawEvents.slice().sort((a, b) => {
       const ia = Number.isFinite(a && a.id) ? a.id : 0
@@ -162,7 +163,13 @@
       const out = []
       for (const [op, list] of groups.entries()) {
         const node = { kind: 'op', label: op, hint: '', count: list.length, children: [] }
-        node.children = list.map((ev) => {
+        const head = list.slice(0, maxLeafPerOp)
+        const tail = list.length > maxLeafPerOp ? list.slice(maxLeafPerOp) : []
+        node.children = head.map((ev) => {
+          const s = summarizeEvent(ev)
+          return { kind: 'event', label: s.label, hint: s.hint, count: 1, children: [], raw: ev }
+        })
+        if (tail.length) node.more = tail.map((ev) => {
           const s = summarizeEvent(ev)
           return { kind: 'event', label: s.label, hint: s.hint, count: 1, children: [], raw: ev }
         })
@@ -324,8 +331,9 @@
   root.behaviorRender.renderProcessSelectAsync = renderProcessSelectAsync
   root.behaviorRender.buildPidLifecycleTree = buildPidLifecycleTree
   root.behaviorRender.buildMitreMatrixModel = buildMitreMatrixModel
+  root.behaviorRender.summarizeEvent = summarizeEvent
 
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { renderProcessSelectAsync, buildPidLifecycleTree, buildMitreMatrixModel, mapEventToMitre }
+    module.exports = { renderProcessSelectAsync, buildPidLifecycleTree, buildMitreMatrixModel, mapEventToMitre, summarizeEvent }
   }
 })(typeof window !== 'undefined' ? window : globalThis)

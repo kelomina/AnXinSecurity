@@ -1,0 +1,37 @@
+[
+  {
+    "ruleId": "registry_runkey_setvalue",
+    "provider": "Registry",
+    "op": "SetValue",
+    "severity": 4,
+    "threatType": "启动项持久化",
+    "recommendAction": "block",
+    "targetContains": [
+      "currentversion\\\\run",
+      "hkcu\\\\",
+      "hklm\\\\"
+    ]
+  },
+  {
+    "ruleId": "temp_dropper_create",
+    "provider": "File",
+    "op": "Create",
+    "severity": 4,
+    "threatType": "临时目录落地",
+    "recommendAction": "block",
+    "targetContains": [
+      "\\\\temp\\\\"
+    ]
+  },
+  {
+    "ruleId": "test_rule_trigger",
+    "provider": "File",
+    "op": "Rename",
+    "severity": 5,
+    "threatType": "规则引擎测试命中",
+    "recommendAction": "block",
+    "targetContains": [
+      "anxin_rule_test_trigger.bin"
+    ]
+  }
+]

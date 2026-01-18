@@ -63,8 +63,6 @@ function applyThemePreferences() {
   document.documentElement.setAttribute('data-bs-theme', theme)
   document.documentElement.setAttribute('data-theme', theme)
 
-  updateThemeSwitcherIcon(mode)
-
   if (!themeMediaBound) {
     try {
       themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
@@ -83,37 +81,6 @@ function applyThemePreferences() {
       }
     } catch {}
   }
-}
-
-function updateThemeSwitcherIcon(mode) {
-  const currentSpan = document.getElementById('theme-icon-current')
-  if (!currentSpan) return
-  
-  const btn = document.querySelector(`button[data-theme-val="${mode}"]`)
-  if (!btn) return
-  
-  const svg = btn.querySelector('svg')
-  if (svg) {
-    currentSpan.innerHTML = ''
-    const clone = svg.cloneNode(true)
-    clone.setAttribute('width', '20')
-    clone.setAttribute('height', '20')
-    currentSpan.appendChild(clone)
-  }
-}
-
-function initThemeSwitcher() {
-  const items = document.querySelectorAll('button[data-theme-val]')
-  items.forEach(item => {
-    item.onclick = () => {
-      const val = item.getAttribute('data-theme-val')
-      if (val) {
-        window.api.config.setThemeMode(val)
-        applyThemePreferences()
-        if (state.page === 'settings') initSettings()
-      }
-    }
-  })
 }
 
 function applyMotionPreferences() {
@@ -1991,7 +1958,7 @@ function renderBehaviorLifecycleTree(pid, proc, events) {
   host.innerHTML = ''
   const builder = window.behaviorRender && window.behaviorRender.buildPidLifecycleTree
   const tree = (typeof builder === 'function')
-    ? builder({ pid, process: proc || {}, events: Array.isArray(events) ? events : [], t })
+    ? builder({ pid, process: proc || {}, events: Array.isArray(events) ? events : [], t, maxLeafPerOp: 200 })
     : null
 
   if (!tree || !tree.label) {
@@ -2085,6 +2052,28 @@ function renderBehaviorLifecycleTree(pid, proc, events) {
         }
       }
       for (const ch of children) ul.appendChild(buildDom(ch, depth + 1))
+      const more = Array.isArray(node && node.more) ? node.more : []
+      if (more.length) {
+        const moreLi = document.createElement('li')
+        const btn = document.createElement('button')
+        btn.type = 'button'
+        btn.className = 'tree-more'
+        const updateText = () => { btn.textContent = `${t('behavior_lifecycle_show_more')} (${more.length})` }
+        updateText()
+        btn.onclick = (e) => {
+          try { if (e && e.stopPropagation) e.stopPropagation() } catch {}
+          try { if (e && e.preventDefault) e.preventDefault() } catch {}
+          const chunk = more.splice(0, 200)
+          for (const ch of chunk) ul.insertBefore(buildDom(ch, depth + 1), moreLi)
+          if (more.length === 0) {
+            try { ul.removeChild(moreLi) } catch {}
+          } else {
+            updateText()
+          }
+        }
+        moreLi.appendChild(btn)
+        ul.appendChild(moreLi)
+      }
       li.appendChild(ul)
     }
     return li
@@ -3113,7 +3102,6 @@ if (typeof window !== 'undefined') {
     } catch {}
     initNav()
     updateTexts()
-    initThemeSwitcher()
     showPage('overview')
     initOverviewEtwFileEventTag()
     startHealthPoll()

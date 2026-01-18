@@ -14,6 +14,7 @@ function createInterceptionQueue(deps = {}) {
   const pausedPids = new Set()
   let activePid = null
   let activeItem = null
+  let showRetryTimer = null
 
   function configure(cfg) {
     const c = cfg && typeof cfg === 'object' ? cfg : {}
@@ -50,7 +51,14 @@ function createInterceptionQueue(deps = {}) {
     try {
       const ok = showFn(next.payload) === true
       if (!ok) {
-        pending.unshift(next)
+        pending.push(next)
+        if (!showRetryTimer) {
+          showRetryTimer = setTimeout(() => {
+            showRetryTimer = null
+            try { tryShowNext() } catch {}
+          }, 200)
+          try { if (showRetryTimer.unref) showRetryTimer.unref() } catch {}
+        }
         return false
       }
       activePid = pid
@@ -68,9 +76,25 @@ function createInterceptionQueue(deps = {}) {
     const p = payload && typeof payload === 'object' ? payload : null
     const pid = p && Number.isFinite(p.pid) ? p.pid : asPid(p && p.pid)
     if (pid == null) return false
-    if (queuedPids.has(pid)) return false
+    if (queuedPids.has(pid)) {
+      if (activePid === pid && activeItem) {
+        activeItem.payload = p
+        activeItem.enqueuedAt = nowFn()
+        logQueueStatus()
+        return true
+      }
+      for (let i = pending.length - 1; i >= 0; i--) {
+        if (pending[i] && pending[i].pid === pid) {
+          pending[i].payload = p
+          pending[i].enqueuedAt = nowFn()
+          logQueueStatus()
+          return true
+        }
+      }
+      return false
+    }
     queuedPids.add(pid)
-    pausedPids.add(pid)
+    if (p && p.paused === true) pausedPids.add(pid)
     pending.push({ pid, payload: p, enqueuedAt: nowFn() })
     logQueueStatus()
     tryShowNext()

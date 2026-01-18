@@ -61,12 +61,12 @@
     "resolveProcessName": true
   },
   "behaviorMonitoring": {
-    "enabled": false
+    "enabled": true
   },
   "etw": {
     "enabled": true,
     "sessionName": "AnXinSecuritySession",
-    "userDataMaxBytes": 65536,
+    "userDataMaxBytes": 52428800,
     "stopTimeoutMs": 2500,
     "startRetries": 2,
     "retryDelayMs": 150,
@@ -138,6 +138,11 @@
       "enabled": true,
       "filterPrivateIps": true,
       "skipLoopback": true
+    },
+    "matching": {
+      "rulesFile": "config/etw_match_rules.json",
+      "contextPerPid": 100,
+      "includeChildren": true
     },
     "interception": {
       "enabled": true,
@@ -218,5 +223,11 @@
         "techniqueName": "Modify Registry"
       }
     ]
+  },
+  "quarantine": {
+    "salt": "a0521f1c714fd134804898513249b3ff"
+  },
+  "exclusions": {
+    "salt": "45d542c2a2569a294bed848902477d0b"
   }
 }

@@ -49,7 +49,8 @@
         "from": "native/bin/win32-x64",
         "to": "native/win32-x64",
         "filter": [
-          "etw_bridge.dll"
+          "etw_bridge.dll",
+          "trust_bridge.dll"
         ]
       }
     ],

@@ -7,6 +7,9 @@ void* EtwBridge_Create(const wchar_t*) { return nullptr; }
 int EtwBridge_Start(void*, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, std::uint64_t, int, int, int, std::uint32_t) { return -1; }
 int EtwBridge_Stop(void*, std::uint32_t) { return -1; }
 int EtwBridge_PollJson(void*, char**) { return -1; }
+int EtwBridge_SetRulesJson(void*, const char*) { return -1; }
+int EtwBridge_SetTrackedPids(void*, const std::uint32_t*, std::uint32_t, int) { return -1; }
+int EtwBridge_SetContextCapacity(void*, std::uint32_t) { return -1; }
 void EtwBridge_Free(void*) {}
 void EtwBridge_Destroy(void*) {}
 #else
@@ -36,6 +39,8 @@ void EtwBridge_Destroy(void*) {}
 #include <utility>
 #include <vector>
 
+#include "etw_rule_engine.h"
+
 namespace {
 
 constexpr GUID kGuidKernelProcess = {0x22FB2CD6, 0x0E7B, 0x422B, {0xA0, 0xC7, 0x2F, 0xAD, 0x1F, 0xD0, 0xE7, 0x16}};
@@ -45,6 +50,16 @@ constexpr GUID kGuidKernelNetwork = {0x7DD42A49, 0x5329, 0x4832, {0x8D, 0xFD, 0x
 
 bool sameGuid(const GUID& a, const GUID& b) {
   return std::memcmp(&a, &b, sizeof(GUID)) == 0;
+}
+
+const char* providerKindName(anxin::ProviderKind k) {
+  switch (k) {
+    case anxin::ProviderKind::Process: return "Process";
+    case anxin::ProviderKind::File: return "File";
+    case anxin::ProviderKind::Registry: return "Registry";
+    case anxin::ProviderKind::Network: return "Network";
+    default: return "Unknown";
+  }
 }
 
 std::string wideToUtf8(const std::wstring& ws) {
@@ -257,6 +272,8 @@ std::string mapFileOp(const EVENT_DESCRIPTOR& d) {
   const int id = static_cast<int>(d.Id);
   const int opcode = static_cast<int>(d.Opcode);
   if (id == 30 || id == 12 || id == 10) return "Create";
+  if (id == 15) return "Open";
+  if (id == 16 || id == 17) return "Modify";
   if (id == 26 || id == 11) return "Delete";
   if (id == 27 || id == 19) return "Rename";
   const int op = (opcode == 32 || opcode == 35 || opcode == 36) ? opcode : ((id == 32 || id == 35 || id == 36) ? id : 0);
@@ -330,9 +347,13 @@ std::string mapRegistryOp(std::uint8_t opcode, std::uint16_t id) {
   return std::string("Opcode_") + std::to_string(static_cast<int>(opcode));
 }
 
-std::string filetimeToIso(std::uint64_t ts100ns) {
+std::uint64_t filetimeToUnixMs(std::uint64_t ts100ns) {
   constexpr std::uint64_t kEpochDiffMs = 11644473600000ULL;
-  const std::uint64_t unixMs = (ts100ns / 10000ULL) - kEpochDiffMs;
+  return (ts100ns / 10000ULL) - kEpochDiffMs;
+}
+
+std::string filetimeToIso(std::uint64_t ts100ns) {
+  const std::uint64_t unixMs = filetimeToUnixMs(ts100ns);
   std::chrono::system_clock::time_point tp{std::chrono::milliseconds(unixMs)};
   std::time_t tt = std::chrono::system_clock::to_time_t(tp);
   std::tm tm{};
@@ -391,13 +412,20 @@ struct NetworkCfg {
   bool skipLoopback{true};
 };
 
-std::optional<std::string> parseNetworkUserDataHeuristic(const std::vector<std::uint8_t>& bytes, const NetworkCfg& cfg) {
+struct NetworkParsed {
+  std::string json;
+  std::string target;
+  std::string remoteIp;
+  std::uint16_t remotePort{0};
+};
+
+std::optional<NetworkParsed> parseNetworkUserDataHeuristic(const std::vector<std::uint8_t>& bytes, const NetworkCfg& cfg) {
   if (!cfg.enabled) return std::nullopt;
   if (bytes.size() < 12) return std::nullopt;
 
   const std::size_t limit = bytes.size() - 12;
   int bestScore = -1;
-  std::string bestJsonData;
+  NetworkParsed best{};
 
   for (std::size_t off = 0; off <= limit; off++) {
     const std::uint8_t a1 = bytes[off];
@@ -435,7 +463,10 @@ std::optional<std::string> parseNetworkUserDataHeuristic(const std::vector<std::
 
     if (score > bestScore) {
       bestScore = score;
-      bestJsonData =
+      best.remoteIp = remoteIp;
+      best.remotePort = dport;
+      best.target = target;
+      best.json =
           std::string("{\"protocol\":\"TCP\",\"remoteIp\":\"") + remoteIp +
           "\",\"remotePort\":" + std::to_string(dport) +
           ",\"direction\":\"outbound\",\"target\":\"" + target + "\"}";
@@ -443,7 +474,7 @@ std::optional<std::string> parseNetworkUserDataHeuristic(const std::vector<std::
   }
 
   if (bestScore < 0) return std::nullopt;
-  return bestJsonData;
+  return best;
 }
 
 std::string jsonEscape(const std::string& s) {
@@ -499,6 +530,9 @@ struct EtwBridgeState {
 
   NetworkCfg netCfg{};
   std::uint32_t userDataMaxBytes{65536};
+
+  std::mutex engineMu;
+  anxin::EtwRuleEngine engine;
 };
 
 EVENT_TRACE_PROPERTIES* buildProps(EtwBridgeState& st) {
@@ -531,10 +565,18 @@ void pushError(EtwBridgeState& st, const std::string& code, const std::string& m
   pushJson(st, std::string("{\"type\":\"error\",\"code\":\"") + jsonEscape(code) + "\",\"message\":\"" + jsonEscape(message) + "\"}");
 }
 
-std::string parseRegistryUserDataJson(const std::vector<std::uint8_t>& bytes, std::uint8_t opcode, std::uint16_t id) {
+struct RegistryParsed {
+  std::string json;
+  std::string type;
+  std::string keyPath;
+  std::string valueName;
+};
+
+RegistryParsed parseRegistryUserDataJson(const std::vector<std::uint8_t>& bytes, std::uint8_t opcode, std::uint16_t id) {
   const auto strings = extractStringsHeuristic(bytes, 3);
   const auto filtered = filterLikelyStrings(strings);
 
+  RegistryParsed out;
   std::string keyPath;
   for (const auto& s : filtered) {
     if (s.rfind("\\REGISTRY\\", 0) == 0 || s.rfind("HKLM\\", 0) == 0 || s.rfind("HKCU\\", 0) == 0 || s.rfind("HKCR\\", 0) == 0 ||
@@ -554,14 +596,17 @@ std::string parseRegistryUserDataJson(const std::vector<std::uint8_t>& bytes, st
     break;
   }
 
-  const auto type = mapRegistryOp(opcode, id);
-  std::string json = std::string("{\"type\":\"") + jsonEscape(type) + "\"";
+  out.type = mapRegistryOp(opcode, id);
+  std::string json = std::string("{\"type\":\"") + jsonEscape(out.type) + "\"";
   json += ",\"keyPath\":";
   json += keyPath.empty() ? "null" : (std::string("\"") + jsonEscape(keyPath) + "\"");
   json += ",\"valueName\":";
   json += valueName.empty() ? "null" : (std::string("\"") + jsonEscape(valueName) + "\"");
   json += "}";
-  return json;
+  out.json = std::move(json);
+  out.keyPath = std::move(keyPath);
+  out.valueName = std::move(valueName);
+  return out;
 }
 
 void __stdcall onEventRecord(PEVENT_RECORD record) {
@@ -583,10 +628,17 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
   if (bytes.empty()) return;
 
   const std::uint64_t ts = static_cast<std::uint64_t>(hdr.TimeStamp.QuadPart);
+  const std::uint64_t unixMs = filetimeToUnixMs(ts);
   const auto timestamp = filetimeToIso(ts);
 
   std::string provider = isProcess ? "Process" : (isFile ? "File" : (isRegistry ? "Registry" : "Network"));
   std::string dataJson = "{}";
+  anxin::ProviderKind providerKind = isProcess ? anxin::ProviderKind::Process : (isFile ? anxin::ProviderKind::File : (isRegistry ? anxin::ProviderKind::Registry : anxin::ProviderKind::Network));
+  std::uint32_t eventPid = hdr.ProcessId;
+  std::uint32_t eventPpid = 0;
+  std::string eventOp;
+  std::string eventTarget;
+  std::string eventImage;
 
   if (isProcess) {
     if (desc.Opcode == 1 || desc.Opcode == 2) {
@@ -595,6 +647,11 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
       const auto strings = extractStringsHeuristic(bytes, 3);
       const auto image = pickBestPathCandidate(strings).value_or("");
       const std::string typ = desc.Opcode == 1 ? "Start" : "Stop";
+      eventPid = pid;
+      eventPpid = ppid;
+      eventOp = typ;
+      eventTarget = image;
+      eventImage = image;
       dataJson = std::string("{\"processId\":") + std::to_string(pid) +
                  ",\"parentProcessId\":" + std::to_string(ppid) +
                  ",\"imageName\":" + (image.empty() ? "null" : (std::string("\"") + jsonEscape(image) + "\"")) +
@@ -608,15 +665,22 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
     const auto strings = extractStringsHeuristic(bytes, 3);
     const auto fileName = pickBestPathCandidate(strings).value_or("");
     if (fileName.empty()) return;
+    eventOp = op;
+    eventTarget = fileName;
     dataJson = std::string("{\"fileName\":\"") + jsonEscape(fileName) + "\",\"type\":\"" + op + "\"}";
   } else if (isRegistry) {
-    dataJson = parseRegistryUserDataJson(bytes, desc.Opcode, desc.Id);
+    const auto reg = parseRegistryUserDataJson(bytes, desc.Opcode, desc.Id);
+    eventOp = reg.type;
+    eventTarget = reg.keyPath;
+    dataJson = reg.json;
   } else if (isNetwork) {
     const auto op = mapNetworkOp(desc);
     if (op.empty()) return;
     const auto parsed = parseNetworkUserDataHeuristic(bytes, st->netCfg);
     if (!parsed) return;
-    dataJson = std::string("{\"type\":\"") + op + "\"," + parsed->substr(1);
+    eventOp = op;
+    eventTarget = parsed->target;
+    dataJson = std::string("{\"type\":\"") + op + "\"," + parsed->json.substr(1);
   }
 
   std::string json;
@@ -625,7 +689,7 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
   json += "\"timestamp\":\"";
   json += jsonEscape(timestamp);
   json += "\",\"pid\":";
-  json += std::to_string(hdr.ProcessId);
+  json += std::to_string(eventPid);
   json += ",\"tid\":";
   json += std::to_string(hdr.ThreadId);
   json += ",\"provider\":\"";
@@ -638,6 +702,81 @@ void __stdcall onEventRecord(PEVENT_RECORD record) {
   json += dataJson;
   json += "}}";
   pushJson(*st, std::move(json));
+
+  if (!eventOp.empty()) {
+    anxin::EtwEventInput in;
+    in.tsMs = unixMs;
+    in.pid = eventPid;
+    in.ppid = eventPpid;
+    in.provider = providerKind;
+    in.op = eventOp;
+    in.target = eventTarget;
+    in.processImage = eventImage;
+    std::optional<anxin::EtwMatchResult> match;
+    {
+      std::lock_guard<std::mutex> lk(st->engineMu);
+      match = st->engine.onEvent(in);
+    }
+    if (match) {
+      std::string mj;
+      mj.reserve(512);
+      mj += "{\"type\":\"match\",\"pid\":";
+      mj += std::to_string(in.pid);
+      mj += ",\"match\":{";
+      mj += "\"ruleId\":\"";
+      mj += jsonEscape(match->ruleId);
+      mj += "\",\"threatType\":\"";
+      mj += jsonEscape(match->threatType);
+      mj += "\",\"severity\":";
+      mj += std::to_string(match->severity);
+      mj += ",\"recommendAction\":\"";
+      mj += jsonEscape(match->recommendAction);
+      mj += "\",\"evidence\":[";
+      for (std::size_t i = 0; i < match->evidence.size(); i++) {
+        if (i) mj += ",";
+        mj += "\"";
+        mj += jsonEscape(match->evidence[i]);
+        mj += "\"";
+      }
+      mj += "]},\"event\":{";
+      mj += "\"timestamp\":\"";
+      mj += jsonEscape(timestamp);
+      mj += "\",\"provider\":\"";
+      mj += jsonEscape(std::string(providerKindName(in.provider)));
+      mj += "\",\"op\":\"";
+      mj += jsonEscape(in.op);
+      mj += "\",\"target\":";
+      if (in.target.empty()) {
+        mj += "null";
+      } else {
+        mj += "\"";
+        mj += jsonEscape(in.target);
+        mj += "\"";
+      }
+      mj += "},\"context\":[";
+      for (std::size_t i = 0; i < match->context.size(); i++) {
+        const auto& c = match->context[i];
+        if (i) mj += ",";
+        mj += "{\"tsMs\":";
+        mj += std::to_string(static_cast<unsigned long long>(c.tsMs));
+        mj += ",\"provider\":\"";
+        mj += jsonEscape(std::string(providerKindName(c.provider)));
+        mj += "\",\"op\":\"";
+        mj += jsonEscape(c.op);
+        mj += "\",\"target\":";
+        if (c.target.empty()) {
+          mj += "null";
+        } else {
+          mj += "\"";
+          mj += jsonEscape(c.target);
+          mj += "\"";
+        }
+        mj += "}";
+      }
+      mj += "]}";
+      pushJson(*st, std::move(mj));
+    }
+  }
 }
 
 void runTraceThread(EtwBridgeState* st) {
@@ -831,6 +970,29 @@ extern "C" int EtwBridge_PollJson(void* handle, char** outUtf8Json) {
   static_cast<char*>(mem)[item.size()] = '\0';
   *outUtf8Json = static_cast<char*>(mem);
   return 1;
+}
+
+extern "C" int EtwBridge_SetRulesJson(void* handle, const char* utf8Json) {
+  auto* st = reinterpret_cast<EtwBridgeState*>(handle);
+  if (!st) return -1;
+  const char* p = utf8Json ? utf8Json : "";
+  std::lock_guard<std::mutex> lk(st->engineMu);
+  return st->engine.setRulesJson(std::string_view(p, std::strlen(p)));
+}
+
+extern "C" int EtwBridge_SetTrackedPids(void* handle, const std::uint32_t* pids, std::uint32_t count, int includeChildren) {
+  auto* st = reinterpret_cast<EtwBridgeState*>(handle);
+  if (!st) return -1;
+  std::lock_guard<std::mutex> lk(st->engineMu);
+  return st->engine.setTrackedPids(pids, count, includeChildren != 0);
+}
+
+extern "C" int EtwBridge_SetContextCapacity(void* handle, std::uint32_t perPidEvents) {
+  auto* st = reinterpret_cast<EtwBridgeState*>(handle);
+  if (!st) return -1;
+  std::lock_guard<std::mutex> lk(st->engineMu);
+  st->engine.setContextCapacity(perPidEvents);
+  return 0;
 }
 
 extern "C" void EtwBridge_Free(void* p) {

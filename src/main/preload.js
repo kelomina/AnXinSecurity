@@ -346,6 +346,12 @@ const api = {
       const handler = (_event, data) => callback(data)
       ipcRenderer.on('intercept:show', handler)
       return () => ipcRenderer.removeListener('intercept:show', handler)
+    },
+    action: (action, pid) => {
+      return ipcRenderer.invoke('intercept-action', { action: action || '', pid })
+    },
+    getSignerInfo: (filePath) => {
+      return ipcRenderer.invoke('intercept-signer', filePath || '')
     }
   },
   process: {

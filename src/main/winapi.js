@@ -1,4 +1,5 @@
 const fs = require('fs');
+const path = require('path');
 const koffi = require('koffi');
 
 const libKernel32 = koffi.load('kernel32.dll');
@@ -14,6 +15,62 @@ try {
     libWintrust = koffi.load('wintrust.dll');
 } catch (e) {
     console.warn('Failed to load wintrust.dll', e);
+}
+
+let trustBridgeLib = null;
+let TrustBridge_SetCacheConfig = null;
+let TrustBridge_VerifyFile = null;
+let TrustBridge_GetSignerInfoJson = null;
+let TrustBridge_ComputeFileSha256Hex = null;
+let TrustBridge_ScanCacheLookupByFile = null;
+let TrustBridge_ScanCacheStore = null;
+let TrustBridge_Free = null;
+
+function resolveTrustBridgeDllPath() {
+    const candidates = [];
+    try {
+        if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
+            candidates.push(path.join(process.resourcesPath, 'native', 'win32-x64', 'trust_bridge.dll'));
+        }
+    } catch {}
+    try {
+        candidates.push(path.join(__dirname, '../../native/bin/win32-x64/trust_bridge.dll'));
+    } catch {}
+    for (const p of candidates) {
+        try {
+            if (p && fs.existsSync(p)) return p;
+        } catch {}
+    }
+    return null;
+}
+
+function tryLoadTrustBridge() {
+    if (trustBridgeLib) return true;
+    const dllPath = resolveTrustBridgeDllPath();
+    if (!dllPath) return false;
+    try {
+        trustBridgeLib = koffi.load(dllPath);
+        TrustBridge_SetCacheConfig = trustBridgeLib.func('__cdecl', 'TrustBridge_SetCacheConfig', 'int', ['uint32_t', 'uint32_t']);
+        TrustBridge_VerifyFile = trustBridgeLib.func('__cdecl', 'TrustBridge_VerifyFile', 'int', ['string16', koffi.out('uint32_t *')]);
+        TrustBridge_GetSignerInfoJson = trustBridgeLib.func('__cdecl', 'TrustBridge_GetSignerInfoJson', 'int', ['string16', koffi.out(koffi.pointer('void *', 2))]);
+        try { TrustBridge_ComputeFileSha256Hex = trustBridgeLib.func('__cdecl', 'TrustBridge_ComputeFileSha256Hex', 'int', ['string16', koffi.out(koffi.pointer('void *', 2))]); } catch { TrustBridge_ComputeFileSha256Hex = null; }
+        try { TrustBridge_ScanCacheLookupByFile = trustBridgeLib.func('__cdecl', 'TrustBridge_ScanCacheLookupByFile', 'int', ['string16', koffi.out('int *'), koffi.out(koffi.pointer('void *', 2))]); } catch { TrustBridge_ScanCacheLookupByFile = null; }
+        try { TrustBridge_ScanCacheStore = trustBridgeLib.func('__cdecl', 'TrustBridge_ScanCacheStore', 'int', ['string', 'int']); } catch { TrustBridge_ScanCacheStore = null; }
+        TrustBridge_Free = trustBridgeLib.func('__cdecl', 'TrustBridge_Free', 'void', ['void *']);
+        try { TrustBridge_SetCacheConfig(4096, 600000); } catch {}
+        return true;
+    } catch (e) {
+        trustBridgeLib = null;
+        TrustBridge_SetCacheConfig = null;
+        TrustBridge_VerifyFile = null;
+        TrustBridge_GetSignerInfoJson = null;
+        TrustBridge_ComputeFileSha256Hex = null;
+        TrustBridge_ScanCacheLookupByFile = null;
+        TrustBridge_ScanCacheStore = null;
+        TrustBridge_Free = null;
+        console.warn('Failed to load trust_bridge.dll', e);
+        return false;
+    }
 }
 
 const HANDLE = koffi.pointer('HANDLE', koffi.opaque());
@@ -77,6 +134,7 @@ const OpenProcess = libKernel32.func('__stdcall', 'OpenProcess', HANDLE, [DWORD,
 const CloseHandle = libKernel32.func('__stdcall', 'CloseHandle', BOOL, [HANDLE]);
 const TerminateProcess = libKernel32.func('__stdcall', 'TerminateProcess', BOOL, [HANDLE, DWORD]);
 const QueryDosDeviceW = libKernel32.func('__stdcall', 'QueryDosDeviceW', DWORD, ['string16', koffi.out(LPWSTR), DWORD]);
+const lstrlenA = libKernel32.func('__stdcall', 'lstrlenA', 'int', ['void *']);
 const EnumProcesses = libPsapi.func('__stdcall', 'EnumProcesses', BOOL, [koffi.out('uint32_t *'), DWORD, koffi.out('uint32_t *')]);
 const EnumProcessModules = libPsapi.func('__stdcall', 'EnumProcessModules', BOOL, [HANDLE, koffi.out('void *'), DWORD, koffi.out('uint32_t *')]);
 const GetModuleFileNameExW = libPsapi.func('__stdcall', 'GetModuleFileNameExW', DWORD, [HANDLE, HMODULE, koffi.out(LPWSTR), DWORD]);
@@ -114,6 +172,16 @@ const ACTION_GENERIC_VERIFY_V2 = {
 const trustedCache = new Map();
 
 function verifyTrust(filePath) {
+    if (tryLoadTrustBridge() && TrustBridge_VerifyFile) {
+        try {
+            const st = Buffer.alloc(4);
+            const ok = TrustBridge_VerifyFile(filePath, st);
+            return ok === 1;
+        } catch {
+            return false;
+        }
+    }
+
     if (!WinVerifyTrust) return false;
     
     if (trustedCache.has(filePath)) return trustedCache.get(filePath);
@@ -296,6 +364,89 @@ function getDriveDeviceMap() {
     }
     driveDeviceMapCache = map;
     return map;
+}
+
+function getSignerInfo(filePath) {
+    if (!(tryLoadTrustBridge() && TrustBridge_GetSignerInfoJson && TrustBridge_Free)) return null;
+    try {
+        const out = [null];
+        const rc = TrustBridge_GetSignerInfoJson(filePath, out);
+        if (rc !== 0) return null;
+        const ptr = out[0];
+        if (!ptr) return null;
+        const len = lstrlenA(ptr) | 0;
+        if (!len || len < 0) {
+            try { TrustBridge_Free(ptr); } catch {}
+            return null;
+        }
+        const bytes = koffi.decode(ptr, koffi.array('uint8_t', len));
+        const json = Buffer.from(bytes).toString('utf8');
+        try { TrustBridge_Free(ptr); } catch {}
+        try { return JSON.parse(json); } catch { return null; }
+    } catch {
+        return null;
+    }
+}
+
+function computeFileSha256Hex(filePath) {
+    if (!(tryLoadTrustBridge() && TrustBridge_ComputeFileSha256Hex && TrustBridge_Free)) return null;
+    try {
+        const out = [null];
+        const rc = TrustBridge_ComputeFileSha256Hex(filePath, out);
+        if (rc !== 0) return null;
+        const ptr = out[0];
+        if (!ptr) return null;
+        const len = lstrlenA(ptr) | 0;
+        if (!len || len < 0 || len > 256) {
+            try { TrustBridge_Free(ptr); } catch {}
+            return null;
+        }
+        const bytes = koffi.decode(ptr, koffi.array('uint8_t', len));
+        const hex = Buffer.from(bytes).toString('utf8');
+        try { TrustBridge_Free(ptr); } catch {}
+        return hex || null;
+    } catch {
+        return null;
+    }
+}
+
+function scanCacheLookupByFile(filePath) {
+    if (!(tryLoadTrustBridge() && TrustBridge_ScanCacheLookupByFile && TrustBridge_Free)) return null;
+    try {
+        const verdictBuf = Buffer.alloc(4);
+        verdictBuf.writeInt32LE(0, 0);
+        const outHex = [null];
+        const rc = TrustBridge_ScanCacheLookupByFile(filePath, verdictBuf, outHex);
+        const verdict = verdictBuf.readInt32LE(0);
+        let hash = null;
+        const ptr = outHex[0];
+        if (ptr) {
+            const len = lstrlenA(ptr) | 0;
+            if (len > 0 && len < 256) {
+                const bytes = koffi.decode(ptr, koffi.array('uint8_t', len));
+                hash = Buffer.from(bytes).toString('utf8') || null;
+            }
+            try { TrustBridge_Free(ptr); } catch {}
+        }
+        if (rc === 1) return { hit: true, verdict, hash };
+        if (rc === 0) return { hit: false, verdict: 0, hash };
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+function scanCacheStore(hashHex, verdict) {
+    if (!(tryLoadTrustBridge() && TrustBridge_ScanCacheStore)) return false;
+    const h = typeof hashHex === 'string' ? hashHex.trim() : '';
+    const v = Number.isFinite(verdict) ? verdict : parseInt(String(verdict), 10);
+    if (!h) return false;
+    if (!Number.isFinite(v)) return false;
+    try {
+        return TrustBridge_ScanCacheStore(h, v | 0) === 0;
+    } catch {
+        return false;
+    }
 }
 
 function primeDriveDeviceMap() {
@@ -481,6 +632,10 @@ function terminateProcessByPid(pid, exitCode = 1) {
 
 module.exports = {
     verifyTrust,
+    getSignerInfo,
+    computeFileSha256Hex,
+    scanCacheLookupByFile,
+    scanCacheStore,
     getProcessPaths,
     getProcessImagePathByPid,
     getProcessImageSnapshot,

@@ -237,6 +237,9 @@ let EtwBridge_Create = null;
 let EtwBridge_Start = null;
 let EtwBridge_Stop = null;
 let EtwBridge_PollJson = null;
+let EtwBridge_SetRulesJson = null;
+let EtwBridge_SetTrackedPids = null;
+let EtwBridge_SetContextCapacity = null;
 let EtwBridge_Free = null;
 let EtwBridge_Destroy = null;
 let bridgePollTimer = null;
@@ -273,12 +276,18 @@ function ensureEtwBridgeLoaded() {
         EtwBridge_Start = etwBridgeLib.func('__cdecl', 'EtwBridge_Start', 'int', ['void *', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'uint64_t', 'int', 'int', 'int', 'uint32_t']);
         EtwBridge_Stop = etwBridgeLib.func('__cdecl', 'EtwBridge_Stop', 'int', ['void *', 'uint32_t']);
         EtwBridge_PollJson = etwBridgeLib.func('__cdecl', 'EtwBridge_PollJson', 'int', ['void *', koffi.out(koffi.pointer('void *', 2))]);
+        try { EtwBridge_SetRulesJson = etwBridgeLib.func('__cdecl', 'EtwBridge_SetRulesJson', 'int', ['void *', 'string']); } catch { EtwBridge_SetRulesJson = null; }
+        try { EtwBridge_SetTrackedPids = etwBridgeLib.func('__cdecl', 'EtwBridge_SetTrackedPids', 'int', ['void *', koffi.pointer('uint32_t'), 'uint32_t', 'int']); } catch { EtwBridge_SetTrackedPids = null; }
+        try { EtwBridge_SetContextCapacity = etwBridgeLib.func('__cdecl', 'EtwBridge_SetContextCapacity', 'int', ['void *', 'uint32_t']); } catch { EtwBridge_SetContextCapacity = null; }
         EtwBridge_Free = etwBridgeLib.func('__cdecl', 'EtwBridge_Free', 'void', ['void *']);
         EtwBridge_Destroy = etwBridgeLib.func('__cdecl', 'EtwBridge_Destroy', 'void', ['void *']);
         return true;
     } catch (e) {
         postError('ETW_BRIDGE_LOAD_FAILED', (e && e.message) ? e.message : String(e || 'load_failed'), { dllPath });
         etwBridgeLib = null;
+        EtwBridge_SetRulesJson = null;
+        EtwBridge_SetTrackedPids = null;
+        EtwBridge_SetContextCapacity = null;
         return false;
     }
 }
@@ -362,6 +371,10 @@ function handleBridgeMessage(msg) {
     try {
         if (!msg || typeof msg !== 'object') return;
         if (msg.type === 'status' || msg.type === 'error') {
+            postMessage(msg);
+            return;
+        }
+        if (msg.type === 'match') {
             postMessage(msg);
             return;
         }
@@ -532,7 +545,7 @@ function shouldSkipTrustedEvent(ev) {
 const DEFAULT_ETW_CFG = {
     enabled: true,
     sessionName: 'AnXinSecuritySession',
-    userDataMaxBytes: 65536,
+    userDataMaxBytes: 52428800,
     stopTimeoutMs: 2500,
     startRetries: 2,
     retryDelayMs: 150,
@@ -625,7 +638,7 @@ function resolveEtwCfg(payloadCfg) {
     merged.filters = filters;
     merged.enabled = merged.enabled !== false;
     merged.sessionName = typeof merged.sessionName === 'string' && merged.sessionName.trim() ? merged.sessionName.trim() : DEFAULT_ETW_CFG.sessionName;
-    merged.userDataMaxBytes = Number.isFinite(merged.userDataMaxBytes) ? Math.max(1024, Math.min(1024 * 1024, merged.userDataMaxBytes)) : DEFAULT_ETW_CFG.userDataMaxBytes;
+    merged.userDataMaxBytes = Number.isFinite(merged.userDataMaxBytes) ? Math.max(1024, Math.min(50 * 1024 * 1024, merged.userDataMaxBytes)) : DEFAULT_ETW_CFG.userDataMaxBytes;
     merged.stopTimeoutMs = Number.isFinite(merged.stopTimeoutMs) ? Math.max(250, Math.min(30000, merged.stopTimeoutMs)) : DEFAULT_ETW_CFG.stopTimeoutMs;
     merged.startRetries = Number.isFinite(merged.startRetries) ? Math.max(0, Math.min(20, merged.startRetries)) : DEFAULT_ETW_CFG.startRetries;
     merged.retryDelayMs = Number.isFinite(merged.retryDelayMs) ? Math.max(0, Math.min(5000, merged.retryDelayMs)) : DEFAULT_ETW_CFG.retryDelayMs;
@@ -1048,6 +1061,8 @@ function mapFileOp(descriptor) {
     const id = descriptor && Number.isFinite(descriptor.Id) ? descriptor.Id : null;
     if (id != null) {
         if (id === 30 || id === 12 || id === 10) return 'Create';
+        if (id === 15) return 'Open';
+        if (id === 16 || id === 17) return 'Modify';
         if (id === 26 || id === 11) return 'Delete';
         if (id === 27 || id === 19) return 'Rename';
     }
@@ -1379,6 +1394,30 @@ async function startSessionOnce() {
         if (!ensureEtwBridgeLoaded()) return;
         const h = ensureEtwBridgeHandle();
         if (!h) return;
+        try {
+            const mcfg = (etwCfg && etwCfg.matching && typeof etwCfg.matching === 'object') ? etwCfg.matching : null;
+            const rulesFile = mcfg && typeof mcfg.rulesFile === 'string' && mcfg.rulesFile ? mcfg.rulesFile : '';
+            const rulesPath = rulesFile ? (path.isAbsolute(rulesFile) ? rulesFile : path.resolve(__dirname, '../../..', rulesFile)) : '';
+        const ctxCap = mcfg && Number.isFinite(mcfg.contextPerPid) ? Math.max(1, Math.min(100, Math.floor(mcfg.contextPerPid))) : 100;
+            const includeChildren = mcfg && mcfg.includeChildren === true ? 1 : 0;
+            if (EtwBridge_SetContextCapacity) {
+                try { EtwBridge_SetContextCapacity(h, ctxCap >>> 0); } catch {}
+            }
+            if (EtwBridge_SetTrackedPids) {
+                try { EtwBridge_SetTrackedPids(h, null, 0, includeChildren); } catch {}
+            }
+            if (EtwBridge_SetRulesJson && rulesPath && fs.existsSync(rulesPath)) {
+                try {
+                    const raw = fs.readFileSync(rulesPath, 'utf-8');
+                    if (raw && typeof raw === 'string') {
+                        const rc = EtwBridge_SetRulesJson(h, raw);
+                        postMessage({ type: 'status', message: `ETW matching rules loaded: ${rc}` });
+                    }
+                } catch {}
+            } else if (rulesPath) {
+                try { postMessage({ type: 'status', message: `ETW matching rules not found: ${rulesPath}` }); } catch {}
+            }
+        } catch {}
         const kw1 = getProviderKeywords(etwCfg, 'Process');
         const kw2 = getProviderKeywords(etwCfg, 'File');
         const kw3 = getProviderKeywords(etwCfg, 'Registry');
@@ -1390,7 +1429,7 @@ async function startSessionOnce() {
         const skipLoopback = !(netCfg && netCfg.skipLoopback === false);
 
         const maxBytes = (etwCfg && Number.isFinite(etwCfg.userDataMaxBytes)) ? etwCfg.userDataMaxBytes : DEFAULT_ETW_CFG.userDataMaxBytes;
-        const cappedMaxBytes = Math.max(1024, Math.min(1024 * 1024, maxBytes));
+        const cappedMaxBytes = Math.max(1024, Math.min(50 * 1024 * 1024, maxBytes));
 
         const st = EtwBridge_Start(
             h,

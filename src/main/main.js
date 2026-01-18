@@ -14,7 +14,7 @@ const { formatEtwEventForConsole, formatEtwEventForParsedConsole, resolveEtwOpMe
 const { createEtwPidCache } = require('./etw_pid_cache')
 const { createInterceptionQueue } = require('./interception_manager')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
-const { normalizePathKey, getPayloadPaths, decideSnapshotActions } = require('./snapshot_engine_policy')
+const { normalizePathKey, isMalware, getPayloadPaths, decideSnapshotActions } = require('./snapshot_engine_policy')
 
 let winapi = null
 try {
@@ -118,29 +118,92 @@ let isSnapshotScanning = false
 let scanPromiseResolve = null
 const scanPromise = new Promise((resolve) => { scanPromiseResolve = resolve })
 let interceptionResumeInFlight = false
+let interceptionWin = null
+let interceptionWinReady = false
+let interceptionWinLocked = true
+let etwRiskWorker = null
+
+function normalizeLowerPath(p) {
+  if (typeof p !== 'string') return ''
+  return p.trim().toLowerCase().replace(/\//g, '\\')
+}
+
+function normalizeLowerDir(p) {
+  let s = normalizeLowerPath(p)
+  if (s && !s.endsWith('\\')) s += '\\'
+  return s
+}
+
+const systemRootDirLower = normalizeLowerDir(process.env.SystemRoot || 'C:\\Windows')
+const appDirLower = normalizeLowerDir(path.dirname(process.execPath || ''))
+
+function isUnderDir(lowerPath, lowerDir) {
+  if (!lowerPath || !lowerDir) return false
+  return lowerPath.startsWith(lowerDir)
+}
+
+function resolveMaybeRelativePath(p) {
+  const s = typeof p === 'string' ? p.trim() : ''
+  if (!s) return ''
+  if (s.startsWith('\\\\?\\') || s.startsWith('\\\\.\\') || /^[a-zA-Z]:[\\/]/.test(s) || s.startsWith('\\\\')) return s
+  const rel = s.startsWith('\\') ? s.replace(/^\\+/, '') : s
+  const bases = []
+  try { bases.push(path.dirname(process.execPath || '')) } catch {}
+  try { bases.push(path.dirname(app.getPath('exe') || '')) } catch {}
+  try { bases.push(app.getAppPath()) } catch {}
+  const resolved = resolveFileFromBaseDirs(bases.filter(Boolean), rel)
+  return resolved || s
+}
+
+function ensureEtwRiskWorker() {
+  if (etwRiskWorker) return etwRiskWorker
+  try {
+    const workerPath = path.join(__dirname, 'workers/etw_risk_worker.js')
+    if (!fs.existsSync(workerPath)) return null
+    etwRiskWorker = new Worker(workerPath)
+    etwRiskWorker.on('message', (msg) => {
+      const m = msg && typeof msg === 'object' ? msg : null
+      if (!m) return
+      if (m.type === 'risk_payload' && m.payload) {
+        interceptionQueue.enqueuePausedProcess(m.payload)
+        return
+      }
+      if (m.type === 'status' && m.message) {
+        console.log('ETW_RISK:', m.message)
+        return
+      }
+      if (m.type === 'error' && m.message) {
+        console.warn('ETW_RISK_ERROR:', m.message, m.details || null)
+      }
+    })
+    try {
+      const appDir = path.dirname(process.execPath || '')
+      const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
+      const sc = (config && config.scanner) ? config.scanner : {}
+      const scan = (config && config.scan) ? config.scan : {}
+      etwRiskWorker.postMessage({ type: 'config', appDir, systemRoot, scanner: sc, scan })
+    } catch {}
+    return etwRiskWorker
+  } catch {
+    etwRiskWorker = null
+    return null
+  }
+}
 const interceptionQueue = createInterceptionQueue({
   showFn: (payload) => {
     if (isSnapshotScanning) return false
     if (splash && !splash.isDestroyed() && !allowBacklogDuringSplash) return false
-    if (!win || win.isDestroyed()) return false
-    const wc = win.webContents
-    if (!wc) return false
-    try {
-      if (typeof wc.isLoading === 'function' && wc.isLoading()) return false
-      if (typeof wc.getURL === 'function' && !wc.getURL()) return false
-    } catch {
-      return false
-    }
-    if (!allowBacklogDuringSplash) {
-      try {
-        if (win.isMinimized()) win.restore()
-        win.show()
-        win.focus()
-      } catch {}
-    }
     try {
       console.log('主进程: 发送拦截弹窗', payload.pid)
-      win.webContents.send('intercept:show', payload)
+      const w = ensureInterceptionWindow()
+      if (!w) return false
+      if (!interceptionWinReady) return false
+      w.webContents.send('intercept:show', payload)
+      try { w.show() } catch {}
+      try { w.setAlwaysOnTop(true, 'screen-saver') } catch {}
+      try { w.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true }) } catch {}
+      try { w.focus() } catch {}
+      try { w.moveTop() } catch {}
       return true
     } catch {
       return false
@@ -252,15 +315,31 @@ function ensureInterceptionSnapshotWorker() {
         if (!Number.isFinite(pid) || pid <= 0) return
         const imagePath = typeof m.imagePath === 'string' ? m.imagePath : ''
         const unsignedDlls = Array.isArray(m.unsignedDlls) ? m.unsignedDlls.filter(x => typeof x === 'string' && x) : []
+        const scanType = typeof m.scanType === 'string' ? m.scanType : ''
+        const processSigned = m.processSigned === true
+        let ruleId = 'unsigned_dll'
+        if (scanType === 'process') ruleId = 'process_signature_invalid'
+        else if (scanType === 'dll') ruleId = 'dll_signature_invalid'
+        else if (scanType === 'joint') ruleId = 'process_and_dll_signature_invalid'
+        let severity = 4
+        if (scanType === 'joint') severity = 5
+        if (scanType === 'process') severity = 4
+        if (scanType === 'dll') severity = 4
+        const recommendAction = 'block'
+        const threatType = scanType === 'joint' ? '联合签名异常' : (scanType === 'process' ? '进程签名异常' : 'DLL签名异常')
         const payload = {
           pid,
           paused: m.paused === true,
           triggeredAt: Date.now(),
-          match: { ruleId: 'unsigned_dll', provider: 'Process', op: 'Snapshot', target: '' },
+          threatType,
+          severity,
+          recommendAction,
+          match: { ruleId, provider: 'Process', op: 'Snapshot', target: '' },
           process: { name: getProcessNameFromPath(imagePath), imagePath },
-          event: { provider: 'Process', data: { type: 'UnsignedDll', unsignedDlls } }
+          event: { provider: 'Process', data: { type: 'Reputation', scanType, processSigned, unsignedDlls } }
         }
         interceptionQueue.enqueuePausedProcess(payload)
+        tryStartAutoScanForInterception(payload)
         return
       }
       if (typ === 'pid_snapshot_done') {
@@ -302,6 +381,100 @@ function ensureInterceptionSnapshotWorker() {
     interceptionSnapshotWorker = null
     return null
   }
+}
+
+function ensureInterceptionWindow() {
+  if (interceptionWin && !interceptionWin.isDestroyed()) return interceptionWin
+  const iconPath = resolveAppIconPath()
+  const iconOpt = iconPath ? { icon: iconPath } : {}
+  interceptionWinReady = false
+  interceptionWinLocked = true
+  interceptionWin = new BrowserWindow({
+    ...iconOpt,
+    width: 540,
+    height: 420,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    frame: false,
+    show: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    transparent: false,
+    backgroundColor: '#00000000',
+    backgroundMaterial: 'acrylic',
+    opacity: 0.98,
+    hasShadow: true,
+    roundedCorners: true,
+    webPreferences: {
+      preload: path.join(__dirname, './preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false
+    }
+  })
+  try { interceptionWin.setMenuBarVisibility(false) } catch {}
+  try { interceptionWin.removeMenu() } catch {}
+  interceptionWin.on('close', (e) => {
+    if (isQuitting) return
+    if (interceptionWinLocked) {
+      try { e.preventDefault() } catch {}
+      try { interceptionWin.show() } catch {}
+      try { interceptionWin.focus() } catch {}
+    }
+  })
+  interceptionWin.on('closed', () => {
+    interceptionWin = null
+    interceptionWinReady = false
+    interceptionWinLocked = true
+  })
+  interceptionWin.loadFile(path.join(__dirname, '../renderer/interception.html'))
+  interceptionWin.once('ready-to-show', () => {
+    interceptionWinReady = true
+    try { interceptionQueue.tryShowNext() } catch {}
+  })
+  return interceptionWin
+}
+
+function tryStartAutoScanForInterception(payload) {
+  const p = payload && typeof payload === 'object' ? payload : null
+  if (!p) return
+  if (!scannerClient || typeof scannerClient.scanFile !== 'function') return
+  const proc = p.process && typeof p.process === 'object' ? p.process : null
+  const img = proc && typeof proc.imagePath === 'string' ? proc.imagePath : ''
+  const ev = p.event && typeof p.event === 'object' ? p.event : null
+  const d = ev && ev.data && typeof ev.data === 'object' ? ev.data : null
+  const unsignedDlls = d && Array.isArray(d.unsignedDlls) ? d.unsignedDlls.filter(x => typeof x === 'string' && x) : []
+  const scanType = d && typeof d.scanType === 'string' ? d.scanType : ''
+  const targets = []
+  if ((scanType === 'process' || scanType === 'joint') && img) targets.push(img)
+  if ((scanType === 'dll' || scanType === 'joint') && unsignedDlls.length) targets.push(unsignedDlls[0])
+  if (!targets.length) {
+    try {
+      const m = p.match && typeof p.match === 'object' ? p.match : null
+      const provider = m && typeof m.provider === 'string' ? m.provider : ''
+      const target = m && typeof m.target === 'string' ? m.target : ''
+      if (provider === 'File' && target) targets.push(target)
+    } catch {}
+  }
+  if (!targets.length) return
+  setTimeout(() => {
+    for (const t of targets) {
+      const requestId = `intercept_scan_${Date.now()}_${Math.random().toString(16).slice(2)}`
+      scannerClient.scanFile(t, requestId).catch(() => {})
+    }
+  }, 10)
+}
+
+function shouldSkipEtwForAppDirByImage(imagePath) {
+  const lower = normalizeLowerPath(imagePath || '')
+  return !!(lower && isUnderDir(lower, appDirLower))
+}
+
+function shouldSkipEtwForAppDirByPath(filePath) {
+  const lower = normalizeLowerPath(filePath || '')
+  return !!(lower && isUnderDir(lower, appDirLower))
 }
 
 function requestInterceptionPidSnapshot(w, requestId, maxPids, timeoutMs) {
@@ -483,6 +656,7 @@ function startInterceptionSnapshotScan() {
 function startEtwWorker() {
   if (etwWorker) return
   try {
+    ensureEtwRiskWorker()
     const workerPath = path.join(__dirname, 'workers/etw_worker.js')
     if (!fs.existsSync(workerPath)) {
       console.warn('主进程: ETW Worker 脚本未找到:', workerPath)
@@ -511,6 +685,71 @@ function startEtwWorker() {
         }
         return
       }
+      if (msg && msg.type === 'match') {
+        const pid = Number.isFinite(msg.pid) ? msg.pid : parseInt(String(msg.pid), 10)
+        if (!Number.isFinite(pid) || pid <= 0) return
+        const m = msg.match && typeof msg.match === 'object' ? msg.match : {}
+        const ruleId = typeof m.ruleId === 'string' ? m.ruleId : ''
+        const threatType = typeof m.threatType === 'string' ? m.threatType : ''
+        const severity = Number.isFinite(m.severity) ? m.severity : 4
+        const recommendAction = typeof m.recommendAction === 'string' ? m.recommendAction : 'block'
+
+        const now = Date.now()
+        let procInfo = resolveEtwProcessInfo(pid, now, (config && config.etw) ? config.etw : {}) || null
+        let imagePath = procInfo && typeof procInfo.imagePath === 'string' ? procInfo.imagePath : ''
+        if (!imagePath && winapi && typeof winapi.getProcessImagePathByPid === 'function') {
+          try { imagePath = winapi.getProcessImagePathByPid(pid) || '' } catch { imagePath = '' }
+        }
+        imagePath = resolveMaybeRelativePath(imagePath)
+        const lowerImage = normalizeLowerPath(imagePath || '')
+        if (lowerImage && isUnderDir(lowerImage, appDirLower)) return
+
+        const ev = msg.event && typeof msg.event === 'object' ? msg.event : null
+        const targetLower = normalizeLowerPath(ev && typeof ev.target === 'string' ? ev.target : '')
+        if (targetLower && isUnderDir(targetLower, appDirLower)) return
+        if (ruleId === 'test_rule_trigger') {
+          const payload = {
+            pid,
+            paused: false,
+            triggeredAt: Date.now(),
+            threatType: threatType || '规则引擎测试命中',
+            severity: 1,
+            recommendAction: 'allow',
+            match: { ruleId, provider: ev && ev.provider ? ev.provider : '', op: ev && ev.op ? ev.op : '', target: ev && ev.target ? ev.target : '' },
+            process: { name: getProcessNameFromPath(imagePath), imagePath },
+            event: { provider: ev && ev.provider ? ev.provider : 'ETW', data: msg },
+            context: Array.isArray(msg.context) ? msg.context : []
+          }
+          interceptionQueue.enqueuePausedProcess(payload)
+          return
+        }
+
+        const provider = ev && typeof ev.provider === 'string' ? ev.provider : ''
+        const op = ev && typeof ev.op === 'string' ? ev.op : ''
+        const target = ev && typeof ev.target === 'string' ? ev.target : ''
+        const scanPath = (provider === 'File' || (provider === 'Process' && op === 'Start')) ? target : ''
+        if (!scanPath) return
+        const rw = ensureEtwRiskWorker()
+        if (!rw) return
+        try {
+          rw.postMessage({
+            type: 'rule_match',
+            pid,
+            processName: getProcessNameFromPath(imagePath),
+            imagePath,
+            provider,
+            op,
+            scanPath,
+            ruleId,
+            threatType,
+            severity,
+            recommendAction,
+            match: msg.match || null,
+            context: Array.isArray(msg.context) ? msg.context : []
+          })
+        } catch {}
+        return
+      }
       if (msg.type === 'log') {
         const ev = msg.event && typeof msg.event === 'object' ? msg.event : null
         const p = ev && typeof ev.provider === 'string' ? ev.provider : ''
@@ -532,12 +771,46 @@ function startEtwWorker() {
                   try { img = winapi.getProcessImagePathByPid(pid) } catch {}
                 }
                 if (!img) img = (typeof d.imageName === 'string' && d.imageName) ? d.imageName : null
+                if (img) img = resolveMaybeRelativePath(img)
                 if (img) upsertEtwPid(pid, img, now)
+                if (img) {
+                  const rw = ensureEtwRiskWorker()
+                  if (rw) {
+                    const icfg = (etwCfg && etwCfg.interception && typeof etwCfg.interception === 'object') ? etwCfg.interception : {}
+                    const modulesBufferBytes = Number.isFinite(icfg.modulesBufferBytes) ? Math.max(4096, Math.floor(icfg.modulesBufferBytes)) : 262144
+                    try {
+                      rw.postMessage({ type: 'process_start', pid, imagePath: img, processName: getProcessNameFromPath(img), modulesBufferBytes })
+                    } catch {}
+                  }
+                }
               }
             } else if (typ === 'Stop') {
               if (subjectPid != null) {
                 removeEtwPid(subjectPid)
               }
+            }
+          }
+        } catch {}
+
+        try {
+          if (p === 'File' && d && typeof d.fileName === 'string' && d.fileName) {
+            const actorPid = Number.isFinite(ev.pid) ? ev.pid : parseInt(String(ev.pid), 10)
+            const fileName = d.fileName
+            const op0 = typeof d.type === 'string' ? d.type : ''
+            const op = (op0 === 'Open' || op0 === 'Modify' || op0 === 'Rename' || op0 === 'Create') ? op0 : ''
+            if (Number.isFinite(actorPid) && actorPid > 0 && op && !shouldSkipEtwForAppDirByPath(fileName)) {
+              const rw = ensureEtwRiskWorker()
+              if (!rw) return
+              const now2 = Date.now()
+              const procInfo = resolveEtwProcessInfo(actorPid, now2, etwCfg) || null
+              let actorImg = procInfo && typeof procInfo.imagePath === 'string' ? procInfo.imagePath : ''
+              if (!actorImg && winapi && typeof winapi.getProcessImagePathByPid === 'function') {
+                try { actorImg = winapi.getProcessImagePathByPid(actorPid) || '' } catch { actorImg = '' }
+              }
+              actorImg = resolveMaybeRelativePath(actorImg)
+              try {
+                rw.postMessage({ type: 'file_event', pid: actorPid, processName: getProcessNameFromPath(actorImg), actorImage: actorImg, filePath: fileName, op: op === 'Create' ? 'Open' : op })
+              } catch {}
             }
           }
         } catch {}
@@ -1050,6 +1323,9 @@ app.whenReady().then(() => {
       }
     }
     
+    try {
+      if (interceptionQueue.isIdle() && interceptionWin && !interceptionWin.isDestroyed()) interceptionWin.hide()
+    } catch {}
     return true
   })
   ipcMain.handle('process-terminate', async (_event, pid) => {
@@ -1060,10 +1336,65 @@ app.whenReady().then(() => {
 
     if (!winapi || typeof winapi.terminateProcessByPid !== 'function') return false
     try {
-      return winapi.terminateProcessByPid(p) === true
+      const ok = winapi.terminateProcessByPid(p) === true
+      try {
+        if (interceptionQueue.isIdle() && interceptionWin && !interceptionWin.isDestroyed()) interceptionWin.hide()
+      } catch {}
+      return ok
     } catch {
       return false
     }
+  })
+  ipcMain.handle('intercept-action', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    const action = typeof p.action === 'string' ? p.action : ''
+    const pid = Number.isFinite(p.pid) ? p.pid : parseInt(String(p.pid), 10)
+    if (!Number.isFinite(pid) || pid <= 0) return false
+    const active = interceptionQueue.getActivePayload()
+    if (!active || active.pid !== pid) return false
+    if (action === 'allow') {
+      let wasPaused = false
+      try { wasPaused = interceptionQueue.getPausedPids().includes(pid) } catch {}
+      const handled = interceptionQueue.markActionResult(pid, true)
+      if (wasPaused) {
+        try {
+          if (handled && handled.pid === pid) {
+            const evt = handled.event
+            if (evt && evt.data && typeof evt.data === 'object' && Array.isArray(evt.data.unsignedDlls)) {
+              const w = ensureInterceptionSnapshotWorker()
+              if (w) w.postMessage({ type: 'allow_dlls', paths: evt.data.unsignedDlls })
+            }
+          }
+        } catch {}
+        if (winapi && typeof winapi.resumeProcessByPid === 'function') {
+          try { winapi.resumeProcessByPid(pid) } catch {}
+        }
+      }
+      try {
+        if (interceptionQueue.isIdle() && interceptionWin && !interceptionWin.isDestroyed()) interceptionWin.hide()
+      } catch {}
+      return true
+    }
+    if (action === 'block') {
+      try {
+        interceptionQueue.markActionResult(pid, true)
+      } catch {}
+      let ok = false
+      if (winapi && typeof winapi.terminateProcessByPid === 'function') {
+        try { ok = winapi.terminateProcessByPid(pid) === true } catch { ok = false }
+      }
+      try {
+        if (interceptionQueue.isIdle() && interceptionWin && !interceptionWin.isDestroyed()) interceptionWin.hide()
+      } catch {}
+      return ok === true
+    }
+    return false
+  })
+  ipcMain.handle('intercept-signer', async (_event, filePath) => {
+    const p = typeof filePath === 'string' ? filePath : ''
+    if (!p) return null
+    if (!winapi || typeof winapi.getSignerInfo !== 'function') return null
+    try { return winapi.getSignerInfo(p) } catch { return null }
   })
   ipcMain.handle('logs:list', () => eventLogs)
   ipcMain.handle('system-get-running-processes', () => processes.getRunningProcesses())
