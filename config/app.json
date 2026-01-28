@@ -26,7 +26,7 @@
   "scanner": {
     "timeoutMs": 5000,
     "healthPollIntervalMs": 3000,
-    "tuningEnabled": false,
+    "tuningEnabled": true,
     "maxFileSizeMB": 300,
     "nativeDll": {
       "enabled": true,
@@ -227,5 +227,8 @@
         "techniqueName": "Modify Registry"
       }
     ]
+  },
+  "exclusions": {
+    "salt": "763ab99c17b40951932832749e82835c"
   }
 }
