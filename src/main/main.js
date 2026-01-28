@@ -47,13 +47,13 @@ function loadConfig() {
       minimizeToTray: true,
       tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, window: { minWidth: 800, minHeight: 600 } },  
-      engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
+      engine: { autoStart: false, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
       scan: { commonExtensionsOnly: false },
       scanner: {
         timeoutMs: 10000,
         healthPollIntervalMs: 30000,
         maxFileSizeMB: 500,
-        ipc: { enabled: true, prefer: true, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 }
+        ipc: { enabled: false, prefer: false, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 }
       },
       behaviorMonitoring: { enabled: true },
       behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
@@ -1055,10 +1055,12 @@ function quitAllFromTray() {
     config.minimizeToTray = false
     const scannerCfg = (config && config.scanner) ? config.scanner : {}
     const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
+    const ipcEnabled = ipc && ipc.enabled === false ? false : true
     const timeout = (config && config.engine && Number.isFinite(config.engine.exitTimeoutMs))
       ? config.engine.exitTimeoutMs
       : (Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : ((scannerCfg && scannerCfg.timeoutMs) ? scannerCfg.timeoutMs : 1000))
     const engineCfg = (config && config.engine) ? config.engine : {}
+    if (engineCfg.autoStart === false || !ipcEnabled) return app.quit()
     const processName = engineCfg.processName || 'Axon_ml.exe'
     const mod = require('./engine_autostart')
     mod.postExitCommand({ ipc }, timeout, null).then((res) => {
@@ -1537,6 +1539,10 @@ app.whenReady().then(() => {
   ipcMain.handle('scanner:scanFile', async (_event, payload) => {
     const p = payload && typeof payload === 'object' ? payload : {}
     return scannerClient.scanFile(p.filePath, p.requestId)
+  })
+  ipcMain.handle('scanner:scanBatch', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    return scannerClient.scanBatch(p.filePaths, p.requestId)
   })
   ipcMain.handle('scanner:abort', async (_event, requestId) => scannerClient.abort(requestId))
 

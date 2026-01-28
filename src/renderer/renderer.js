@@ -593,13 +593,19 @@ function isMalware(res) {
 function getScanCfg() {
   const cfg = window.api && window.api.config ? window.api.config.get() : null
   const scan = cfg && cfg.scan ? cfg.scan : {}
+  const scanner = cfg && cfg.scanner ? cfg.scanner : {}
+  const rawBatch = Number.isFinite(scanner.scanBatchSize)
+    ? scanner.scanBatchSize
+    : (Number.isFinite(scanner.maxTokens) ? scanner.maxTokens : 16)
+  const scanBatchSize = Math.max(1, Math.min(256, Math.floor(rawBatch)))
   return {
     traversalTimeoutMs: Number.isFinite(scan.traversalTimeoutMs) ? scan.traversalTimeoutMs : 2000,
     walkerBatchSize: Number.isFinite(scan.walkerBatchSize) ? scan.walkerBatchSize : 256,
     cachePersistIntervalMs: Number.isFinite(scan.cachePersistIntervalMs) ? scan.cachePersistIntervalMs : 1000,
     metricsUpdateIntervalMs: Number.isFinite(scan.metricsUpdateIntervalMs) ? scan.metricsUpdateIntervalMs : 200,
     uiYieldEveryFiles: Number.isFinite(scan.uiYieldEveryFiles) ? scan.uiYieldEveryFiles : 25,
-    queueCompactionThreshold: Number.isFinite(scan.queueCompactionThreshold) ? scan.queueCompactionThreshold : 5000
+    queueCompactionThreshold: Number.isFinite(scan.queueCompactionThreshold) ? scan.queueCompactionThreshold : 5000,
+    scanBatchSize
   }
 }
 
@@ -848,25 +854,24 @@ async function finalizeScan(session) {
   })
 }
 
-async function scanOneFile(filePath, session) {
-  if (!filePath) return
+async function shouldScanFile(filePath, session, cfg) {
+  if (!filePath) return false
   try {
     if (window.api && window.api.exclusions && window.api.exclusions.isExcluded) {
       const excluded = window.api.exclusions.isExcluded(filePath)
-      if (excluded) return
+      if (excluded) return false
     }
   } catch {}
   session.currentTarget = filePath
-  if (session.stopRequested) return
+  if (session.stopRequested) return false
 
-  const cfg = window.api && window.api.config ? window.api.config.get() : null
   try {
     const fn = window.shouldScanFileByConfig
     if (typeof fn === 'function') {
       const ok = fn(filePath, cfg)
       if (!ok) {
         session.scannedCount++
-        return
+        return false
       }
     }
   } catch {}
@@ -875,37 +880,74 @@ async function scanOneFile(filePath, session) {
     const size = await window.api.fsAsync.fileSize(filePath)
     if (size > maxMB * 1024 * 1024) {
       session.scannedCount++
-      return
+      return false
     }
   } catch {}
 
-  if (session.stopRequested) return
+  if (session.stopRequested) return false
+  return true
+}
 
-  let res
+async function scanBatchFiles(filePaths, session, cfg, scanCfg) {
+  const list = Array.isArray(filePaths) ? filePaths : []
+  if (list.length === 0) return
+  const candidates = []
+  for (const fp of list) {
+    if (session.stopRequested) break
+    const ok = await shouldScanFile(fp, session, cfg)
+    if (ok) candidates.push(fp)
+  }
+  if (candidates.length === 0) return
+  let resList = []
   const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (String(Date.now()) + '-' + String(Math.random()))
   session.activeScanRequestId = requestId
+  session.currentTarget = candidates[0] || session.currentTarget
+  const metricsIntervalMs = scanCfg && Number.isFinite(scanCfg.metricsUpdateIntervalMs) ? scanCfg.metricsUpdateIntervalMs : 200
+  let uiTimer = null
   try {
-    res = await window.api.scanner.scanFile(filePath, { requestId })
+    uiTimer = setInterval(() => {
+      if (session.stopRequested) return
+      uiThread(() => updateScanMetricsUi(session))
+    }, Math.max(50, metricsIntervalMs))
   } catch {
-    session.scannedCount++
+    uiTimer = null
+  }
+  try {
+    resList = await window.api.scanner.scanBatch(candidates, { requestId })
+  } catch {
+    session.scannedCount += candidates.length
     if (session.activeScanRequestId === requestId) session.activeScanRequestId = ''
+    if (uiTimer) clearInterval(uiTimer)
     return
   }
+  if (uiTimer) clearInterval(uiTimer)
   if (session.activeScanRequestId === requestId) session.activeScanRequestId = ''
-  session.scannedCount++
-  if (isMalware(res)) {
-    const family = getVirusFamily(res) || t('unknown')
-    const exists = state.threatItems.some(it => it.path === filePath)
-    if (!exists) {
-      state.threatItems.push({ path: filePath, family, selected: true })
-      session.threatCount = state.threatItems.length
-      uiThread(() => renderThreats())
+  const arr = Array.isArray(resList) ? resList : []
+  for (let i = 0; i < candidates.length; i++) {
+    const filePath = candidates[i]
+    const res = arr[i] || {}
+    session.currentTarget = filePath
+    session.scannedCount++
+    if (isMalware(res)) {
+      const family = getVirusFamily(res) || t('unknown')
+      const exists = state.threatItems.some(it => it.path === filePath)
+      if (!exists) {
+        state.threatItems.push({ path: filePath, family, selected: true })
+        session.threatCount = state.threatItems.length
+        uiThread(() => renderThreats())
+      }
     }
   }
 }
 
+async function scanOneFile(filePath, session) {
+  const cfg = window.api && window.api.config ? window.api.config.get() : null
+  await scanBatchFiles([filePath], session, cfg, getScanCfg())
+}
+
 async function scanDirsAndFiles(session, dirs, files) {
   const cfg = getScanCfg()
+  const appCfg = window.api && window.api.config ? window.api.config.get() : null
   session.realtime = false
   session.totalCount = 0
   session.scannedCount = session.scannedCount || 0
@@ -993,9 +1035,14 @@ async function scanDirsAndFiles(session, dirs, files) {
 
   while (!session.stopRequested) {
     while (!session.stopRequested && queueRemaining() > 0) {
-      const fp = queueNext()
-      if (!fp) break
-      await scanOneFile(fp, session)
+      const batch = []
+      while (batch.length < cfg.scanBatchSize && queueRemaining() > 0) {
+        const fp = queueNext()
+        if (!fp) break
+        batch.push(fp)
+      }
+      if (batch.length === 0) break
+      await scanBatchFiles(batch, session, appCfg, cfg)
       const now = Date.now()
       if (now - lastSpeedAt >= 1000) {
         const delta = session.scannedCount - lastSpeedCount

@@ -17,7 +17,7 @@
     }
   },
   "engine": {
-    "autoStart": true,
+    "autoStart": false,
     "exeRelativePath": "Engine\\Axon_v2\\Axon_ml.exe",
     "processName": "Axon_ml.exe",
     "args": [],
@@ -26,8 +26,12 @@
   "scanner": {
     "timeoutMs": 5000,
     "healthPollIntervalMs": 3000,
-    "tuningEnabled": true,
+    "tuningEnabled": false,
     "maxFileSizeMB": 300,
+    "nativeDll": {
+      "enabled": true,
+      "prefer": true
+    },
     "tuning": {
       "fastLatencyMs": 700,
       "slowLatencyMs": 2000,
@@ -37,10 +41,10 @@
       "maxRatePerSecond": 256,
       "adjustStep": 8
     },
-    "maxTokens": 64,
+    "maxTokens": 256,
     "ipc": {
-      "enabled": true,
-      "prefer": true,
+      "enabled": false,
+      "prefer": false,
       "host": "127.0.0.1",
       "port": 8765,
       "connectTimeoutMs": 500,

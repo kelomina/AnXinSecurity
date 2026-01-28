@@ -20,13 +20,14 @@ function loadConfig() {
       minimizeToTray: true,
       tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, themeMode: 'system', window: { minWidth: 400, minHeight: 800 } },
-      engine: { autoStart: true, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
+      engine: { autoStart: false, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
       scanner: {
         timeoutMs: 10000,
         healthPollIntervalMs: 30000,
         tuningEnabled: true,
         maxTokens: 16,
-        ipc: { enabled: true, prefer: true, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 },
+        nativeDll: { enabled: true, prefer: true },
+        ipc: { enabled: false, prefer: false, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 },
         tuning: {
           fastLatencyMs: 300,
           slowLatencyMs: 1000,
@@ -177,6 +178,10 @@ const api = {
     scanFile: async (filePath, options) => {
       const opts = options && typeof options === 'object' ? options : {}
       return ipcRenderer.invoke('scanner:scanFile', { filePath, requestId: opts.requestId || '' })
+    },
+    scanBatch: async (filePaths, options) => {
+      const opts = options && typeof options === 'object' ? options : {}
+      return ipcRenderer.invoke('scanner:scanBatch', { filePaths, requestId: opts.requestId || '' })
     },
     abort: async (requestId) => {
       return ipcRenderer.invoke('scanner:abort', requestId || '')
