@@ -163,17 +163,14 @@ function createScannerClient(getConfig, deps = {}) {
     const candidates = []
     try {
       if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
-        candidates.push(path.join(process.resourcesPath, 'Engine', 'C++', 'build', 'src', 'Release', 'kvd.dll'))
+        candidates.push(path.join(process.resourcesPath, 'Engine', 'Axon', 'kvd.dll'))
       }
     } catch {}
     try {
-      candidates.push(path.join(__dirname, '../../Engine/C++/build/src/Release/kvd.dll'))
+      candidates.push(path.join(__dirname, '../../Engine/Axon/kvd.dll'))
     } catch {}
     try {
-      candidates.push(path.join(process.cwd(), 'Engine', 'C++', 'build', 'src', 'Release', 'kvd.dll'))
-    } catch {}
-    try {
-      candidates.push(path.join(__dirname, '../../Engine/C++/build/src/Debug/kvd.dll'))
+      candidates.push(path.join(process.cwd(), 'Engine', 'Axon', 'kvd.dll'))
     } catch {}
     for (const p of candidates) {
       if (fileExists(p)) return p
@@ -249,44 +246,38 @@ function createScannerClient(getConfig, deps = {}) {
     const cands = []
     try {
       if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
-        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', 'models', rel))
-        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', '_internal', 'saved_models', rel))
+        cands.push(path.join(process.resourcesPath, 'Engine', 'Axon', 'saved_models', rel))
       }
     } catch {}
     try {
-      cands.push(path.join(__dirname, '../../Engine/C++/models', rel))
-      cands.push(path.join(__dirname, '../../Engine/C++/_internal/saved_models', rel))
+      cands.push(path.join(__dirname, '../../Engine/Axon/saved_models', rel))
     } catch {}
     try {
-      cands.push(path.join(process.cwd(), 'Engine', 'C++', 'models', rel))
-      cands.push(path.join(process.cwd(), 'Engine', 'C++', '_internal', 'saved_models', rel))
+      cands.push(path.join(process.cwd(), 'Engine', 'Axon', 'saved_models', rel))
     } catch {}
     for (const p of cands) {
       if (fileExists(p)) return p
     }
-    return findFileInEngineRoots(rel, ['models', 'saved_models'])
+    return ''
   }
 
   function resolveFamilyJsonPath() {
     const cands = []
     try {
       if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
-        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', 'family_classifier.json'))
-        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', '_internal', 'hdbscan_cluster_results', 'family_classifier.json'))
+        cands.push(path.join(process.resourcesPath, 'Engine', 'Axon', 'hdbscan_cluster_results', 'family_classifier.json'))
       }
     } catch {}
     try {
-      cands.push(path.join(__dirname, '../../Engine/C++/family_classifier.json'))
-      cands.push(path.join(__dirname, '../../Engine/C++/_internal/hdbscan_cluster_results/family_classifier.json'))
+      cands.push(path.join(__dirname, '../../Engine/Axon/hdbscan_cluster_results/family_classifier.json'))
     } catch {}
     try {
-      cands.push(path.join(process.cwd(), 'Engine', 'C++', 'family_classifier.json'))
-      cands.push(path.join(process.cwd(), 'Engine', 'C++', '_internal', 'hdbscan_cluster_results', 'family_classifier.json'))
+      cands.push(path.join(process.cwd(), 'Engine', 'Axon', 'hdbscan_cluster_results', 'family_classifier.json'))
     } catch {}
     for (const p of cands) {
       if (fileExists(p)) return p
     }
-    return findFileInEngineRoots('family_classifier.json', ['hdbscan_cluster_results'])
+    return ''
   }
 
   function ensureKvdEnv() {
