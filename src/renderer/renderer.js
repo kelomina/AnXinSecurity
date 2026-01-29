@@ -574,6 +574,15 @@ function formatDuration(ms) {
 
 function getVirusFamily(res) {
   if (!res || typeof res !== 'object') return ''
+  if (res.malware_family && typeof res.malware_family === 'object') {
+    const mf = res.malware_family
+    const v1 = mf.family_name
+    if (typeof v1 === 'string' && v1.trim()) return v1.trim()
+    const v2 = mf.name
+    if (typeof v2 === 'string' && v2.trim()) return v2.trim()
+    const v3 = mf.family
+    if (typeof v3 === 'string' && v3.trim()) return v3.trim()
+  }
   const cands = ['virus_family', 'family', 'label', 'malware_type', 'category', 'name']
   for (const k of cands) {
     const v = res[k]
@@ -596,7 +605,7 @@ function getScanCfg() {
   const scanner = cfg && cfg.scanner ? cfg.scanner : {}
   const rawBatch = Number.isFinite(scanner.scanBatchSize)
     ? scanner.scanBatchSize
-    : (Number.isFinite(scanner.maxTokens) ? scanner.maxTokens : 16)
+    : (Number.isFinite(scan.scanBatchSize) ? scan.scanBatchSize : (Number.isFinite(scanner.maxTokens) ? Math.min(scanner.maxTokens, 64) : 16))
   const scanBatchSize = Math.max(1, Math.min(256, Math.floor(rawBatch)))
   return {
     traversalTimeoutMs: Number.isFinite(scan.traversalTimeoutMs) ? scan.traversalTimeoutMs : 2000,

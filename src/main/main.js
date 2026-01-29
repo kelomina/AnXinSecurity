@@ -47,7 +47,6 @@ function loadConfig() {
       minimizeToTray: true,
       tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, window: { minWidth: 800, minHeight: 600 } },  
-      engine: { autoStart: false, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [] },
       scan: { commonExtensionsOnly: false },
       scanner: {
         timeoutMs: 10000,
@@ -1061,7 +1060,7 @@ function quitAllFromTray() {
       : (Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : ((scannerCfg && scannerCfg.timeoutMs) ? scannerCfg.timeoutMs : 1000))
     const engineCfg = (config && config.engine) ? config.engine : {}
     if (engineCfg.autoStart === false || !ipcEnabled) return app.quit()
-    const processName = engineCfg.processName || 'Axon_ml.exe'
+    const processName = engineCfg.processName || ''
     const mod = require('./engine_autostart')
     mod.postExitCommand({ ipc }, timeout, null).then((res) => {
       const ok = res && res.ok && res.status === 'shutting_down'
@@ -1230,10 +1229,10 @@ app.whenReady().then(() => {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
         const res = await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
         if (res) {
-          if (res.started) console.log('主进程: 已后台启动 Axon_ml.exe', res.path)
-          else if (res.reason === 'already_running') console.log('主进程: Axon_ml.exe 已在运行')
-          else if (res.reason === 'exe_not_found') console.log('主进程: 未找到 Axon_ml.exe，跳过自动启动')
-          else if (res.reason === 'spawn_failed') console.log('主进程: 启动 Axon_ml.exe 失败', res.path)
+          if (res.started) console.log('主进程: 已后台启动引擎服务', res.path)
+          else if (res.reason === 'already_running') console.log('主进程: 引擎服务已在运行')
+          else if (res.reason === 'exe_not_found') console.log('主进程: 未找到引擎可执行文件，跳过自动启动')
+          else if (res.reason === 'spawn_failed') console.log('主进程: 启动引擎服务失败', res.path)
         }
       }
     },

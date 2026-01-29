@@ -1,4 +1,3 @@
-const net = require('net')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
@@ -14,20 +13,10 @@ function createScannerClient(getConfig, deps = {}) {
     const cfg = typeof getConfig === 'function' ? (getConfig() || {}) : {}
     const scanner = cfg && cfg.scanner ? cfg.scanner : {}
     const nativeDll = scanner && scanner.nativeDll ? scanner.nativeDll : {}
-    const ipc = scanner && scanner.ipc ? scanner.ipc : {}
     const timeoutMs = Number.isFinite(scanner.timeoutMs) ? scanner.timeoutMs : 5000
-    const envHost = process.env.SCANNER_SERVICE_IPC_HOST
-    const envPort = process.env.SCANNER_SERVICE_IPC_PORT
-    const ipcEnabled = ipc && ipc.enabled === false ? false : true
-    const ipcPrefer = ipc && ipc.prefer === false ? false : true
     const nativeEnabled = nativeDll && nativeDll.enabled === false ? false : true
     const nativePrefer = nativeDll && nativeDll.prefer === true ? true : false
-    const ipcHost = (typeof (envHost || ipc.host) === 'string' && (envHost || ipc.host).trim()) ? (envHost || ipc.host).trim() : '127.0.0.1'
-    const parsedPort = parseInt(envPort || ipc.port, 10)
-    const ipcPort = Number.isFinite(parsedPort) && parsedPort > 0 && parsedPort < 65536 ? parsedPort : 8765
-    const ipcConnectTimeoutMs = Number.isFinite(ipc.connectTimeoutMs) ? ipc.connectTimeoutMs : 500
-    const ipcTimeoutMs = Number.isFinite(ipc.timeoutMs) ? ipc.timeoutMs : timeoutMs
-    return { timeoutMs, ipcEnabled, ipcPrefer, nativeEnabled, nativePrefer, ipcHost, ipcPort, ipcConnectTimeoutMs, ipcTimeoutMs }
+    return { timeoutMs, nativeEnabled, nativePrefer }
   }
 
   function resolveWorkerPoolSize() {
@@ -104,37 +93,39 @@ function createScannerClient(getConfig, deps = {}) {
   }
 
   function processNext(pool) {
-    if (!pool || pool.queue.length === 0) return
-    const availableWorker = pool.workers.find(w => !w.busy)
-    if (!availableWorker) return
-    const task = pool.queue.shift()
-    if (!task) return
-    if (task.canceled || task.done) {
-      if (!task.done) {
-        task.done = true
-        if (task.requestId && task.clearActiveOnDone) clearActive(task.requestId)
-        task.resolve([])
+    if (!pool) return
+    while (pool.queue.length > 0) {
+      const availableWorker = pool.workers.find(w => !w.busy)
+      if (!availableWorker) return
+      const task = pool.queue.shift()
+      if (!task) return
+      if (task.canceled || task.done) {
+        if (!task.done) {
+          task.done = true
+          if (task.requestId && task.clearActiveOnDone) clearActive(task.requestId)
+          task.resolve([])
+        }
+        continue
       }
-      return processNext(pool)
-    }
-    availableWorker.busy = true
-    availableWorker.currentTask = task
-    task.started = true
-    try {
-      availableWorker.worker.postMessage({
-        type: 'scan_batch',
-        taskId: task.id,
-        requestId: task.requestId,
-        filePaths: task.filePaths,
-        config: task.config
-      })
-    } catch (e) {
-      availableWorker.busy = false
-      availableWorker.currentTask = null
-      task.done = true
-      if (task.requestId) clearActive(task.requestId)
-      task.reject(e)
-      processNext(pool)
+      availableWorker.busy = true
+      availableWorker.currentTask = task
+      task.started = true
+      try {
+        availableWorker.worker.postMessage({
+          type: 'scan_batch',
+          taskId: task.id,
+          requestId: task.requestId,
+          filePaths: task.filePaths,
+          config: task.config
+        })
+      } catch (e) {
+        availableWorker.busy = false
+        availableWorker.currentTask = null
+        task.done = true
+        if (task.requestId) clearActive(task.requestId)
+        task.reject(e)
+        continue
+      }
     }
   }
 
@@ -190,44 +181,112 @@ function createScannerClient(getConfig, deps = {}) {
     return null
   }
 
+  function resolveEngineRoots() {
+    const roots = []
+    try {
+      if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
+        const p = path.join(process.resourcesPath, 'Engine')
+        if (fileExists(p)) roots.push(p)
+      }
+    } catch {}
+    try {
+      const p = path.join(__dirname, '../../Engine')
+      if (fileExists(p)) roots.push(p)
+    } catch {}
+    try {
+      const p = path.join(process.cwd(), 'Engine')
+      if (fileExists(p)) roots.push(p)
+    } catch {}
+    return roots
+  }
+
+  function isDirectory(p) {
+    try {
+      const st = fs.statSync(p)
+      return !!(st && st.isDirectory())
+    } catch {
+      return false
+    }
+  }
+
+  function findFileInEngineRoots(fileName, targetDirs) {
+    const roots = resolveEngineRoots()
+    const dirSet = new Set(Array.isArray(targetDirs) ? targetDirs.map(s => String(s).toLowerCase()) : [])
+    const skip = new Set(['node_modules', 'dist', 'dist2', 'build', 'vcpkg', '.git', '.storybook', 'docs'])
+    const maxDepth = 6
+    for (const root of roots) {
+      if (!isDirectory(root)) continue
+      const queue = [{ dir: root, depth: 0 }]
+      while (queue.length) {
+        const { dir, depth } = queue.shift()
+        if (depth > maxDepth) continue
+        let entries = []
+        try {
+          entries = fs.readdirSync(dir, { withFileTypes: true })
+        } catch {
+          entries = []
+        }
+        for (const ent of entries) {
+          if (!ent) continue
+          const name = ent.name || ''
+          const lower = name.toLowerCase()
+          const full = path.join(dir, name)
+          if (ent.isDirectory()) {
+            if (skip.has(lower)) continue
+            if (dirSet.has(lower)) {
+              const fp = path.join(full, fileName)
+              if (fileExists(fp)) return fp
+            }
+            if (depth + 1 <= maxDepth) queue.push({ dir: full, depth: depth + 1 })
+          }
+        }
+      }
+    }
+    return ''
+  }
+
   function resolveModelPath(rel) {
     const cands = []
     try {
       if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
-        cands.push(path.join(process.resourcesPath, 'Engine', 'Axon_v2', '_internal', 'saved_models', rel))
+        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', 'models', rel))
+        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', '_internal', 'saved_models', rel))
       }
     } catch {}
     try {
-      cands.push(path.join(__dirname, '../../Engine/Axon_v2/_internal/saved_models', rel))
+      cands.push(path.join(__dirname, '../../Engine/C++/models', rel))
+      cands.push(path.join(__dirname, '../../Engine/C++/_internal/saved_models', rel))
     } catch {}
     try {
-      cands.push(path.join(process.cwd(), 'Engine', 'Axon_v2', '_internal', 'saved_models', rel))
+      cands.push(path.join(process.cwd(), 'Engine', 'C++', 'models', rel))
+      cands.push(path.join(process.cwd(), 'Engine', 'C++', '_internal', 'saved_models', rel))
     } catch {}
     for (const p of cands) {
       if (fileExists(p)) return p
     }
-    return ''
+    return findFileInEngineRoots(rel, ['models', 'saved_models'])
   }
 
   function resolveFamilyJsonPath() {
     const cands = []
     try {
       if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
-        cands.push(path.join(process.resourcesPath, 'Engine', 'Axon_v2', '_internal', 'hdbscan_cluster_results', 'file_cluster_mapping.json'))
-        cands.push(path.join(process.resourcesPath, 'Engine', 'Axon_v2', '_internal', 'hdbscan_cluster_results', 'family_names_mapping.json'))
-        cands.push(path.join(process.resourcesPath, 'Engine', 'Axon_v2', '_internal', 'hdbscan_cluster_results', 'family_classifier.json'))
+        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', 'family_classifier.json'))
+        cands.push(path.join(process.resourcesPath, 'Engine', 'C++', '_internal', 'hdbscan_cluster_results', 'family_classifier.json'))
       }
     } catch {}
     try {
-      cands.push(path.join(__dirname, '../../Engine/Axon_v2/_internal/hdbscan_cluster_results/family_classifier.json'))
+      cands.push(path.join(__dirname, '../../Engine/C++/family_classifier.json'))
+      cands.push(path.join(__dirname, '../../Engine/C++/_internal/hdbscan_cluster_results/family_classifier.json'))
     } catch {}
     try {
-      cands.push(path.join(process.cwd(), 'Engine', 'Axon_v2', '_internal', 'hdbscan_cluster_results', 'family_classifier.json'))
+      cands.push(path.join(process.cwd(), 'Engine', 'C++', 'family_classifier.json'))
+      cands.push(path.join(process.cwd(), 'Engine', 'C++', '_internal', 'hdbscan_cluster_results', 'family_classifier.json'))
     } catch {}
     for (const p of cands) {
       if (fileExists(p)) return p
     }
-    return ''
+    return findFileInEngineRoots('family_classifier.json', ['hdbscan_cluster_results'])
   }
 
   function ensureKvdEnv() {
@@ -235,10 +294,19 @@ function createScannerClient(getConfig, deps = {}) {
     const normal = resolveModelPath('lightgbm_model_normal.txt')
     const packed = resolveModelPath('lightgbm_model_packed.txt')
     const family = resolveFamilyJsonPath()
-    if (main && !process.env.SCANNER_LIGHTGBM_MODEL_PATH) process.env.SCANNER_LIGHTGBM_MODEL_PATH = main
-    if (normal && !process.env.SCANNER_LIGHTGBM_MODEL_NORMAL_PATH) process.env.SCANNER_LIGHTGBM_MODEL_NORMAL_PATH = normal
-    if (packed && !process.env.SCANNER_LIGHTGBM_MODEL_PACKED_PATH) process.env.SCANNER_LIGHTGBM_MODEL_PACKED_PATH = packed
-    if (family && !process.env.SCANNER_FAMILY_CLASSIFIER_PATH) process.env.SCANNER_FAMILY_CLASSIFIER_PATH = family
+    const setEnvPath = (key, candidate) => {
+      const cur = process.env[key]
+      if (cur && fileExists(cur)) return
+      if (candidate && fileExists(candidate)) {
+        process.env[key] = candidate
+        return
+      }
+      if (cur && !fileExists(cur)) process.env[key] = ''
+    }
+    setEnvPath('SCANNER_LIGHTGBM_MODEL_PATH', main)
+    setEnvPath('SCANNER_LIGHTGBM_MODEL_NORMAL_PATH', normal)
+    setEnvPath('SCANNER_LIGHTGBM_MODEL_PACKED_PATH', packed)
+    setEnvPath('SCANNER_FAMILY_CLASSIFIER_PATH', family)
   }
 
   function buildKvdConfigValues() {
@@ -312,15 +380,6 @@ function createScannerClient(getConfig, deps = {}) {
     return ensureKvdLoaded()
   }
 
-  function resolveBackend() {
-    const { ipcEnabled, ipcPrefer, nativeEnabled, nativePrefer } = getScannerCfg()
-    if (nativeEnabled && nativePrefer && canUseNative()) return 'native'
-    if (ipcEnabled && ipcPrefer) return 'ipc'
-    if (nativeEnabled && canUseNative()) return 'native'
-    if (ipcEnabled) return 'ipc'
-    throw new Error('NO_BACKEND')
-  }
-
   function kvdHealth() {
     if (!canUseNative()) throw new Error('KVD_LOAD_FAILED')
     if (!kvd.cfgPtr) kvd.cfgPtr = buildKvdConfigPtr()
@@ -389,190 +448,22 @@ function createScannerClient(getConfig, deps = {}) {
     return true
   }
 
-  function ipcRequest(type, payload, requestId) {
-    const { ipcHost, ipcPort, ipcConnectTimeoutMs, ipcTimeoutMs } = getScannerCfg()
-    const reqId = requestId ? String(requestId) : ''
-    const msg = {
-      version: 1,
-      type: String(type || ''),
-      payload: payload && typeof payload === 'object' ? payload : {},
-      timeout_ms: ipcTimeoutMs
-    }
-    if (reqId) msg.id = reqId
-
-    const json = Buffer.from(JSON.stringify(msg), 'utf-8')
-    const frame = Buffer.allocUnsafe(4)
-    frame.writeUInt32BE(json.length, 0)
-    const out = Buffer.concat([frame, json])
-
-    return new Promise((resolve, reject) => {
-      let done = false
-      let buf = Buffer.alloc(0)
-      let expectedLen = null
-
-      const socket = net.createConnection({ host: ipcHost, port: ipcPort })
-      socket.setNoDelay(true)
-
-      const connectTimer = setTimeout(() => {
-        try {
-          const e = new Error('CONNECT_TIMEOUT')
-          e.isIpcTransport = true
-          socket.destroy(e)
-        } catch {}
-      }, Math.max(1, ipcConnectTimeoutMs))
-
-      const overallTimer = setTimeout(() => {
-        try {
-          const e = new Error('TIMEOUT')
-          e.isIpcTransport = true
-          socket.destroy(e)
-        } catch {}
-      }, Math.max(1, ipcTimeoutMs + ipcConnectTimeoutMs))
-
-      if (reqId) {
-        setActive(reqId, () => {
-          try {
-            const e = new Error('ABORTED')
-            e.isIpcTransport = true
-            socket.destroy(e)
-          } catch {}
-        })
-      }
-
-      function cleanup() {
-        clearTimeout(connectTimer)
-        clearTimeout(overallTimer)
-        try { socket.removeAllListeners() } catch {}
-        try { socket.on('error', () => {}) } catch {}
-        if (reqId) clearActive(reqId)
-      }
-
-      function finish(err, res) {
-        if (done) return
-        done = true
-        cleanup()
-        if (err) return reject(err)
-        resolve(res)
-      }
-
-      socket.once('connect', () => {
-        clearTimeout(connectTimer)
-        try {
-          socket.write(out)
-        } catch (e) {
-          e.isIpcTransport = true
-          finish(e)
-        }
-      })
-
-      socket.on('data', (chunk) => {
-        try {
-          const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
-          buf = buf.length ? Buffer.concat([buf, b]) : b
-
-          if (expectedLen == null) {
-            if (buf.length < 4) return
-            expectedLen = buf.readUInt32BE(0)
-            if (!Number.isFinite(expectedLen) || expectedLen < 0 || expectedLen > 64 * 1024 * 1024) {
-              const e = new Error('IPC_PROTOCOL')
-              e.isIpcTransport = true
-              return finish(e)
-            }
-          }
-          if (buf.length < 4 + expectedLen) return
-          const body = buf.subarray(4, 4 + expectedLen)
-          let parsed
-          try {
-            parsed = JSON.parse(body.toString('utf-8'))
-          } catch (e) {
-            e.isIpcTransport = true
-            return finish(e)
-          }
-          try { socket.end() } catch {}
-          return finish(null, parsed)
-        } catch (e) {
-          e.isIpcTransport = true
-          finish(e)
-        }
-      })
-
-      socket.once('error', (err) => {
-        if (err && err.message === 'ABORTED') err.isIpcTransport = true
-        if (err && err.message === 'TIMEOUT') err.isIpcTransport = true
-        if (err && err.message === 'CONNECT_TIMEOUT') err.isIpcTransport = true
-        finish(err)
-      })
-
-      socket.once('close', () => {
-        if (done) return
-        const e = new Error('IPC_CLOSED')
-        e.isIpcTransport = true
-        finish(e)
-      })
-    })
-  }
-
-  async function ipcHealth(requestId) {
-    const res = await ipcRequest('health', {}, requestId)
-    if (res && res.ok === false) {
-      const e = new Error((res.error && res.error.message) ? String(res.error.message) : 'IPC_ERROR')
-      if (res.error && res.error.code) e.code = String(res.error.code)
-      e.isIpcTransport = false
-      throw e
-    }
-    return (res && res.payload) ? res.payload : res
-  }
-
-  async function ipcScanFile(filePath, requestId) {
-    const fp = typeof filePath === 'string' ? filePath : ''
-    if (!fp) throw new Error('INVALID_FILE_PATH')
-    const res = await ipcRequest('scan_file', { file_path: fp }, requestId)
-    if (res && res.ok === false) {
-      const e = new Error((res.error && res.error.message) ? String(res.error.message) : 'IPC_ERROR')
-      if (res.error && res.error.code) e.code = String(res.error.code)
-      e.isIpcTransport = false
-      throw e
-    }
-    return (res && res.payload) ? res.payload : res
-  }
-
-  async function ipcScanBatch(filePaths, requestId) {
-    const fps = Array.isArray(filePaths) ? filePaths.filter(p => typeof p === 'string' && p) : []
-    if (fps.length === 0) throw new Error('INVALID_FILE_PATHS')
-    const res = await ipcRequest('scan_batch', { file_paths: fps }, requestId)
-    if (res && res.ok === false) {
-      const e = new Error((res.error && res.error.message) ? String(res.error.message) : 'IPC_ERROR')
-      if (res.error && res.error.code) e.code = String(res.error.code)
-      e.isIpcTransport = false
-      throw e
-    }
-    return (res && res.payload) ? res.payload : res
-  }
-
   async function health(requestId) {
-    const backend = resolveBackend()
-    if (backend === 'native') return kvdHealth()
-    return ipcHealth(requestId)
+    return kvdHealth(requestId)
   }
 
   async function scanFile(filePath, requestId) {
     const fp = typeof filePath === 'string' ? filePath : ''
     if (!fp) throw new Error('INVALID_FILE_PATH')
 
-    const backend = resolveBackend()
-    if (backend === 'native') {
-      const res = await scanBatch([fp], requestId)
-      return (Array.isArray(res) && res[0]) ? res[0] : {}
-    }
-    return ipcScanFile(fp, requestId)
+    const res = await scanBatch([fp], requestId)
+    return (Array.isArray(res) && res[0]) ? res[0] : {}
   }
 
   async function scanBatch(filePaths, requestId) {
     const fps = Array.isArray(filePaths) ? filePaths.filter(p => typeof p === 'string' && p) : []
     if (fps.length === 0) throw new Error('INVALID_FILE_PATHS')
-
-    const backend = resolveBackend()
-    if (backend === 'ipc') return ipcScanBatch(fps, requestId)
+    if (!canUseNative()) throw new Error('KVD_LOAD_FAILED')
     const pool = ensureWorkerPool()
     if (!pool) {
       const out = []
@@ -682,17 +573,7 @@ function createScannerClient(getConfig, deps = {}) {
   async function control(command, token, requestId) {
     const cmd = typeof command === 'string' ? command : ''
     if (!cmd) throw new Error('INVALID_COMMAND')
-    const backend = resolveBackend()
-    if (backend === 'native') return { ok: true }
-    const payload = token ? { command: cmd, token: String(token) } : { command: cmd }
-    const res = await ipcRequest('control', payload, requestId)
-    if (res && res.ok === false) {
-      const e = new Error((res.error && res.error.message) ? String(res.error.message) : 'IPC_ERROR')
-      if (res.error && res.error.code) e.code = String(res.error.code)
-      e.isIpcTransport = false
-      throw e
-    }
-    return (res && res.payload) ? res.payload : res
+    return { ok: true }
   }
 
   return { health, scanFile, scanBatch, control, abort }

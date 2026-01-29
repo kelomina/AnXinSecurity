@@ -18,8 +18,8 @@
   },
   "engine": {
     "autoStart": false,
-    "exeRelativePath": "Engine\\Axon_v2\\Axon_ml.exe",
-    "processName": "Axon_ml.exe",
+    "exeRelativePath": "",
+    "processName": "",
     "args": [],
     "exitTimeoutMs": 1000
   },
@@ -41,7 +41,7 @@
       "maxRatePerSecond": 256,
       "adjustStep": 8
     },
-    "maxTokens": 256,
+    "maxTokens": 8,
     "ipc": {
       "enabled": false,
       "prefer": false,
@@ -227,8 +227,5 @@
         "techniqueName": "Modify Registry"
       }
     ]
-  },
-  "exclusions": {
-    "salt": "763ab99c17b40951932832749e82835c"
   }
 }

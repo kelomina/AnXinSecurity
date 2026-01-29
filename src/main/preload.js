@@ -20,7 +20,7 @@ function loadConfig() {
       minimizeToTray: true,
       tray: { exitKeepScannerServicePrompt: true, exitKeepScannerServiceDefault: true },
       ui: { animations: true, themeMode: 'system', window: { minWidth: 400, minHeight: 800 } },
-      engine: { autoStart: false, exeRelativePath: 'Engine\\Axon_v2\\Axon_ml.exe', processName: 'Axon_ml.exe', args: [], exitTimeoutMs: 1000 },
+      engine: { autoStart: false, exeRelativePath: "", processName: "", args: [], exitTimeoutMs: 1000 },
       scanner: {
         timeoutMs: 10000,
         healthPollIntervalMs: 30000,
