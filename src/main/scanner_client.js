@@ -142,13 +142,15 @@ function createScannerClient(getConfig, deps = {}) {
     create: null,
     destroy: null,
     scanPath: null,
+    scanPaths: null,
     scanBytes: null,
     free: null,
     validateModels: null,
     configType: null,
     cfgPtr: null,
     handle: null,
-    inited: false
+    inited: false,
+    loadError: ''
   }
 
   function fileExists(p) {
@@ -324,14 +326,20 @@ function createScannerClient(getConfig, deps = {}) {
     return ptr
   }
 
-  function ensureKvdLoaded() {
-    if (kvd.inited) return !!kvd.handle
+  function ensureKvdLibraryLoaded() {
+    if (kvd.lib) return true
     if (!koffi) {
       try { koffi = require('koffi') } catch { koffi = null }
     }
-    if (!koffi) return false
+    if (!koffi) {
+      kvd.loadError = 'KVD_KOFFI_MISSING'
+      return false
+    }
     const dll = resolveKvdDllPath()
-    if (!dll) return false
+    if (!dll) {
+      kvd.loadError = 'KVD_DLL_NOT_FOUND'
+      return false
+    }
     try {
       kvd.lib = koffi.load(dll)
       kvd.configType = koffi.struct('kvd_config', {
@@ -346,33 +354,41 @@ function createScannerClient(getConfig, deps = {}) {
       kvd.create = kvd.lib.func('__cdecl', 'kvd_create', koffi.pointer('void *'), [koffi.pointer(kvd.configType)])
       kvd.destroy = kvd.lib.func('__cdecl', 'kvd_destroy', 'void', [koffi.pointer('void *')])
       kvd.scanPath = kvd.lib.func('__cdecl', 'kvd_scan_path', 'int', [koffi.pointer('void *'), 'string', koffi.out(koffi.pointer('void *', 2)), koffi.out('size_t *')])
+      kvd.scanPaths = kvd.lib.func('__cdecl', 'kvd_scan_paths', 'int', [koffi.pointer('void *'), 'void *', 'size_t', koffi.out(koffi.pointer('void *', 2)), koffi.out('size_t *')])
       kvd.scanBytes = kvd.lib.func('__cdecl', 'kvd_scan_bytes', 'int', [koffi.pointer('void *'), koffi.pointer('uint8_t'), 'size_t', koffi.out(koffi.pointer('void *', 2)), koffi.out('size_t *')])
       kvd.free = kvd.lib.func('__cdecl', 'kvd_free', 'void', ['void *'])
       kvd.validateModels = kvd.lib.func('__cdecl', 'kvd_validate_models', 'int', [koffi.pointer(kvd.configType), koffi.out(koffi.pointer('void *', 2)), koffi.out('size_t *')])
     } catch {
       kvd.lib = null
-      kvd.inited = true
+      kvd.loadError = 'KVD_BIND_FAILED'
       return false
     }
     ensureKvdEnv()
+    kvd.loadError = ''
+    return true
+  }
+
+  function ensureKvdHandle() {
+    if (kvd.handle) return true
+    if (!ensureKvdLibraryLoaded()) return false
     try {
-      kvd.cfgPtr = buildKvdConfigPtr()
+      if (!kvd.cfgPtr) kvd.cfgPtr = buildKvdConfigPtr()
       kvd.handle = kvd.create(kvd.cfgPtr)
     } catch {
       kvd.handle = null
     }
-    kvd.inited = true
+    if (!kvd.handle) kvd.loadError = 'KVD_CREATE_FAILED'
     return !!kvd.handle
   }
 
   function canUseNative() {
     const { nativeEnabled } = getScannerCfg()
     if (!nativeEnabled) return false
-    return ensureKvdLoaded()
+    return ensureKvdHandle()
   }
 
   function kvdHealth() {
-    if (!canUseNative()) throw new Error('KVD_LOAD_FAILED')
+    if (!ensureKvdLibraryLoaded()) throw new Error(kvd.loadError || 'KVD_LOAD_FAILED')
     if (!kvd.cfgPtr) kvd.cfgPtr = buildKvdConfigPtr()
     const outCfg = kvd.cfgPtr
     const outStr = [null]
@@ -419,6 +435,41 @@ function createScannerClient(getConfig, deps = {}) {
     }
   }
 
+  async function kvdScanPaths(filePaths) {
+    if (!canUseNative()) throw new Error('KVD_LOAD_FAILED')
+    const list = Array.isArray(filePaths) ? filePaths.filter(p => typeof p === 'string' && p) : []
+    if (!list.length) return []
+    if (!kvd.scanPaths) throw new Error('KVD_SCAN_FAILED')
+    let arrPtr = null
+    try {
+      const arrType = koffi.array('string', list.length)
+      arrPtr = koffi.alloc(arrType, list.length)
+      koffi.encode(arrPtr, arrType, list)
+    } catch {
+      arrPtr = null
+    }
+    const outStr = [null]
+    const outLen = [0]
+    const rc = kvd.scanPaths(kvd.handle, arrPtr, list.length, outStr, outLen)
+    if (rc < 0) throw new Error('KVD_SCAN_FAILED')
+    let json = '[]'
+    try {
+      const ptr = outStr[0]
+      const len = outLen[0] | 0
+      if (ptr && len > 0) {
+        const bytes = koffi.decode(ptr, koffi.array('uint8_t', len))
+        json = Buffer.from(bytes).toString('utf8') || '[]'
+        try { kvd.free(ptr) } catch {}
+      }
+    } catch {}
+    try {
+      const parsed = JSON.parse(json)
+      return Array.isArray(parsed) ? parsed : []
+    } catch {
+      return []
+    }
+  }
+
   function setActive(id, abortFn) {
     if (!id || typeof abortFn !== 'function') return
     active.set(String(id), abortFn)
@@ -457,16 +508,23 @@ function createScannerClient(getConfig, deps = {}) {
     if (!canUseNative()) throw new Error('KVD_LOAD_FAILED')
     const pool = ensureWorkerPool()
     if (!pool) {
-      const out = []
-      for (const p of fps) {
-        try {
-          const r = await kvdScanFile(p)
-          out.push(r)
-        } catch {
-          out.push({})
+      try {
+        const arr = await kvdScanPaths(fps)
+        const out = new Array(fps.length)
+        for (let i = 0; i < fps.length; i++) out[i] = arr[i] || {}
+        return out
+      } catch {
+        const out = []
+        for (const p of fps) {
+          try {
+            const r = await kvdScanFile(p)
+            out.push(r)
+          } catch {
+            out.push({})
+          }
         }
+        return out
       }
-      return out
     }
     const rid = requestId ? String(requestId) : ''
     const poolSize = Math.max(1, pool.size || 1)
