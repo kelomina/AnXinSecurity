@@ -17,6 +17,11 @@ class CryptoManager {
     this.init();
   }
 
+  setPassword(password) {
+    this.password = typeof password === 'string' ? password : String(password || '');
+    this.deriveKey();
+  }
+
   init() {
     let config = {};
     try {

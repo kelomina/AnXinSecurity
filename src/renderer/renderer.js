@@ -30,6 +30,10 @@ const state = {
 let behaviorDetailModal = null
 let interceptModal = null
 let interceptLastPayload = null
+let devSettingsModal = null
+let devSettingsUnlocked = false
+let devSettingsPassword = ''
+let devSettingsData = { blackPath: '', whitePath: '' }
 
 function setTheme() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : { themeColor: '#1677ff' }
@@ -83,6 +87,36 @@ function applyThemePreferences() {
   }
 }
 
+window.addEventListener('error', (e) => {
+  try {
+    const payload = {
+      type: 'window_error',
+      message: e && e.message ? String(e.message) : '',
+      filename: e && e.filename ? String(e.filename) : '',
+      lineno: Number.isFinite(e && e.lineno) ? e.lineno : null,
+      colno: Number.isFinite(e && e.colno) ? e.colno : null,
+      stack: e && e.error && e.error.stack ? String(e.error.stack) : ''
+    }
+    if (window.api && window.api.errorTrace && typeof window.api.errorTrace.report === 'function') {
+      window.api.errorTrace.report(payload)
+    }
+  } catch {}
+})
+
+window.addEventListener('unhandledrejection', (e) => {
+  try {
+    const r = e && e.reason
+    const payload = {
+      type: 'unhandled_rejection',
+      message: r && r.message ? String(r.message) : String(r || ''),
+      stack: r && r.stack ? String(r.stack) : ''
+    }
+    if (window.api && window.api.errorTrace && typeof window.api.errorTrace.report === 'function') {
+      window.api.errorTrace.report(payload)
+    }
+  } catch {}
+})
+
 function applyMotionPreferences() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : null
   const cfgAllows = !(!cfg || !cfg.ui || cfg.ui.animations === false)
@@ -129,6 +163,107 @@ if (typeof window !== 'undefined') window.t = t
 function escapeHtml(s) {
   const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }
   return String(s).replace(/[&<>"']/g, c => map[c] || c)
+}
+
+function ensureDevSettingsModal() {
+  const el = document.getElementById('dev-settings-modal')
+  if (!el) return null
+  if (!devSettingsModal) devSettingsModal = new bootstrap.Modal(el, { backdrop: 'static', keyboard: false })
+  return devSettingsModal
+}
+
+function getDevSettingsData() {
+  const d = devSettingsData && typeof devSettingsData === 'object' ? devSettingsData : {}
+  return {
+    blackPath: typeof d.blackPath === 'string' ? d.blackPath : '',
+    whitePath: typeof d.whitePath === 'string' ? d.whitePath : ''
+  }
+}
+
+function renderDevSettingsPaths() {
+  const data = getDevSettingsData()
+  const blackInput = document.getElementById('dev-black-path')
+  const whiteInput = document.getElementById('dev-white-path')
+  if (blackInput) blackInput.value = data.blackPath || ''
+  if (whiteInput) whiteInput.value = data.whitePath || ''
+}
+
+function updateDevSettingsUi() {
+  const panel = document.getElementById('dev-settings-panel')
+  const btn = document.getElementById('dev-settings-btn')
+  const status = document.getElementById('dev-settings-status')
+  if (panel) panel.style.display = devSettingsUnlocked ? 'block' : 'none'
+  if (btn) btn.textContent = devSettingsUnlocked ? t('settings_dev_unlocked') : t('settings_dev_unlock')
+  if (status) status.textContent = devSettingsUnlocked ? t('settings_dev_status_unlocked') : t('settings_dev_status_locked')
+  if (devSettingsUnlocked) renderDevSettingsPaths()
+}
+
+async function showDevSettingsUnlock() {
+  const modal = ensureDevSettingsModal()
+  if (!modal) return false
+  const title = document.getElementById('dev-settings-modal-title')
+  const desc = document.getElementById('dev-settings-modal-desc')
+  const input = document.getElementById('dev-settings-password')
+  const error = document.getElementById('dev-settings-modal-error')
+  const btnCancel = document.getElementById('dev-settings-modal-cancel')
+  const btnConfirm = document.getElementById('dev-settings-modal-confirm')
+  if (title) title.textContent = t('settings_dev_modal_title')
+  if (desc) desc.textContent = t('settings_dev_modal_desc')
+  if (btnCancel) btnCancel.textContent = t('modal_cancel')
+  if (btnConfirm) btnConfirm.textContent = t('modal_confirm')
+  if (error) {
+    error.textContent = ''
+    error.style.display = 'none'
+  }
+  if (input) {
+    input.value = ''
+    input.placeholder = t('settings_dev_password_placeholder')
+  }
+  return new Promise((resolve) => {
+    const onCancel = () => {
+      cleanup()
+      modal.hide()
+      resolve(false)
+    }
+    const onConfirm = async () => {
+      const password = input && typeof input.value === 'string' ? input.value.trim() : ''
+      if (!password) {
+        if (error) {
+          error.textContent = t('settings_dev_password_required')
+          error.style.display = 'block'
+        }
+        return
+      }
+      let res = null
+      try {
+        res = await window.api.devSettings.unlock(password)
+      } catch {
+        res = { ok: false }
+      }
+      if (!res || res.ok !== true) {
+        if (error) {
+          const key = res && res.error === 'password_invalid' ? 'settings_dev_password_invalid' : 'settings_dev_password_error'
+          error.textContent = t(key)
+          error.style.display = 'block'
+        }
+        return
+      }
+      devSettingsUnlocked = true
+      devSettingsPassword = password
+      devSettingsData = res.data && typeof res.data === 'object' ? res.data : { blackPath: '', whitePath: '' }
+      updateDevSettingsUi()
+      cleanup()
+      modal.hide()
+      resolve(true)
+    }
+    function cleanup() {
+      if (btnCancel) btnCancel.removeEventListener('click', onCancel)
+      if (btnConfirm) btnConfirm.removeEventListener('click', onConfirm)
+    }
+    if (btnCancel) btnCancel.addEventListener('click', onCancel, { once: true })
+    if (btnConfirm) btnConfirm.addEventListener('click', onConfirm)
+    modal.show()
+  })
 }
 
 let overviewEtwLogUnsub = null
@@ -907,10 +1042,29 @@ async function scanBatchFiles(filePaths, session, cfg, scanCfg) {
     if (ok) candidates.push(fp)
   }
   if (candidates.length === 0) return
+  const toScan = []
+  for (const fp of candidates) {
+    if (session.stopRequested) break
+    session.currentTarget = fp
+    let trusted = false
+    try {
+      if (window.api && window.api.scanner && window.api.scanner.verifyTrust) {
+        trusted = await window.api.scanner.verifyTrust(fp)
+      }
+    } catch {
+      trusted = false
+    }
+    if (trusted) {
+      session.scannedCount++
+      continue
+    }
+    toScan.push(fp)
+  }
+  if (toScan.length === 0) return
   let resList = []
   const requestId = (crypto && crypto.randomUUID) ? crypto.randomUUID() : (String(Date.now()) + '-' + String(Math.random()))
   session.activeScanRequestId = requestId
-  session.currentTarget = candidates[0] || session.currentTarget
+  session.currentTarget = toScan[0] || session.currentTarget
   const metricsIntervalMs = scanCfg && Number.isFinite(scanCfg.metricsUpdateIntervalMs) ? scanCfg.metricsUpdateIntervalMs : 200
   let uiTimer = null
   try {
@@ -922,9 +1076,9 @@ async function scanBatchFiles(filePaths, session, cfg, scanCfg) {
     uiTimer = null
   }
   try {
-    resList = await window.api.scanner.scanBatch(candidates, { requestId })
+    resList = await window.api.scanner.scanBatch(toScan, { requestId })
   } catch {
-    session.scannedCount += candidates.length
+    session.scannedCount += toScan.length
     if (session.activeScanRequestId === requestId) session.activeScanRequestId = ''
     if (uiTimer) clearInterval(uiTimer)
     return
@@ -932,12 +1086,18 @@ async function scanBatchFiles(filePaths, session, cfg, scanCfg) {
   if (uiTimer) clearInterval(uiTimer)
   if (session.activeScanRequestId === requestId) session.activeScanRequestId = ''
   const arr = Array.isArray(resList) ? resList : []
-  for (let i = 0; i < candidates.length; i++) {
-    const filePath = candidates[i]
+  for (let i = 0; i < toScan.length; i++) {
+    const filePath = toScan[i]
     const res = arr[i] || {}
     session.currentTarget = filePath
     session.scannedCount++
-    if (isMalware(res)) {
+    const featureHit = res && typeof res === 'object' && (res.signature_hit === true || (Number.isFinite(res.signature_score) && res.signature_score >= 0.92))
+    let axonHit = false
+    if (res && typeof res === 'object') {
+      axonHit = res.axon_malware === true
+      if (!axonHit) axonHit = isMalware(res)
+    }
+    if (featureHit || (!featureHit && axonHit)) {
       const family = getVirusFamily(res) || t('unknown')
       const exists = state.threatItems.some(it => it.path === filePath)
       if (!exists) {
@@ -3021,6 +3181,34 @@ function initSettings() {
     if (labelFileSize) labelFileSize.textContent = t('settings_max_file_size_label');
     const labelCommonExt = document.getElementById('label-common-ext-only');
     if (labelCommonExt) labelCommonExt.textContent = t('settings_common_extensions_only');
+    const devTitle = document.getElementById('dev-settings-title');
+    if (devTitle) devTitle.textContent = t('settings_dev_title');
+    const devDesc = document.getElementById('dev-settings-desc');
+    if (devDesc) devDesc.textContent = t('settings_dev_desc');
+    const devBlackTitle = document.getElementById('dev-black-title');
+    if (devBlackTitle) devBlackTitle.textContent = t('settings_dev_black_title');
+    const devWhiteTitle = document.getElementById('dev-white-title');
+    if (devWhiteTitle) devWhiteTitle.textContent = t('settings_dev_white_title');
+    const devBlackPath = document.getElementById('dev-black-path');
+    if (devBlackPath) devBlackPath.placeholder = t('settings_dev_path_placeholder');
+    const devWhitePath = document.getElementById('dev-white-path');
+    if (devWhitePath) devWhitePath.placeholder = t('settings_dev_path_placeholder');
+    const devBlackChoose = document.getElementById('dev-black-choose');
+    if (devBlackChoose) devBlackChoose.textContent = t('settings_dev_choose_path');
+    const devWhiteChoose = document.getElementById('dev-white-choose');
+    if (devWhiteChoose) devWhiteChoose.textContent = t('settings_dev_choose_path');
+    const devBlackTrain = document.getElementById('dev-black-train');
+    if (devBlackTrain) devBlackTrain.textContent = t('settings_dev_train_black');
+    const devWhiteTrain = document.getElementById('dev-white-train');
+    if (devWhiteTrain) devWhiteTrain.textContent = t('settings_dev_train_white');
+    const devBlackClear = document.getElementById('dev-black-clear');
+    if (devBlackClear) devBlackClear.textContent = t('settings_dev_clear');
+    const devWhiteClear = document.getElementById('dev-white-clear');
+    if (devWhiteClear) devWhiteClear.textContent = t('settings_dev_clear');
+    const devSave = document.getElementById('dev-settings-save');
+    if (devSave) devSave.textContent = t('settings_dev_save');
+    const devStatus = document.getElementById('dev-settings-status');
+    if (devStatus) devStatus.textContent = devSettingsUnlocked ? t('settings_dev_status_unlocked') : t('settings_dev_status_locked');
     const cfg = window.api.config.get();
     if (!cfg) return;
 
@@ -3121,6 +3309,176 @@ function initSettings() {
         btnUpdate.textContent = t('nav_update');
         btnUpdate.onclick = () => showPage('update');
     }
+
+    const devBtn = document.getElementById('dev-settings-btn');
+    if (devBtn) {
+        devBtn.onclick = async () => {
+            if (!devSettingsUnlocked) {
+                await showDevSettingsUnlock();
+            } else {
+                devSettingsUnlocked = false;
+                devSettingsPassword = '';
+                devSettingsData = { blackPath: '', whitePath: '' };
+                updateDevSettingsUi();
+            }
+        };
+    }
+
+    const devBlackChooseBtn = document.getElementById('dev-black-choose');
+    const devWhiteChooseBtn = document.getElementById('dev-white-choose');
+    const devBlackTrainBtn = document.getElementById('dev-black-train');
+    const devWhiteTrainBtn = document.getElementById('dev-white-train');
+    const devBlackClearBtn = document.getElementById('dev-black-clear');
+    const devWhiteClearBtn = document.getElementById('dev-white-clear');
+    const devSaveBtn = document.getElementById('dev-settings-save');
+    const statusEl = document.getElementById('dev-settings-status');
+
+    const setDevStatus = (text) => {
+        if (statusEl) statusEl.textContent = text;
+    };
+
+    const ensureDevUnlocked = async () => {
+        if (devSettingsUnlocked) return true;
+        const ok = await showDevSettingsUnlock();
+        return ok && devSettingsUnlocked;
+    };
+
+    const setPath = (type, value) => {
+        const data = getDevSettingsData();
+        if (type === 'white') data.whitePath = value || '';
+        else data.blackPath = value || '';
+        devSettingsData = data;
+        renderDevSettingsPaths();
+    };
+
+    if (devBlackChooseBtn) {
+        devBlackChooseBtn.onclick = async () => {
+            const ok = await ensureDevUnlocked();
+            if (!ok) return;
+            let dir = null;
+            try {
+                dir = await window.api.dialog.openDirectory();
+            } catch {}
+            if (dir) setPath('black', dir);
+        };
+    }
+    if (devWhiteChooseBtn) {
+        devWhiteChooseBtn.onclick = async () => {
+            const ok = await ensureDevUnlocked();
+            if (!ok) return;
+            let dir = null;
+            try {
+                dir = await window.api.dialog.openDirectory();
+            } catch {}
+            if (dir) setPath('white', dir);
+        };
+    }
+    if (devBlackClearBtn) {
+        devBlackClearBtn.onclick = () => {
+            setPath('black', '');
+        };
+    }
+    if (devWhiteClearBtn) {
+        devWhiteClearBtn.onclick = () => {
+            setPath('white', '');
+        };
+    }
+    if (devBlackTrainBtn) {
+        devBlackTrainBtn.onclick = async () => {
+            const ok = await ensureDevUnlocked();
+            if (!ok) return;
+            const data = getDevSettingsData();
+            const samplePath = data.blackPath || '';
+            if (!samplePath) {
+                setDevStatus(t('settings_dev_path_required'));
+                return;
+            }
+            const label = t('settings_dev_black_title');
+      setDevStatus(label + ' ' + t('settings_dev_training'));
+      let success = true;
+            try {
+        await showLoading(t('settings_dev_training'), t('please_wait'), 0, '');
+        const list = await window.api.fsAsync.listFilesRecursively(samplePath);
+        updateLoading(0, String(list.length));
+        const unsub = typeof window.api.scanner.onTrainProgress === 'function'
+          ? window.api.scanner.onTrainProgress((p) => {
+              const total = Number.isFinite(p && p.total) ? Math.max(1, Math.floor(p.total)) : 1;
+              const done = Number.isFinite(p && p.done) ? Math.max(0, Math.floor(p.done)) : 0;
+              const percent = Math.max(0, Math.min(100, Math.floor((done / total) * 100)));
+              updateLoading(percent, p && p.current ? String(p.current) : '');
+            })
+          : null;
+        const res = await window.api.scanner.trainFromPath(samplePath, false, list);
+        if (unsub) try { unsub() } catch {}
+        hideLoading();
+        if (res && res.ok === false) success = false;
+            } catch {
+        try { hideLoading() } catch {}
+        success = false;
+            }
+            setDevStatus(label + ' ' + (success ? t('settings_dev_train_success') : t('settings_dev_train_failed')));
+        };
+    }
+    if (devWhiteTrainBtn) {
+        devWhiteTrainBtn.onclick = async () => {
+            const ok = await ensureDevUnlocked();
+            if (!ok) return;
+            const data = getDevSettingsData();
+            const samplePath = data.whitePath || '';
+            if (!samplePath) {
+                setDevStatus(t('settings_dev_path_required'));
+                return;
+            }
+            const label = t('settings_dev_white_title');
+      setDevStatus(label + ' ' + t('settings_dev_training'));
+      let success = true;
+            try {
+        await showLoading(t('settings_dev_training'), t('please_wait'), 0, '');
+        const list = await window.api.fsAsync.listFilesRecursively(samplePath);
+        updateLoading(0, String(list.length));
+        const unsub = typeof window.api.scanner.onTrainProgress === 'function'
+          ? window.api.scanner.onTrainProgress((p) => {
+              const total = Number.isFinite(p && p.total) ? Math.max(1, Math.floor(p.total)) : 1;
+              const done = Number.isFinite(p && p.done) ? Math.max(0, Math.floor(p.done)) : 0;
+              const percent = Math.max(0, Math.min(100, Math.floor((done / total) * 100)));
+              updateLoading(percent, p && p.current ? String(p.current) : '');
+            })
+          : null;
+        const res = await window.api.scanner.trainFromPath(samplePath, true, list);
+        if (unsub) try { unsub() } catch {}
+        hideLoading();
+        if (res && res.ok === false) success = false;
+            } catch {
+        try { hideLoading() } catch {}
+        success = false;
+            }
+            setDevStatus(label + ' ' + (success ? t('settings_dev_train_success') : t('settings_dev_train_failed')));
+        };
+    }
+    if (devSaveBtn) {
+        devSaveBtn.onclick = async () => {
+            if (!devSettingsUnlocked) {
+                await showDevSettingsUnlock();
+                return;
+            }
+            if (statusEl) statusEl.textContent = t('settings_dev_saving');
+            let res = null;
+            try {
+                res = await window.api.devSettings.save(devSettingsPassword, getDevSettingsData());
+            } catch {
+                res = { ok: false };
+            }
+            if (res && res.ok) {
+                devSettingsData = res.data && typeof res.data === 'object' ? res.data : getDevSettingsData();
+                if (statusEl) statusEl.textContent = t('settings_dev_saved');
+                renderDevSettingsPaths();
+            } else {
+                if (statusEl) statusEl.textContent = t('settings_dev_save_failed');
+            }
+        };
+    }
+
+    updateDevSettingsUi();
 }
 
 

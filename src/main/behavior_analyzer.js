@@ -8,7 +8,7 @@ function getBehaviorCfg(appConfig = {}) {
   const sqlite = cfg && cfg.sqlite ? cfg.sqlite : {}
   const sqliteCfg = {
     mode: sqlite.mode === 'file' ? 'file' : 'memory',
-    directory: typeof sqlite.directory === 'string' ? sqlite.directory : '%TEMP%',
+    directory: typeof sqlite.directory === 'string' ? sqlite.directory : 'data/behavior',
     fileName: typeof sqlite.fileName === 'string' ? sqlite.fileName : 'anxin_etw_behavior.db'
   }
   return { enabled, flushIntervalMs, sqlite: sqliteCfg }

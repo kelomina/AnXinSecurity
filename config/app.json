@@ -41,7 +41,7 @@
       "maxRatePerSecond": 256,
       "adjustStep": 8
     },
-    "maxTokens": 8,
+    "maxTokens": 16,
     "ipc": {
       "enabled": false,
       "prefer": false,
@@ -65,7 +65,7 @@
     "resolveProcessName": true
   },
   "behaviorMonitoring": {
-    "enabled": true
+    "enabled": false
   },
   "etw": {
     "enabled": true,
@@ -163,7 +163,7 @@
     "flushIntervalMs": 100,
     "sqlite": {
       "mode": "file",
-      "directory": "%TEMP%",
+      "directory": "data/behavior",
       "fileName": "anxin_etw_behavior.db"
     }
   },
@@ -227,5 +227,14 @@
         "techniqueName": "Modify Registry"
       }
     ]
+  },
+  "devSettings": {
+    "salt": "dfa638d5c80864e9f2e2c04006b6d31b",
+    "payload": {
+      "iv": "785cc8d48b778eb651fbad9e",
+      "authTag": "fb3d381df33f1e1521724ce932d84e36",
+      "data": "VDvKPQnyOKoSBOIg6vhsxQSFXydupyrYtWrdiuO32zRJ2GPeAXAT0GH2aGAqmvV29M/Kc/XVC574RiqcNOR9y79M68Iq+gmnWmNAUe9dNWYH5eAKjT5Nba/jbcnU2lPcMuxb5uA8cVyhmbrCxkIH7aPFgZjXnl51c8lVNjU="
+    },
+    "updatedAt": 1770468819238
   }
 }

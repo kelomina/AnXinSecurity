@@ -2,6 +2,23 @@ const fs = require('fs');
 const path = require('path');
 const { exec } = require('child_process');
 
+function resolveProjectRootDir() {
+  try {
+    return path.resolve(__dirname, '../..');
+  } catch {
+    return process.cwd();
+  }
+}
+
+function resolveProjectDataDir(rel = '') {
+  const root = resolveProjectRootDir();
+  const base = path.join(root, 'data');
+  try {
+    if (!fs.existsSync(base)) fs.mkdirSync(base, { recursive: true });
+  } catch {}
+  return rel ? path.join(base, rel) : base;
+}
+
 async function killRelatedProcess(filePath) {
   return new Promise((resolve) => {
     if (process.platform !== 'win32') return resolve();
@@ -329,6 +346,8 @@ function isLikelyProcessImageText(p) {
 }
 
 module.exports = {
+  resolveProjectRootDir,
+  resolveProjectDataDir,
   killRelatedProcess,
   forceDelete,
   formatEtwEventForConsole,

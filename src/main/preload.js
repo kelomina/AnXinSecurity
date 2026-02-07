@@ -1,7 +1,6 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, crashReporter, app } = require('electron')
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 const ExclusionsManager = require('./exclusions_manager')
 const fsAsync = require('./fs_async')
 const scanCache = require('./scan_cache')
@@ -52,12 +51,35 @@ function loadConfig() {
         file: 'config/scan_cache.json'
       },
       behaviorMonitoring: { enabled: false },
-      behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
+      behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: 'data/behavior', fileName: 'anxin_etw_behavior.db' } }
     }
   }
 }
 
 let cfg = loadConfig()
+
+function resolveCrashDir() {
+  const base = path.join(__dirname, '../../')
+  const dir = path.join(base, 'data', 'logs', 'crash')
+  try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }) } catch {}
+  return dir
+}
+
+function startRendererCrashReporter() {
+  try {
+    const dir = resolveCrashDir()
+    try { if (app && typeof app.setPath === 'function') app.setPath('crashDumps', dir) } catch {}
+    try { process.env.ELECTRON_CRASH_REPORTER_DIRECTORY = dir } catch {}
+    crashReporter.start({
+      submitURL: '',
+      uploadToServer: false,
+      compress: true,
+      crashesDirectory: dir
+    })
+  } catch {}
+}
+
+startRendererCrashReporter()
 function saveConfig() {
   try {
     const p = path.join(__dirname, '../../config/app.json')
@@ -171,6 +193,14 @@ const api = {
       saveConfig()
     }
   },
+  devSettings: {
+    unlock: async (password) => {
+      return ipcRenderer.invoke('dev-settings:unlock', { password: password || '' })
+    },
+    save: async (password, data) => {
+      return ipcRenderer.invoke('dev-settings:save', { password: password || '', data: data || {} })
+    }
+  },
   scanner: {
     health: async () => {
       return ipcRenderer.invoke('scanner:health')
@@ -183,6 +213,21 @@ const api = {
       const opts = options && typeof options === 'object' ? options : {}
       return ipcRenderer.invoke('scanner:scanBatch', { filePaths, requestId: opts.requestId || '' })
     },
+    verifyTrust: async (filePath) => {
+      return ipcRenderer.invoke('scanner:verifyTrust', { filePath: filePath || '' })
+    },
+    trainFromPath: async (path, isWhite, files) => {
+      const payload = { path: path || '', isWhite: isWhite === true }
+      if (Array.isArray(files)) payload.files = files
+      return ipcRenderer.invoke('scanner:trainFromPath', payload)
+    },
+    onTrainProgress: (callback) => {
+      const handler = (_event, data) => {
+        try { callback(data) } catch {}
+      }
+      ipcRenderer.on('scanner:trainProgress', handler)
+      return () => ipcRenderer.removeListener('scanner:trainProgress', handler)
+    },
     abort: async (requestId) => {
       return ipcRenderer.invoke('scanner:abort', requestId || '')
     }
@@ -193,6 +238,9 @@ const api = {
   },
   ui: {
     debug: (tag, payload) => { try { ipcRenderer.send('ui-debug', { tag, payload }) } catch {} }
+  },
+  errorTrace: {
+    report: (payload) => { try { ipcRenderer.send('error-trace', payload || {}) } catch {} }
   },
   trayExitPrompt: {
     submit: (requestId, keep) => {

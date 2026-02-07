@@ -1,12 +1,14 @@
-const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain } = require('electron')
+const { app, BrowserWindow, Tray, Menu, nativeImage, dialog, ipcMain, crashReporter } = require('electron')
 const { Worker } = require('worker_threads')
 const path = require('path')
 const fs = require('fs')
+const os = require('os')
 const { startIfNeeded, checkEngineHealth } = require('./engine_autostart')
 const { createScannerClient } = require('./scanner_client')
 const quarantineManager = require('./quarantine_manager')
 const processes = require('./processes')
 const scanCache = require('./scan_cache')
+const CryptoManager = require('./crypto_manager')
 const { createBehaviorAnalyzer } = require('./behavior_analyzer')
 const { runStartupSequence } = require('./startup_sequence')
 const { resolveMainWindowOptions } = require('./window_options')
@@ -15,6 +17,8 @@ const { createEtwPidCache } = require('./etw_pid_cache')
 const { createInterceptionQueue } = require('./interception_manager')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
 const { normalizePathKey, isMalware, getPayloadPaths, decideSnapshotActions } = require('./snapshot_engine_policy')
+
+const CONFIG_PATH = path.join(__dirname, '../../config/app.json')
 
 let winapi = null
 try {
@@ -35,9 +39,8 @@ if (!gotTheLock) {
 }
 
 function loadConfig() {
-  const p = path.join(__dirname, '../../config/app.json')
   try {
-    const raw = fs.readFileSync(p, 'utf-8')
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8')
     return JSON.parse(raw)
   } catch {
     return {
@@ -55,8 +58,33 @@ function loadConfig() {
         ipc: { enabled: false, prefer: false, host: '127.0.0.1', port: 8765, connectTimeoutMs: 500, timeoutMs: 10000 }
       },
       behaviorMonitoring: { enabled: true },
-      behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: '%TEMP%', fileName: 'anxin_etw_behavior.db' } }
+      behaviorAnalyzer: { enabled: true, flushIntervalMs: 500, sqlite: { mode: 'file', directory: 'data/behavior', fileName: 'anxin_etw_behavior.db' } }
     }
+  }
+}
+
+function saveConfig(nextCfg) {
+  try {
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(nextCfg, null, 2), 'utf-8')
+  } catch {}
+}
+
+function normalizeDevSettingsData(input) {
+  const src = input && typeof input === 'object' ? input : {}
+  const pickPath = (value) => {
+    if (typeof value === 'string') return value.trim()
+    if (Array.isArray(value)) {
+      for (const it of value) {
+        const v = typeof it === 'string' ? it.trim() : ''
+        if (v) return v
+      }
+    }
+    return ''
+  }
+  return {
+    blackPath: pickPath(src.blackPath) || pickPath(src.black),
+    whitePath: pickPath(src.whitePath) || pickPath(src.white),
+    updatedAt: Date.now()
   }
 }
 
@@ -104,6 +132,81 @@ function loadI18n() {
   }
 }
 function t(key) { return i18nDict[key] || key }
+
+function resolveErrorLogDir() {
+  const base = path.join(__dirname, '../../')
+  const dir = path.join(base, 'data', 'logs', 'crash')
+  try { if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true }) } catch {}
+  return dir
+}
+
+function ensureCrashDumpPath() {
+  const dir = resolveErrorLogDir()
+  try { app.setPath('crashDumps', dir) } catch {}
+  try { process.env.ELECTRON_CRASH_REPORTER_DIRECTORY = dir } catch {}
+  return dir
+}
+
+function normalizeErrorPayload(err) {
+  if (!err) return { message: 'UnknownError', stack: '' }
+  if (typeof err === 'string') return { message: err, stack: '' }
+  return {
+    message: err.message ? String(err.message) : String(err),
+    stack: err.stack ? String(err.stack) : ''
+  }
+}
+
+function appendErrorTrace(payload) {
+  try {
+    const dir = resolveErrorLogDir()
+    const isError = payload && (
+      /error|fail|exception/i.test(String(payload.stage || '')) ||
+      /error|fail|exception/i.test(String(payload.source || '')) ||
+      payload.stack || payload.message
+    )
+    const fileName = isError ? 'error.log' : 'trace.log'
+    const filePath = path.join(dir, fileName)
+    const line = JSON.stringify(payload)
+    fs.appendFileSync(filePath, line + '\n')
+  } catch {}
+}
+
+function initCrashReporter() {
+  try {
+    const dir = ensureCrashDumpPath()
+    crashReporter.start({
+      submitURL: '',
+      uploadToServer: false,
+      compress: true,
+      crashesDirectory: dir
+    })
+    appendErrorTrace({ ts: Date.now(), source: 'crash_reporter_started', dir })
+  } catch (e) {
+    appendErrorTrace({ ts: Date.now(), source: 'crash_reporter_failed', ...normalizeErrorPayload(e) })
+  }
+}
+
+let errorLogTouched = false
+function touchErrorLog(source) {
+  if (errorLogTouched) return
+  errorLogTouched = true
+  const src = typeof source === 'string' && source ? source : 'startup'
+  appendErrorTrace({ ts: Date.now(), source: src })
+}
+touchErrorLog('startup_early')
+
+process.on('uncaughtException', (err) => {
+  appendErrorTrace({ ts: Date.now(), source: 'main_uncaughtException', ...normalizeErrorPayload(err) })
+})
+
+process.on('unhandledRejection', (reason) => {
+  const payload = normalizeErrorPayload(reason)
+  appendErrorTrace({ ts: Date.now(), source: 'main_unhandledRejection', ...payload })
+})
+
+process.on('exit', (code) => {
+  appendErrorTrace({ ts: Date.now(), source: 'main_exit', code })
+})
 
 let etwWorker = null
 const eventLogs = []
@@ -1024,6 +1127,12 @@ function createWindow() {
   })
   console.log('主进程: 创建主窗口')
   win.loadFile(path.join(__dirname, '../renderer/index.html'))
+  win.webContents.on('render-process-gone', (_event, details) => {
+    appendErrorTrace({ ts: Date.now(), source: 'renderer_gone', details })
+  })
+  win.webContents.on('unresponsive', () => {
+    appendErrorTrace({ ts: Date.now(), source: 'renderer_unresponsive' })
+  })
   try { win.setMenuBarVisibility(false) } catch {}
   try { win.removeMenu() } catch {}
   win.webContents.once('did-finish-load', () => {
@@ -1192,6 +1301,8 @@ async function waitForEngineHealthy(ipc, pollIntervalMs) {
 
 app.whenReady().then(() => {
   try { Menu.setApplicationMenu(null) } catch {}
+  touchErrorLog()
+  initCrashReporter()
   const engineCfg = (config && config.engine) ? config.engine : {}
   const scannerCfg = (config && config.scanner) ? config.scanner : {}
   const ipc = (scannerCfg && scannerCfg.ipc) ? scannerCfg.ipc : {}
@@ -1284,6 +1395,61 @@ app.whenReady().then(() => {
     if (res.canceled || !res.filePaths || !res.filePaths.length) return null
     console.log('主进程: 选择目录', res.filePaths[0])
     return res.filePaths[0]
+  })
+
+  ipcMain.handle('dev-settings:unlock', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    const password = typeof p.password === 'string' ? p.password : ''
+    if (!password) return { ok: false, error: 'password_required' }
+    const cm = new CryptoManager(CONFIG_PATH, 'devSettings')
+    cm.setPassword(password)
+    const cfg = loadConfig()
+    const dev = cfg && cfg.devSettings ? cfg.devSettings : {}
+    const encPayload = dev && dev.payload ? dev.payload : null
+    if (!encPayload) {
+      const initData = normalizeDevSettingsData({ blackPath: '', whitePath: '' })
+      const enc = cm.encryptText(JSON.stringify(initData))
+      cfg.devSettings = cfg.devSettings || {}
+      cfg.devSettings.payload = enc
+      cfg.devSettings.updatedAt = Date.now()
+      saveConfig(cfg)
+      config = cfg
+      return { ok: true, data: initData }
+    }
+    try {
+      const text = cm.decryptText(encPayload)
+      const data = normalizeDevSettingsData(JSON.parse(text))
+      const enc = cm.encryptText(JSON.stringify(data))
+      cfg.devSettings = cfg.devSettings || {}
+      cfg.devSettings.payload = enc
+      cfg.devSettings.updatedAt = Date.now()
+      saveConfig(cfg)
+      config = cfg
+      return { ok: true, data }
+    } catch {
+      return { ok: false, error: 'password_invalid' }
+    }
+  })
+
+  ipcMain.handle('dev-settings:save', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    const password = typeof p.password === 'string' ? p.password : ''
+    if (!password) return { ok: false, error: 'password_required' }
+    const data = normalizeDevSettingsData(p.data)
+    const cm = new CryptoManager(CONFIG_PATH, 'devSettings')
+    cm.setPassword(password)
+    try {
+      const enc = cm.encryptText(JSON.stringify(data))
+      const cfg = loadConfig()
+      cfg.devSettings = cfg.devSettings || {}
+      cfg.devSettings.payload = enc
+      cfg.devSettings.updatedAt = Date.now()
+      saveConfig(cfg)
+      config = cfg
+      return { ok: true, data }
+    } catch {
+      return { ok: false, error: 'save_failed' }
+    }
   })
 
   ipcMain.handle('quarantine-list', () => quarantineManager.getList())
@@ -1543,6 +1709,102 @@ app.whenReady().then(() => {
     const p = payload && typeof payload === 'object' ? payload : {}
     return scannerClient.scanBatch(p.filePaths, p.requestId)
   })
+  ipcMain.handle('scanner:verifyTrust', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    const filePath = typeof p.filePath === 'string' ? p.filePath : ''
+    if (!filePath) return false
+    if (!winapi || typeof winapi.verifyTrust !== 'function') return false
+    try { return winapi.verifyTrust(filePath) === true } catch { return false }
+  })
+  ipcMain.handle('scanner:trainFromPath', async (_event, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    const samplePath = typeof p.path === 'string' ? p.path : ''
+    const isWhite = p.isWhite === true
+    let files = Array.isArray(p.files) ? p.files.filter(Boolean) : []
+    if (!files.length && samplePath) files = [samplePath]
+    const workerPath = path.join(__dirname, 'workers/training_worker.js')
+    if (!fs.existsSync(workerPath)) {
+      return scannerClient.trainFromPath(samplePath, isWhite)
+    }
+    if (!files.length) {
+      return { ok: false, total: 0, trained: 0, failed: 0 }
+    }
+    const sender = _event && _event.sender ? _event.sender : null
+    const cfgSnapshot = {
+      scanner: (config && config.scanner) ? config.scanner : {},
+      scan: (config && config.scan) ? config.scan : {}
+    }
+    const cpuCount = (os && typeof os.cpus === 'function' && Array.isArray(os.cpus())) ? os.cpus().length : 4
+    const maxTokens = Number.isFinite(config && config.scanner && config.scanner.maxTokens)
+      ? Math.floor(config.scanner.maxTokens)
+      : cpuCount
+    const workerLimit = Number.isFinite(config && config.scanner && config.scanner.ravenTrainWorkers)
+      ? Math.max(1, Math.floor(config.scanner.ravenTrainWorkers))
+      : 1
+    const poolSize = Math.max(1, Math.min(cpuCount, maxTokens, workerLimit, files.length))
+    return new Promise((resolve) => {
+      const totalAll = files.length
+      let doneAll = 0
+      let trainedAll = 0
+      let failedAll = 0
+      let resolved = false
+      const queue = files.slice()
+      const workers = []
+      const finalize = () => {
+        if (resolved) return
+        if (doneAll < totalAll) return
+        resolved = true
+        for (const w of workers) {
+          try { w.terminate() } catch {}
+        }
+        resolve({ ok: trainedAll > 0, total: totalAll, trained: trainedAll, failed: failedAll })
+      }
+      const postProgress = (file) => {
+        if (sender) sender.send('scanner:trainProgress', { total: totalAll, done: doneAll, current: file || '' })
+      }
+      const assign = (w) => {
+        if (w.busy) return
+        const next = queue.shift()
+        if (!next) {
+          finalize()
+          return
+        }
+        w.busy = true
+        w.currentFile = next
+        w.postMessage({ type: 'train_one', isWhite, file: next, config: cfgSnapshot })
+      }
+      for (let i = 0; i < poolSize; i++) {
+        const w = new Worker(workerPath)
+        w.busy = false
+        w.currentFile = ''
+        w.on('message', (msg) => {
+          if (!msg || msg.type !== 'train_one_done') return
+          const ok = msg.ok === true
+          doneAll += 1
+          if (ok) trainedAll += 1
+          else failedAll += 1
+          postProgress(msg.file || w.currentFile)
+          w.busy = false
+          w.currentFile = ''
+          assign(w)
+          finalize()
+        })
+        w.on('error', () => {
+          if (w.busy) {
+            doneAll += 1
+            failedAll += 1
+            postProgress(w.currentFile)
+            w.busy = false
+            w.currentFile = ''
+          }
+          assign(w)
+          finalize()
+        })
+        workers.push(w)
+        assign(w)
+      }
+    })
+  })
   ipcMain.handle('scanner:abort', async (_event, requestId) => scannerClient.abort(requestId))
 
   app.on('activate', () => {
@@ -1558,9 +1820,19 @@ app.whenReady().then(() => {
       console.log('渲染进程调试: 解析失败', e && e.message)
     }
   })
+  ipcMain.on('error-trace', (_evt, payload) => {
+    const p = payload && typeof payload === 'object' ? payload : {}
+    appendErrorTrace({ ts: Date.now(), source: 'renderer_trace', ...p })
+  })
 })
 
 let isQuitting = false
+app.on('render-process-gone', (_event, _wc, details) => {
+  appendErrorTrace({ ts: Date.now(), source: 'app_render_gone', details })
+})
+app.on('child-process-gone', (_event, details) => {
+  appendErrorTrace({ ts: Date.now(), source: 'app_child_gone', details })
+})
 app.on('before-quit', (e) => {
   if (isQuitting) return
   

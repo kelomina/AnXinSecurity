@@ -1,16 +1,15 @@
 const fs = require('fs')
 const path = require('path')
-const os = require('os')
 
 function normalizeLogPath(cfg = {}) {
-  const dir = typeof cfg.directory === 'string' && cfg.directory.trim() ? cfg.directory.trim() : '%TEMP%'
+  const dir = typeof cfg.directory === 'string' && cfg.directory.trim() ? cfg.directory.trim() : 'data/behavior'
   const resolvedDir = String(dir).replace(/%([^%]+)%/g, (_m, n) => process.env[n] || '')
   
   // If the path was absolute or relative without env vars, resolvedDir === dir.
   // We should use resolvedDir unless it's empty.
-  const baseDir = resolvedDir ? resolvedDir : os.tmpdir()
+  const baseDir = resolvedDir ? resolvedDir : path.join(__dirname, '../..', 'data', 'behavior')
   
-  const logDir = path.join(baseDir, 'anxin_logs', 'processes')
+  const logDir = path.isAbsolute(baseDir) ? path.join(baseDir, 'processes') : path.join(path.join(__dirname, '../..'), baseDir, 'processes')
   if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
   return { logDir }
 }
@@ -135,7 +134,8 @@ function readTailLines(filePath, wantLines, maxBytes = 8 * 1024 * 1024) {
 
 class ProcessBehaviorStore {
   constructor(options = {}) {
-    this.logDir = options.logDir || path.join(os.tmpdir(), 'anxin_logs', 'processes')
+    const defaultBase = path.join(__dirname, '../..', 'data', 'behavior')
+    this.logDir = options.logDir || path.join(defaultBase, 'processes')
     if (!fs.existsSync(this.logDir)) fs.mkdirSync(this.logDir, { recursive: true })
 
     this.buffer = new Map()
