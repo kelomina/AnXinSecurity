@@ -232,12 +232,24 @@ const api = {
       return ipcRenderer.invoke('scanner:abort', requestId || '')
     }
   },
+  signatureStore: {
+    listVersions: async () => {
+      return ipcRenderer.invoke('signature-store:listVersions')
+    },
+    getCurrentVersion: async () => {
+      return ipcRenderer.invoke('signature-store:getCurrentVersion')
+    },
+    rollback: async (versionId) => {
+      return ipcRenderer.invoke('signature-store:rollback', { versionId: versionId || '' })
+    }
+  },
   i18n: {
     t: (key) => i18nDict[key] || key,
     getLocale: () => (cfg && cfg.locale) ? cfg.locale : 'zh-CN'
   },
   ui: {
-    debug: (tag, payload) => { try { ipcRenderer.send('ui-debug', { tag, payload }) } catch {} }
+    debug: (tag, payload) => { try { ipcRenderer.send('ui-debug', { tag, payload }) } catch {} },
+    setTitleBarOverlay: (config) => { try { ipcRenderer.send('set-title-bar-overlay', config || {}) } catch {} }
   },
   errorTrace: {
     report: (payload) => { try { ipcRenderer.send('error-trace', payload || {}) } catch {} }

@@ -66,6 +66,11 @@ function applyThemePreferences() {
   const theme = mode === 'system' ? resolveThemeFromSystem() : mode
   document.documentElement.setAttribute('data-bs-theme', theme)
   document.documentElement.setAttribute('data-theme', theme)
+  try {
+    if (window.api && window.api.ui && typeof window.api.ui.setTitleBarOverlay === 'function') {
+      window.api.ui.setTitleBarOverlay({ symbolColor: theme === 'light' ? '#000000' : '#ffffff' })
+    }
+  } catch {}
 
   if (!themeMediaBound) {
     try {
@@ -77,6 +82,11 @@ function applyThemePreferences() {
         const theme2 = resolveThemeFromSystem()
         document.documentElement.setAttribute('data-bs-theme', theme2)
         document.documentElement.setAttribute('data-theme', theme2)
+        try {
+          if (window.api && window.api.ui && typeof window.api.ui.setTitleBarOverlay === 'function') {
+            window.api.ui.setTitleBarOverlay({ symbolColor: theme2 === 'light' ? '#000000' : '#ffffff' })
+          }
+        } catch {}
       }
       if (themeMedia) {
         if (typeof themeMedia.addEventListener === 'function') themeMedia.addEventListener('change', handler)
@@ -726,6 +736,12 @@ function getVirusFamily(res) {
   return ''
 }
 
+function getEngineName(featureHit, axonHit) {
+  const raven = 'RVN'
+  if (featureHit) return raven
+  return 'Axon'
+}
+
 function isMalware(res) {
   if (!res || typeof res !== 'object') return false
   if (res.infected === true) return true
@@ -894,7 +910,18 @@ function renderThreats() {
     tdPath.textContent = it.path
     tdPath.title = it.path
     const tdFam = document.createElement('td')
-    tdFam.textContent = it.family || t('unknown')
+    const fam = it.name || it.family || t('unknown')
+    const engine = it.engine ? String(it.engine) : ''
+    tdFam.textContent = fam
+    const details = []
+    if (engine) details.push(`engine=${engine}`)
+    if (it.signature_hit === true) details.push('signature_hit=true')
+    if (Number.isFinite(it.signature_score)) details.push(`signature_score=${it.signature_score}`)
+    if (it.signature_reason) details.push(`signature_reason=${it.signature_reason}`)
+    if (it.axon_malware === true) details.push('axon_malware=true')
+    if (Number.isFinite(it.axon_score)) details.push(`axon_score=${it.axon_score}`)
+    if (Number.isFinite(it.confidence)) details.push(`confidence=${it.confidence}`)
+    tdFam.title = details.join('\n')
     tr.appendChild(tdSel)
     tr.appendChild(tdPath)
     tr.appendChild(tdFam)
@@ -1091,17 +1118,41 @@ async function scanBatchFiles(filePaths, session, cfg, scanCfg) {
     const res = arr[i] || {}
     session.currentTarget = filePath
     session.scannedCount++
-    const featureHit = res && typeof res === 'object' && (res.signature_hit === true || (Number.isFinite(res.signature_score) && res.signature_score >= 0.92))
-    let axonHit = false
-    if (res && typeof res === 'object') {
-      axonHit = res.axon_malware === true
-      if (!axonHit) axonHit = isMalware(res)
-    }
-    if (featureHit || (!featureHit && axonHit)) {
-      const family = getVirusFamily(res) || t('unknown')
+    const sigReason = (res && typeof res === 'object' && typeof res.signature_reason === 'string') ? String(res.signature_reason) : ''
+    const weightReason = sigReason.includes('api_weight') || sigReason.includes('script_weight')
+    const featureHit = res && typeof res === 'object' && (res.signature_hit === true || (!weightReason && Number.isFinite(res.signature_score) && res.signature_score >= 0.92))
+    const axonEngineHit = res && typeof res === 'object' && res.axon_malware === true
+    const axonHit = !featureHit && (axonEngineHit || isMalware(res))
+    if (featureHit || axonHit) {
+      const baseFamily = getVirusFamily(res)
+      const engine = getEngineName(featureHit, axonEngineHit)
+      let virusName = baseFamily
+      if (!virusName) {
+        if (featureHit) {
+          const reason = res && typeof res.signature_reason === 'string' ? res.signature_reason : ''
+          const r = reason ? String(reason).split('|')[0].trim() : ''
+          virusName = r ? `Feature.${r}` : 'Feature.Detect'
+        } else {
+          virusName = 'ML.Detect'
+        }
+      }
+      const name = `${engine}:${virusName || t('unknown')}`
+      const family = name
       const exists = state.threatItems.some(it => it.path === filePath)
       if (!exists) {
-        state.threatItems.push({ path: filePath, family, selected: true })
+        state.threatItems.push({
+          path: filePath,
+          family,
+          name,
+          engine,
+          signature_hit: res && res.signature_hit === true,
+          signature_score: (res && Number.isFinite(res.signature_score)) ? res.signature_score : undefined,
+          signature_reason: (res && typeof res.signature_reason === 'string') ? res.signature_reason : '',
+          axon_malware: axonEngineHit,
+          axon_score: (res && Number.isFinite(res.axon_score)) ? res.axon_score : undefined,
+          confidence: (res && Number.isFinite(res.confidence)) ? res.confidence : undefined,
+          selected: true
+        })
         session.threatCount = state.threatItems.length
         uiThread(() => renderThreats())
       }

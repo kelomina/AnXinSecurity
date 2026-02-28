@@ -43,7 +43,8 @@ function resolveConfig(cfg) {
     modulesBufferBytes: asInt(c.modulesBufferBytes, 65536, 4096, 1024 * 1024),
     skipSystemDll: asBool(c.skipSystemDll, true),
     maxUnsignedDllsPerProcess: asInt(c.maxUnsignedDllsPerProcess, 16, 1, 256),
-    exclusionPaths: Array.isArray(c.exclusionPaths) ? c.exclusionPaths.filter(x => typeof x === 'string' && x) : []
+    exclusionPaths: Array.isArray(c.exclusionPaths) ? c.exclusionPaths.filter(x => typeof x === 'string' && x) : [],
+    allowlistFiles: Array.isArray(c.allowlistFiles) ? c.allowlistFiles.filter(x => typeof x === 'string' && x) : []
   }
 }
 
@@ -69,6 +70,16 @@ function shouldSkipInterception(lowerPath, systemRootLower, appDirLower, exclusi
   return false
 }
 
+function normalizeLowerPath(p) {
+  return (typeof p === 'string' ? p : '').toLowerCase().replace(/\//g, '\\')
+}
+
+function isAllowlisted(lowerPath, allowFiles) {
+  if (!lowerPath) return false
+  if (!allowFiles || typeof allowFiles.has !== 'function') return false
+  return allowFiles.has(lowerPath)
+}
+
 async function scanSnapshot(cfg) {
   if (scanInFlight) return
   scanInFlight = true
@@ -78,6 +89,7 @@ async function scanSnapshot(cfg) {
     if (typeof winapi.getProcessModules !== 'function') return
     if (typeof winapi.verifyTrust !== 'function') return
     if (typeof winapi.suspendProcessByPid !== 'function') return
+    if (typeof winapi.resumeProcessByPid !== 'function') return
 
     const conf = resolveConfig(cfg)
     const systemRootLower = String(process.env.SystemRoot || 'C:\\Windows').toLowerCase()
@@ -85,17 +97,20 @@ async function scanSnapshot(cfg) {
     const exclusions = conf.exclusionPaths.map(p => {
       return normalizeDirLower(p)
     })
+    const allowFiles = new Set(conf.allowlistFiles.map(p => normalizeLowerPath(p)).filter(Boolean))
 
     let list = []
     try { list = winapi.getProcessImageSnapshot(conf.maxPids) } catch { list = [] }
     const arr = Array.isArray(list) ? list : []
 
     const hasDeviceResolver = typeof winapi.devicePathToDosPath === 'function'
+    const targets = []
 
     for (let i = 0; i < arr.length; i++) {
       const it = arr[i] && typeof arr[i] === 'object' ? arr[i] : null
       const pid = Number.isFinite(it && it.pid) ? it.pid : parseInt(String(it && it.pid), 10)
       if (!Number.isFinite(pid) || pid <= 0) continue
+      if (pid === process.pid) continue
       let imagePath = typeof it.imagePath === 'string' ? it.imagePath : ''
       if (!imagePath) continue
 
@@ -106,11 +121,29 @@ async function scanSnapshot(cfg) {
         } catch {}
       }
 
-      const lowerImage = imagePath.toLowerCase().replace(/\//g, '\\')
+      const lowerImage = normalizeLowerPath(imagePath)
+      if (isAllowlisted(lowerImage, allowFiles)) continue
       if (shouldSkipInterception(lowerImage, systemRootLower, appDirLower, exclusions)) continue
+      targets.push({ pid, imagePath, lowerImage, suspended: false })
+      if (i % 200 === 0) await sleepImmediate()
+    }
 
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i]
+      try { t.suspended = winapi.suspendProcessByPid(t.pid) === true } catch { t.suspended = false }
+      if (i % 50 === 0) await sleepImmediate()
+    }
+
+    for (let i = 0; i < targets.length; i++) {
+      const t = targets[i]
+      const pid = t.pid
+      const imagePath = t.imagePath
+      const lowerImage = t.lowerImage
+      let processSigned = false
+      let unsignedDlls = []
+      let moduleScanFailed = false
+      let scanType = 'process'
       try {
-        let processSigned = false
         if (scanCache.get(lowerImage) === true) {
           processSigned = true
         } else {
@@ -118,40 +151,43 @@ async function scanSnapshot(cfg) {
           if (processSigned) scanCache.set(lowerImage, true)
         }
 
-        const modules = winapi.getProcessModules(pid, conf.modulesBufferBytes)
+        let modules = []
+        try { modules = winapi.getProcessModules(pid, conf.modulesBufferBytes) } catch { modules = null }
+        if (!modules) moduleScanFailed = true
         const modArr = Array.isArray(modules) ? modules : []
-        const unsignedDlls = []
+        unsignedDlls = []
         for (let j = 0; j < modArr.length; j++) {
           const p = typeof modArr[j] === 'string' ? modArr[j] : ''
           if (!p) continue
-          const lower = p.toLowerCase().replace(/\//g, '\\')
+          const lower = normalizeLowerPath(p)
           if (!lower.endsWith('.dll')) continue
           if (conf.skipSystemDll && lower.startsWith(normalizeDirLower(systemRootLower))) continue
+          if (isAllowlisted(lower, allowFiles)) continue
           if (shouldSkipInterception(lower, systemRootLower, appDirLower, exclusions)) continue
-          
           if (scanCache.get(lower) === true) continue
-          
           let ok = false
           try { ok = winapi.verifyTrust(p) === true } catch { ok = false }
-          
-          if (ok) {
-            scanCache.set(lower, true)
-          } else {
+          if (ok) scanCache.set(lower, true)
+          else {
             unsignedDlls.push(p)
             if (unsignedDlls.length >= conf.maxUnsignedDllsPerProcess) break
           }
         }
-        const hasDllIssue = unsignedDlls.length > 0
-        const hasProcIssue = processSigned !== true
-        if (hasDllIssue || hasProcIssue) {
-          let paused = false
-          try { paused = winapi.suspendProcessByPid(pid) === true } catch { paused = false }
-          let scanType = 'process'
-          if (hasProcIssue && hasDllIssue) scanType = 'joint'
-          else if (hasDllIssue) scanType = 'dll'
-          postMessage({ type: 'paused', pid, imagePath, paused, unsignedDlls, processSigned, scanType })
-        }
       } catch {}
+
+      const hasProcIssue = processSigned !== true
+      const hasDllIssue = moduleScanFailed || unsignedDlls.length > 0
+      if (hasProcIssue && hasDllIssue) scanType = 'joint'
+      else if (hasDllIssue) scanType = 'dll'
+      else if (hasProcIssue) scanType = 'process'
+
+      if (!(hasProcIssue || hasDllIssue)) {
+        if (t.suspended) {
+          try { winapi.resumeProcessByPid(pid) } catch {}
+        }
+      } else {
+        postMessage({ type: 'paused', pid, imagePath, paused: t.suspended === true, unsignedDlls, processSigned, scanType, moduleScanFailed })
+      }
       if (i % 30 === 0) await sleepImmediate()
     }
   } finally {

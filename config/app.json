@@ -28,6 +28,7 @@
     "healthPollIntervalMs": 3000,
     "tuningEnabled": true,
     "maxFileSizeMB": 300,
+    "signatureDbPath": "data/anxin_signature_db.bin",
     "nativeDll": {
       "enabled": true,
       "prefer": true
@@ -231,10 +232,19 @@
   "devSettings": {
     "salt": "dfa638d5c80864e9f2e2c04006b6d31b",
     "payload": {
-      "iv": "785cc8d48b778eb651fbad9e",
-      "authTag": "fb3d381df33f1e1521724ce932d84e36",
-      "data": "VDvKPQnyOKoSBOIg6vhsxQSFXydupyrYtWrdiuO32zRJ2GPeAXAT0GH2aGAqmvV29M/Kc/XVC574RiqcNOR9y79M68Iq+gmnWmNAUe9dNWYH5eAKjT5Nba/jbcnU2lPcMuxb5uA8cVyhmbrCxkIH7aPFgZjXnl51c8lVNjU="
+      "iv": "64002624d44aa3e31dede9d1",
+      "authTag": "2e9638ac081c886bf63a81a6dc286da6",
+      "data": "aWZ8ZlajViojzNdVpw9QbpVIsTScg4xOBYezVRlE+ztzweKoezZ5DvnkeKI3IkVJ+23RpQ5NzDjj/yWgaHKp0icIa0aJB13tCkJHmi1rHKU/CCFW+9OgK248Gw8Yh2hizI9RUfn22tsNwNqjk+08Rj9nAv5r3alXSaR/I1tSUpB5IE6SHvFt/qZfCujmtfLzGjedT326mzosNNRVqod4F2F1wOKNRiHPm91RRlzvKKX2ekyK9YcJAYX6AwiFtw=="
     },
-    "updatedAt": 1770468819238
+    "updatedAt": 1771730030271
+  },
+  "quarantine": {
+    "salt": "8f0d7349a7edbb7a28292fd93d4c98bf"
+  },
+  "exclusions": {
+    "salt": "868b46aaad89d606136f1adaef705fe8"
+  },
+  "startup_allowlist": {
+    "salt": "606944f594eba3d70a1f4ab217c3fce9"
   }
 }

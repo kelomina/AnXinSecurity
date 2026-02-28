@@ -61,19 +61,41 @@ async function handleTrainMessage(m) {
   postMessage({ type: 'count', total: files.length })
   let done = 0
   let trained = 0
-  for (const f of files) {
+  let failed = 0
+  const chunkSize = 2048
+  for (let i = 0; i < files.length; i += chunkSize) {
+    const chunk = files.slice(i, i + chunkSize)
     try {
-      const r = await scannerClient.trainFromPath(f, isWhite)
-      if (r && r.ok) trained++
-      done++
-      postMessage({ type: 'progress', total: files.length, done, current: f })
+      if (scannerClient && typeof scannerClient.trainPaths === 'function') {
+        const r = await scannerClient.trainPaths(chunk, isWhite)
+        const t = r && Number.isFinite(r.trained) ? r.trained : 0
+        const f = r && Number.isFinite(r.failed) ? r.failed : 0
+        trained += t
+        failed += f
+        done += chunk.length
+        postMessage({ type: 'progress', total: files.length, done, current: chunk[chunk.length - 1] || '' })
+        continue
+      }
+      for (const fp of chunk) {
+        try {
+          const r = await scannerClient.trainFromPath(fp, isWhite)
+          if (r && r.ok) trained++
+          else failed++
+        } catch (e) {
+          failed++
+          appendWorkerTrace({ ts: Date.now(), source: 'training_worker_train_failed', file: fp, ...normalizeErrorPayload(e) })
+        }
+        done++
+        postMessage({ type: 'progress', total: files.length, done, current: fp })
+      }
     } catch (e) {
-      appendWorkerTrace({ ts: Date.now(), source: 'training_worker_train_failed', file: f, ...normalizeErrorPayload(e) })
-      done++
-      postMessage({ type: 'progress', total: files.length, done, current: f })
+      failed += chunk.length
+      done += chunk.length
+      appendWorkerTrace({ ts: Date.now(), source: 'training_worker_train_failed', file: chunk[0] || '', ...normalizeErrorPayload(e) })
+      postMessage({ type: 'progress', total: files.length, done, current: chunk[chunk.length - 1] || '' })
     }
   }
-  postMessage({ type: 'done', result: { ok: trained > 0, total: files.length, trained, failed: files.length >= trained ? (files.length - trained) : 0 } })
+  postMessage({ type: 'done', result: { ok: trained > 0, total: files.length, trained, failed } })
 }
 
 async function handleTrainOne(m) {

@@ -1,11 +1,11 @@
 :root {
   --theme-color: #4CA2FF;
   --app-bg: rgba(15, 17, 21, 0.98);
-  --app-fg: #e6e8eb;
-  --muted-fg: #98a2ad;
+  --app-fg: #ffffff;
+  --muted-fg: #b0b8c4;
   --sidebar-bg: rgba(11, 13, 16, 0.4);
   --panel-bg: rgba(18, 22, 27, 0.5);
-  --panel-border: rgba(26, 31, 36, 0.5);
+  --panel-border: rgba(255, 255, 255, 0.15);
   --panel-hover: rgba(26, 31, 36, 0.4);
   --shadow-1: 0 8px 24px rgba(0,0,0,.25);
   --shadow-2: 0 8px 16px rgba(22,119,255,.35);
@@ -25,11 +25,11 @@
 }
 html[data-theme="light"] {
   --app-bg: rgba(248, 250, 252, 0.98);
-  --app-fg: #0f172a;
-  --muted-fg: #64748b;
+  --app-fg: #000000;
+  --muted-fg: #475569;
   --sidebar-bg: rgba(255, 255, 255, 0.6);
   --panel-bg: rgba(255, 255, 255, 0.7);
-  --panel-border: rgba(226, 232, 240, 0.6);
+  --panel-border: rgba(0, 0, 0, 0.15);
   --panel-hover: rgba(241, 245, 249, 0.5);
   --shadow-1: 0 10px 24px rgba(2,6,23,.10);
   --shadow-2: 0 12px 18px rgba(22,119,255,.20);
@@ -808,4 +808,29 @@ body[data-animations="off"] #scan-progress-bar.scan-indeterminate::before {
 .dropdown-item.active, .dropdown-item:active {
   background: var(--theme-color);
   color: white;
+}
+
+/* Modal Theming */
+.modal-content {
+  background-color: var(--panel-bg);
+  color: var(--app-fg);
+  border: 1px solid var(--panel-border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.modal-header {
+  border-bottom-color: var(--panel-border);
+}
+
+.modal-footer {
+  border-top-color: var(--panel-border);
+}
+
+.btn-close {
+  filter: invert(1);
+}
+
+html[data-theme="light"] .btn-close {
+  filter: none;
 }

@@ -98,6 +98,24 @@ function render(payload) {
   detailsInitialized = false
   jsonLines = null
   jsonRendered = 0
+  try {
+    const el = document.getElementById('ix-details')
+    if (el) {
+      try {
+        const Collapse = window.bootstrap && window.bootstrap.Collapse ? window.bootstrap.Collapse : null
+        if (Collapse && typeof Collapse.getOrCreateInstance === 'function') {
+          const inst = Collapse.getOrCreateInstance(el, { toggle: false })
+          if (inst && typeof inst.hide === 'function') inst.hide()
+        }
+      } catch {}
+      el.classList.remove('show')
+    }
+    const btn = document.querySelector('button.accordion-button[data-bs-target="#ix-details"]')
+    if (btn) {
+      btn.classList.add('collapsed')
+      btn.setAttribute('aria-expanded', 'false')
+    }
+  } catch {}
   const p = current || {}
   const pid = Number.isFinite(p.pid) ? p.pid : null
   const proc = p.process && typeof p.process === 'object' ? p.process : {}

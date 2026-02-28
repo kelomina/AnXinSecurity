@@ -17,6 +17,7 @@ const { createEtwPidCache } = require('./etw_pid_cache')
 const { createInterceptionQueue } = require('./interception_manager')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
 const { normalizePathKey, isMalware, getPayloadPaths, decideSnapshotActions } = require('./snapshot_engine_policy')
+const StartupAllowlistManager = require('./startup_allowlist_manager')
 
 const CONFIG_PATH = path.join(__dirname, '../../config/app.json')
 
@@ -24,6 +25,8 @@ let winapi = null
 try {
   winapi = require('./winapi')
 } catch {}
+
+try { app.commandLine.appendSwitch('disable-background-timer-throttling') } catch {}
 
 const gotTheLock = app.requestSingleInstanceLock()
 if (!gotTheLock) {
@@ -96,6 +99,7 @@ let allowBacklogDuringSplash = false
 let mainWindowReadyResolve = null
 const mainWindowReadyPromise = new Promise((resolve) => { mainWindowReadyResolve = resolve })
 let config = loadConfig()
+const startupAllowlist = new StartupAllowlistManager(CONFIG_PATH)
 let startupEngineEnsured = false
 const behavior = createBehaviorAnalyzer(config)
 const scannerClient = createScannerClient(() => config)
@@ -423,10 +427,8 @@ function ensureInterceptionSnapshotWorker() {
         if (scanType === 'process') ruleId = 'process_signature_invalid'
         else if (scanType === 'dll') ruleId = 'dll_signature_invalid'
         else if (scanType === 'joint') ruleId = 'process_and_dll_signature_invalid'
-        let severity = 4
-        if (scanType === 'joint') severity = 5
-        if (scanType === 'process') severity = 4
-        if (scanType === 'dll') severity = 4
+        let severity = 2
+        if (scanType === 'joint') severity = 3
         const recommendAction = 'block'
         const threatType = scanType === 'joint' ? '联合签名异常' : (scanType === 'process' ? '进程签名异常' : 'DLL签名异常')
         const payload = {
@@ -441,7 +443,6 @@ function ensureInterceptionSnapshotWorker() {
           event: { provider: 'Process', data: { type: 'Reputation', scanType, processSigned, unsignedDlls } }
         }
         interceptionQueue.enqueuePausedProcess(payload)
-        tryStartAutoScanForInterception(payload)
         return
       }
       if (typ === 'pid_snapshot_done') {
@@ -513,7 +514,8 @@ function ensureInterceptionWindow() {
       preload: path.join(__dirname, './preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   })
   try { interceptionWin.setMenuBarVisibility(false) } catch {}
@@ -650,6 +652,10 @@ async function handleSnapshotScanDone() {
     const scanByPath = await scanPathsWithEngine(Array.from(scanTargets))
     const plan = decideSnapshotActions(paused, scanByPath)
 
+    if (plan.allowPaths.length > 0) {
+      try { startupAllowlist.addFiles(plan.allowPaths) } catch {}
+    }
+
     if (plan.allowPaths.length > 0 && interceptionSnapshotWorker) {
       interceptionSnapshotWorker.postMessage({ type: 'allow_dlls', paths: plan.allowPaths })
     }
@@ -748,7 +754,9 @@ function startInterceptionSnapshotScan() {
       exclusionPaths.push(app.getAppPath())
     } catch {}
 
-    w.postMessage({ type: 'scan', config: { maxPids, modulesBufferBytes, skipSystemDll, maxUnsignedDllsPerProcess, exclusionPaths } })
+    let allowlistFiles = []
+    try { allowlistFiles = startupAllowlist.getFiles() } catch { allowlistFiles = [] }
+    w.postMessage({ type: 'scan', config: { maxPids, modulesBufferBytes, skipSystemDll, maxUnsignedDllsPerProcess, exclusionPaths, allowlistFiles } })
   } catch {
     isSnapshotScanning = false
     if (scanPromiseResolve) scanPromiseResolve(true)
@@ -1071,7 +1079,7 @@ function createSplash() {
     alwaysOnTop: true,
     skipTaskbar: true,
     resizable: false,
-    webPreferences: { nodeIntegration: false }
+    webPreferences: { nodeIntegration: false, backgroundThrottling: false }
   })
   splash.loadFile(path.join(__dirname, '../renderer/splash.html'))
   console.log('主进程: 创建Splash窗口')
@@ -1122,7 +1130,8 @@ function createWindow() {
       preload: path.join(__dirname, './preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false
+      sandbox: false,
+      backgroundThrottling: false
     }
   })
   console.log('主进程: 创建主窗口')
@@ -1209,7 +1218,8 @@ function showTrayExitPrompt(defaultKeep) {
         preload: path.join(__dirname, './preload.js'),
         contextIsolation: true,
         nodeIntegration: false,
-        sandbox: false
+        sandbox: false,
+        backgroundThrottling: false
       }
     })
 
@@ -1724,6 +1734,9 @@ app.whenReady().then(() => {
     if (!files.length && samplePath) files = [samplePath]
     const workerPath = path.join(__dirname, 'workers/training_worker.js')
     if (!fs.existsSync(workerPath)) {
+      if (files.length > 1 && scannerClient && typeof scannerClient.trainPaths === 'function') {
+        return scannerClient.trainPaths(files, isWhite)
+      }
       return scannerClient.trainFromPath(samplePath, isWhite)
     }
     if (!files.length) {
@@ -1734,78 +1747,55 @@ app.whenReady().then(() => {
       scanner: (config && config.scanner) ? config.scanner : {},
       scan: (config && config.scan) ? config.scan : {}
     }
-    const cpuCount = (os && typeof os.cpus === 'function' && Array.isArray(os.cpus())) ? os.cpus().length : 4
-    const maxTokens = Number.isFinite(config && config.scanner && config.scanner.maxTokens)
-      ? Math.floor(config.scanner.maxTokens)
-      : cpuCount
-    const workerLimit = Number.isFinite(config && config.scanner && config.scanner.ravenTrainWorkers)
-      ? Math.max(1, Math.floor(config.scanner.ravenTrainWorkers))
-      : 1
-    const poolSize = Math.max(1, Math.min(cpuCount, maxTokens, workerLimit, files.length))
     return new Promise((resolve) => {
       const totalAll = files.length
       let doneAll = 0
-      let trainedAll = 0
-      let failedAll = 0
       let resolved = false
-      const queue = files.slice()
-      const workers = []
-      const finalize = () => {
-        if (resolved) return
-        if (doneAll < totalAll) return
-        resolved = true
-        for (const w of workers) {
-          try { w.terminate() } catch {}
-        }
-        resolve({ ok: trainedAll > 0, total: totalAll, trained: trainedAll, failed: failedAll })
-      }
       const postProgress = (file) => {
         if (sender) sender.send('scanner:trainProgress', { total: totalAll, done: doneAll, current: file || '' })
       }
-      const assign = (w) => {
-        if (w.busy) return
-        const next = queue.shift()
-        if (!next) {
-          finalize()
+      const w = new Worker(workerPath)
+      const finalize = (result) => {
+        if (resolved) return
+        resolved = true
+        try { w.terminate() } catch {}
+        resolve(result || { ok: false, total: totalAll, trained: 0, failed: totalAll })
+      }
+      w.on('message', (msg) => {
+        if (!msg) return
+        if (msg.type === 'count') {
+          doneAll = 0
+          postProgress('')
           return
         }
-        w.busy = true
-        w.currentFile = next
-        w.postMessage({ type: 'train_one', isWhite, file: next, config: cfgSnapshot })
-      }
-      for (let i = 0; i < poolSize; i++) {
-        const w = new Worker(workerPath)
-        w.busy = false
-        w.currentFile = ''
-        w.on('message', (msg) => {
-          if (!msg || msg.type !== 'train_one_done') return
-          const ok = msg.ok === true
-          doneAll += 1
-          if (ok) trainedAll += 1
-          else failedAll += 1
-          postProgress(msg.file || w.currentFile)
-          w.busy = false
-          w.currentFile = ''
-          assign(w)
-          finalize()
-        })
-        w.on('error', () => {
-          if (w.busy) {
-            doneAll += 1
-            failedAll += 1
-            postProgress(w.currentFile)
-            w.busy = false
-            w.currentFile = ''
-          }
-          assign(w)
-          finalize()
-        })
-        workers.push(w)
-        assign(w)
-      }
+        if (msg.type === 'progress') {
+          doneAll = Number.isFinite(msg.done) ? msg.done : doneAll
+          postProgress(msg.current || '')
+          return
+        }
+        if (msg.type === 'done') {
+          const res = msg.result && typeof msg.result === 'object' ? msg.result : { ok: false, total: totalAll, trained: 0, failed: totalAll }
+          finalize(res)
+        }
+      })
+      w.on('error', () => finalize())
+      w.postMessage({ type: 'train', isWhite, files, config: cfgSnapshot })
     })
   })
   ipcMain.handle('scanner:abort', async (_event, requestId) => scannerClient.abort(requestId))
+  ipcMain.handle('signature-store:listVersions', async () => {
+    if (!scannerClient || !scannerClient.signatureStore || !scannerClient.signatureStore.listVersions) return []
+    return scannerClient.signatureStore.listVersions()
+  })
+  ipcMain.handle('signature-store:getCurrentVersion', async () => {
+    if (!scannerClient || !scannerClient.signatureStore || !scannerClient.signatureStore.getCurrentVersion) return ''
+    return scannerClient.signatureStore.getCurrentVersion()
+  })
+  ipcMain.handle('signature-store:rollback', async (_event, payload) => {
+    if (!scannerClient || !scannerClient.signatureStore || !scannerClient.signatureStore.rollback) return false
+    const p = payload && typeof payload === 'object' ? payload : {}
+    return scannerClient.signatureStore.rollback(typeof p.versionId === 'string' ? p.versionId : '')
+  })
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1823,6 +1813,13 @@ app.whenReady().then(() => {
   ipcMain.on('error-trace', (_evt, payload) => {
     const p = payload && typeof payload === 'object' ? payload : {}
     appendErrorTrace({ ts: Date.now(), source: 'renderer_trace', ...p })
+  })
+  ipcMain.on('set-title-bar-overlay', (_evt, config) => {
+    try {
+      if (win && !win.isDestroyed()) {
+        win.setTitleBarOverlay(config)
+      }
+    } catch {}
   })
 })
 
