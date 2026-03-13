@@ -49,8 +49,16 @@
         "from": "native/bin/win32-x64",
         "to": "native/win32-x64",
         "filter": [
-          "etw_bridge.dll",
-          "trust_bridge.dll"
+          "file_hook_detours.dll",
+          "file_hook_injector.exe"
+        ]
+      },
+      {
+        "from": "native/bin/win32-x86",
+        "to": "native/win32-x86",
+        "filter": [
+          "file_hook_detours.dll",
+          "file_hook_injector.exe"
         ]
       }
     ],

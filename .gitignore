@@ -145,3 +145,7 @@ quarantine_index.json
 .trae
 ben
 output
+build-x86
+build-x64
+bin
+startup_allowlist.enc

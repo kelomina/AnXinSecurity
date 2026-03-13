@@ -16,6 +16,12 @@ try {
 } catch (e) {
     console.warn('Failed to load wintrust.dll', e);
 }
+let libAdvapi32 = null;
+try {
+    libAdvapi32 = koffi.load('advapi32.dll');
+} catch (e) {
+    console.warn('Failed to load advapi32.dll', e);
+}
 
 let trustBridgeLib = null;
 let TrustBridge_SetCacheConfig = null;
@@ -120,6 +126,12 @@ const SYNCHRONIZE = 0x00100000;
 const PROCESS_SUSPEND_RESUME = 0x0800;
 const PROCESS_TERMINATE = 0x0001;
 const MAX_PATH = 260;
+const READ_CONTROL = 0x00020000;
+const WRITE_DAC = 0x00040000;
+const FILE_SHARE_READ = 0x00000001;
+const FILE_SHARE_WRITE = 0x00000002;
+const OPEN_EXISTING = 3;
+const FILE_ATTRIBUTE_NORMAL = 0x00000080;
 
 const WTD_UI_NONE = 2;
 const WTD_REVOKE_NONE = 0x00000000;
@@ -132,12 +144,19 @@ const TRUST_E_EXPLICIT_DISTRUST = 0x800B0111;
 const TRUST_E_SUBJECT_NOT_TRUSTED = 0x800B0004;
 const CRYPT_E_SECURITY_SETTINGS = 0x80092026;
 const ERROR_SUCCESS = 0;
+const SE_KERNEL_OBJECT = 6;
+const SE_FILE_OBJECT = 1;
+const DACL_SECURITY_INFORMATION = 0x00000004;
+const SDDL_EVERYONE_FULL = 'D:(A;;GA;;;WD)(A;;GA;;;SY)(A;;GA;;;BA)';
 
 const OpenProcess = libKernel32.func('__stdcall', 'OpenProcess', HANDLE, [DWORD, BOOL, DWORD]);
 const CloseHandle = libKernel32.func('__stdcall', 'CloseHandle', BOOL, [HANDLE]);
 const TerminateProcess = libKernel32.func('__stdcall', 'TerminateProcess', BOOL, [HANDLE, DWORD]);
 const QueryDosDeviceW = libKernel32.func('__stdcall', 'QueryDosDeviceW', DWORD, ['string16', koffi.out(LPWSTR), DWORD]);
 const lstrlenA = libKernel32.func('__stdcall', 'lstrlenA', 'int', ['void *']);
+const LocalFree = libKernel32.func('__stdcall', 'LocalFree', 'void *', ['void *']);
+const GetLastError = libKernel32.func('__stdcall', 'GetLastError', DWORD, []);
+const CreateFileW = libKernel32.func('__stdcall', 'CreateFileW', HANDLE, ['string16', DWORD, DWORD, 'void *', DWORD, DWORD, HANDLE]);
 const EnumProcesses = libPsapi.func('__stdcall', 'EnumProcesses', BOOL, [koffi.out('uint32_t *'), DWORD, koffi.out('uint32_t *')]);
 const EnumProcessModules = libPsapi.func('__stdcall', 'EnumProcessModules', BOOL, [HANDLE, koffi.out('void *'), DWORD, koffi.out('uint32_t *')]);
 const GetModuleFileNameExW = libPsapi.func('__stdcall', 'GetModuleFileNameExW', DWORD, [HANDLE, HMODULE, koffi.out(LPWSTR), DWORD]);
@@ -162,6 +181,24 @@ if (libWintrust) {
         WinVerifyTrust = libWintrust.func('__stdcall', 'WinVerifyTrust', LONG, ['void *', koffi.pointer(GUID), koffi.pointer(WINTRUST_DATA)]);
     } catch (e) {
         console.warn('Failed to bind WinVerifyTrust', e);
+    }
+}
+let ConvertStringSecurityDescriptorToSecurityDescriptorW = null;
+let GetSecurityDescriptorDacl = null;
+let SetNamedSecurityInfoW = null;
+let SetSecurityInfo = null;
+if (libAdvapi32) {
+    try {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW = libAdvapi32.func('__stdcall', 'ConvertStringSecurityDescriptorToSecurityDescriptorW', BOOL, ['string16', DWORD, koffi.out(koffi.pointer('void *', 2)), koffi.out('uint32_t *')]);
+        GetSecurityDescriptorDacl = libAdvapi32.func('__stdcall', 'GetSecurityDescriptorDacl', BOOL, ['void *', koffi.out('int *'), koffi.out(koffi.pointer('void *', 2)), koffi.out('int *')]);
+        SetNamedSecurityInfoW = libAdvapi32.func('__stdcall', 'SetNamedSecurityInfoW', DWORD, ['string16', DWORD, DWORD, 'void *', 'void *', 'void *', 'void *']);
+        SetSecurityInfo = libAdvapi32.func('__stdcall', 'SetSecurityInfo', DWORD, [HANDLE, DWORD, DWORD, 'void *', 'void *', 'void *', 'void *']);
+    } catch (e) {
+        console.warn('Failed to bind advapi32 security functions', e);
+        ConvertStringSecurityDescriptorToSecurityDescriptorW = null;
+        GetSecurityDescriptorDacl = null;
+        SetNamedSecurityInfoW = null;
+        SetSecurityInfo = null;
     }
 }
 
@@ -644,6 +681,63 @@ function terminateProcessByPid(pid, exitCode = 1) {
     }
 }
 
+function setPipeSecurity(pipeName) {
+    if (!pipeName || !ConvertStringSecurityDescriptorToSecurityDescriptorW || !GetSecurityDescriptorDacl || !SetNamedSecurityInfoW || !SetSecurityInfo) return false;
+    let name = String(pipeName || '').trim();
+    let suffix = name;
+    if (suffix.startsWith('\\\\.\\pipe\\')) {
+        suffix = suffix.slice('\\\\.\\pipe\\'.length);
+    }
+    const candidates = [
+        { name, type: SE_FILE_OBJECT },
+        { name: '\\\\?\\pipe\\' + suffix, type: SE_FILE_OBJECT },
+        { name: '\\\\Device\\\\NamedPipe\\\\' + suffix, type: SE_KERNEL_OBJECT },
+        { name: 'PIPE\\' + suffix, type: SE_KERNEL_OBJECT }
+    ];
+    let sd = null;
+    try {
+        const outSd = [null];
+        const sizeBuf = Buffer.alloc(4);
+        const ok = ConvertStringSecurityDescriptorToSecurityDescriptorW(SDDL_EVERYONE_FULL, 1, outSd, sizeBuf);
+        if (!ok) return false;
+        sd = outSd[0];
+        if (!sd) return false;
+        const daclPresent = Buffer.alloc(4);
+        const daclDefaulted = Buffer.alloc(4);
+        const outDacl = [null];
+        const okDacl = GetSecurityDescriptorDacl(sd, daclPresent, outDacl, daclDefaulted);
+        if (!okDacl) return false;
+        if (daclPresent.readInt32LE(0) === 0) return false;
+        const dacl = outDacl[0];
+        const desiredAccess = READ_CONTROL | WRITE_DAC;
+        const shareMode = FILE_SHARE_READ | FILE_SHARE_WRITE;
+        const hPipe = CreateFileW(name, desiredAccess, shareMode, null, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, null);
+        if (hPipe) {
+            const rcHandle = SetSecurityInfo(hPipe, SE_KERNEL_OBJECT, DACL_SECURITY_INFORMATION, null, null, dacl, null);
+            try { CloseHandle(hPipe); } catch {}
+            if (rcHandle === 0) return { ok: true, code: 0, name, type: 'handle' };
+        }
+        let lastCode = 0;
+        let lastName = '';
+        let lastType = '';
+        for (const candidate of candidates) {
+            const rc = SetNamedSecurityInfoW(candidate.name, candidate.type, DACL_SECURITY_INFORMATION, null, null, dacl, null);
+            if (rc === 0) return { ok: true, code: 0, name: candidate.name, type: candidate.type === SE_FILE_OBJECT ? 'file' : 'kernel' };
+            lastCode = rc;
+            lastName = candidate.name;
+            lastType = candidate.type === SE_FILE_OBJECT ? 'file' : 'kernel';
+        }
+        return { ok: false, code: Number.isFinite(lastCode) ? lastCode : 0, name: lastName, type: lastType };
+    } catch {
+        const err = GetLastError ? GetLastError() : 0;
+        return { ok: false, code: Number.isFinite(err) ? err : -1, name: name, type: 'error' };
+    } finally {
+        if (sd) {
+            try { LocalFree(sd); } catch {}
+        }
+    }
+}
+
 module.exports = {
     verifyTrust,
     getSignerInfo,
@@ -660,6 +754,7 @@ module.exports = {
     suspendProcessByPid,
     resumeProcessByPid,
     terminateProcessByPid,
+    setPipeSecurity,
     PROCESS_SUSPEND_RESUME,
     PROCESS_TERMINATE
 };

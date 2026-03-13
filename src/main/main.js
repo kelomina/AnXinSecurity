@@ -3,6 +3,8 @@ const { Worker } = require('worker_threads')
 const path = require('path')
 const fs = require('fs')
 const os = require('os')
+const net = require('net')
+const { execFile } = require('child_process')
 const { startIfNeeded, checkEngineHealth } = require('./engine_autostart')
 const { createScannerClient } = require('./scanner_client')
 const quarantineManager = require('./quarantine_manager')
@@ -228,10 +230,124 @@ let interceptionWin = null
 let interceptionWinReady = false
 let interceptionWinLocked = true
 let etwRiskWorker = null
+let hookIpcServer = null
+const hookIpcSockets = new Set()
+const hookPipePath = '\\\\.\\pipe\\anxin_security_filehook'
+const hookInjectedPids = new Set()
+let hookNoticeCount = 0
 
 function normalizeLowerPath(p) {
   if (typeof p !== 'string') return ''
   return p.trim().toLowerCase().replace(/\//g, '\\')
+}
+
+function pushHookIpcEvent(message) {
+  const msg = message && typeof message === 'object' ? message : {}
+  const api = typeof msg.api === 'string' && msg.api ? msg.api : 'CreateFile'
+  const pid = Number.isFinite(msg.pid) ? msg.pid : parseInt(String(msg.pid), 10)
+  const tid = Number.isFinite(msg.tid) ? msg.tid : parseInt(String(msg.tid), 10)
+  const target = typeof msg.path === 'string' ? msg.path : ''
+  const ev = {
+    ts: new Date().toISOString(),
+    provider: 'FileHook',
+    op: api,
+    pid: Number.isFinite(pid) && pid > 0 ? pid : 0,
+    tid: Number.isFinite(tid) && tid > 0 ? tid : 0,
+    target,
+    data: {
+      type: 'CreateFileHook',
+      source: 'Detours',
+      api
+    }
+  }
+  eventLogs.unshift(ev)
+  if (eventLogs.length > 500) eventLogs.pop()
+  if (isBehaviorMonitoringEnabled(config)) {
+    try { behavior.ingest(ev) } catch {}
+  }
+  if (win && !win.isDestroyed()) {
+    try { win.webContents.send('etw-log', ev) } catch {}
+  }
+}
+
+function startHookIpcServer() {
+  if (hookIpcServer) return
+  try {
+    const server = net.createServer((socket) => {
+      hookIpcSockets.add(socket)
+      let buf = ''
+      socket.setEncoding('utf8')
+      socket.on('data', (chunk) => {
+        buf += typeof chunk === 'string' ? chunk : String(chunk || '')
+        while (true) {
+          const idx = buf.indexOf('\n')
+          if (idx < 0) break
+          const line = buf.slice(0, idx).trim()
+          buf = buf.slice(idx + 1)
+          if (!line) continue
+          try {
+            const parsed = JSON.parse(line)
+            pushHookIpcEvent(parsed)
+            if (hookNoticeCount < 5) {
+              hookNoticeCount += 1
+              const api = parsed && typeof parsed.api === 'string' ? parsed.api : ''
+              const pid = parsed && Number.isFinite(parsed.pid) ? parsed.pid : ''
+              const p = parsed && typeof parsed.path === 'string' ? parsed.path : ''
+              console.log('主进程: 收到Hook消息', api, pid, p)
+            }
+          } catch {}
+        }
+      })
+      socket.on('error', () => {})
+      socket.on('close', () => {
+        hookIpcSockets.delete(socket)
+      })
+    })
+    server.on('error', (err) => {
+      console.log('主进程: 管道服务器错误', err.message)
+    })
+    server.on('listening', () => {
+      console.log('主进程: 命名管道服务器已启动', hookPipePath)
+      let ok = false
+      let code = 0
+      let name = ''
+      let type = ''
+      try {
+        if (winapi && typeof winapi.setPipeSecurity === 'function') {
+          const res = winapi.setPipeSecurity(hookPipePath)
+          ok = !!(res && res.ok)
+          code = res && Number.isFinite(res.code) ? res.code : 0
+          name = res && typeof res.name === 'string' ? res.name : ''
+          type = res && typeof res.type === 'string' ? res.type : ''
+        }
+      } catch {}
+      if (ok) console.log('主进程: 命名管道权限已放开', name, type)
+      else console.log('主进程: 命名管道权限放开失败', code, name, type)
+    })
+    server.listen(hookPipePath)
+    hookIpcServer = server
+    try { process.env.ANXIN_HOOK_PIPE = hookPipePath } catch {}
+    console.log('主进程: 正在启动命名管道服务器...')
+  } catch (err) {
+    console.log('主进程: 启动管道服务器失败', err.message)
+  }
+}
+
+function stopHookIpcServer() {
+  return new Promise((resolve) => {
+    const server = hookIpcServer
+    hookIpcServer = null
+    for (const s of hookIpcSockets) {
+      try { s.destroy() } catch {}
+    }
+    hookIpcSockets.clear()
+    if (!server) return resolve()
+    try {
+      server.close(() => resolve())
+    } catch {
+      resolve()
+    }
+  })
 }
 
 function normalizeLowerDir(p) {
@@ -1293,6 +1409,139 @@ function getEngineBaseDirs() {
   return [...new Set(out.filter(Boolean))]
 }
 
+function fileExists(p) {
+  try {
+    return !!(p && fs.existsSync(p))
+  } catch {
+    return false
+  }
+}
+
+function resolveFirstExistingFile(candidates) {
+  for (const p of candidates) {
+    if (fileExists(p)) return p
+  }
+  return ''
+}
+
+function resolveHookBinaryPath(archDir, fileName) {
+  const candidates = []
+  try {
+    if (process && typeof process.resourcesPath === 'string' && process.resourcesPath) {
+      candidates.push(path.join(process.resourcesPath, 'native', archDir, fileName))
+      candidates.push(path.join(process.resourcesPath, 'native', 'bin', archDir, fileName))
+    }
+  } catch {}
+  try { candidates.push(path.join(__dirname, `../../native/bin/${archDir}/${fileName}`)) } catch {}
+  try { candidates.push(path.join(__dirname, `../../native/${archDir}/${fileName}`)) } catch {}
+  const bases = getEngineBaseDirs()
+  for (const base of bases) {
+    candidates.push(path.join(base, 'native', 'bin', archDir, fileName))
+    candidates.push(path.join(base, 'native', archDir, fileName))
+  }
+  return resolveFirstExistingFile(candidates)
+}
+
+function resolveHookArtifacts() {
+  return {
+    x64: {
+      injector: resolveHookBinaryPath('win32-x64', 'file_hook_injector.exe'),
+      dll: resolveHookBinaryPath('win32-x64', 'file_hook_detours.dll')
+    },
+    x86: {
+      injector: resolveHookBinaryPath('win32-x86', 'file_hook_injector.exe'),
+      dll: resolveHookBinaryPath('win32-x86', 'file_hook_detours.dll')
+    }
+  }
+}
+
+function execFileAsync(file, args, timeoutMs) {
+  return new Promise((resolve) => {
+    execFile(file, args, { windowsHide: true, timeout: timeoutMs }, (error, stdout, stderr) => {
+      const output = `${stdout || ''}${stderr || ''}`.trim()
+      if (!error) return resolve({ ok: true, exitCode: 0, output })
+      const ec = Number.isFinite(error.code) ? error.code : null
+      resolve({ ok: false, exitCode: ec, output, error: error && error.message ? String(error.message) : '' })
+    })
+  })
+}
+
+async function injectHookForPid(pid, artifacts) {
+  const attempts = []
+  if (artifacts && artifacts.x64 && artifacts.x64.injector && artifacts.x64.dll) {
+    attempts.push({ arch: 'x64', injector: artifacts.x64.injector, dll: artifacts.x64.dll })
+  }
+  if (artifacts && artifacts.x86 && artifacts.x86.injector && artifacts.x86.dll) {
+    attempts.push({ arch: 'x86', injector: artifacts.x86.injector, dll: artifacts.x86.dll })
+  }
+  if (!attempts.length) return { ok: false, reason: 'injector_or_dll_missing' }
+
+  const argPid = Number.isFinite(pid) ? Math.floor(pid) : parseInt(String(pid), 10)
+  if (!Number.isFinite(argPid) || argPid <= 0) return { ok: false, reason: 'pid_invalid' }
+
+  for (const it of attempts) {
+    const res = await execFileAsync(it.injector, ['--pid', String(argPid), '--dll', it.dll], 12000)
+    if (res.ok) return { ok: true, arch: it.arch, output: res.output }
+    if (res.exitCode === 12) continue
+    if (res.exitCode === 10 || res.exitCode === 14) return { ok: false, reason: `inject_failed_${res.exitCode}`, arch: it.arch, output: res.output || res.error || '' }
+  }
+  return { ok: false, reason: 'inject_all_failed' }
+}
+
+async function injectHookIntoUnsignedProcesses() {
+  if (process.platform !== 'win32') return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0 }
+  if (!winapi || typeof winapi.getProcessImageSnapshot !== 'function' || typeof winapi.verifyTrust !== 'function') {
+    return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0 }
+  }
+  const artifacts = resolveHookArtifacts()
+  if (!(artifacts.x64.injector && artifacts.x64.dll) && !(artifacts.x86.injector && artifacts.x86.dll)) {
+    return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0 }
+  }
+
+  let snapshots = []
+  try { snapshots = winapi.getProcessImageSnapshot(8192) || [] } catch { snapshots = [] }
+  const unique = new Map()
+  for (const it of snapshots) {
+    const pid = Number.isFinite(it && it.pid) ? it.pid : parseInt(String(it && it.pid), 10)
+    if (!Number.isFinite(pid) || pid <= 4 || pid === process.pid) continue
+    if (hookInjectedPids.has(pid)) continue
+    const imagePath = resolveMaybeRelativePath(typeof (it && it.imagePath) === 'string' ? it.imagePath : '')
+    if (!imagePath) continue
+    if (isUnderDir(normalizeLowerPath(imagePath), appDirLower)) continue
+    if (!unique.has(pid)) unique.set(pid, imagePath)
+  }
+
+  let injected = 0
+  let skippedSigned = 0
+  let skippedInvalid = 0
+  let failed = 0
+  for (const [pid, imagePath] of unique) {
+    let isSigned = false
+    try { isSigned = winapi.verifyTrust(imagePath) === true } catch { isSigned = false }
+    if (isSigned) {
+      skippedSigned++
+      continue
+    }
+    if (!fileExists(imagePath)) {
+      skippedInvalid++
+      continue
+    }
+    const ret = await injectHookForPid(pid, artifacts)
+    if (ret && ret.ok) {
+      injected++
+      hookInjectedPids.add(pid)
+      console.log(`主进程: 注入成功 pid=${pid}, arch=${ret.arch}`)
+    } else {
+      failed++
+      console.log(`主进程: 注入失败 pid=${pid}, reason=${ret ? ret.reason : 'unknown'}`)
+    }
+  }
+
+  const result = { total: unique.size, injected, skippedSigned, skippedInvalid, failed }
+  console.log('主进程: 注入统计', result)
+  return result
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)))
 }
@@ -1326,6 +1575,8 @@ app.whenReady().then(() => {
       createTray()
     },
     runBlockingScan: async () => {
+      startHookIpcServer()
+      await injectHookIntoUnsignedProcesses()
       if (engineCfg.autoStart !== false) {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
         await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
@@ -1345,7 +1596,8 @@ app.whenReady().then(() => {
     startSecurityComponents: async () => {
       try { behavior.start() } catch {}
       try { behavior.setWriteEnabled(isBehaviorMonitoringEnabled(config)) } catch {}
-      startEtwWorker()
+      startHookIpcServer()
+      //startEtwWorker()
       if (engineCfg.autoStart !== false && !startupEngineEnsured) {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
         const res = await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
@@ -1840,19 +2092,31 @@ app.on('before-quit', (e) => {
     const forceQuit = setTimeout(() => {
       console.warn('主进程: ETW Worker 停止超时，将断开连接并退出')
       if (etwWorker) etwWorker.unref()
-      Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
+      Promise.resolve()
+        .then(() => stopHookIpcServer())
+        .then(() => behavior.stop())
+        .catch(() => {})
+        .finally(() => app.quit())
     }, 5000)
     
     etwWorker.once('exit', () => {
       clearTimeout(forceQuit)
-      Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
+      Promise.resolve()
+        .then(() => stopHookIpcServer())
+        .then(() => behavior.stop())
+        .catch(() => {})
+        .finally(() => app.quit())
     })
     
     etwWorker.postMessage({ type: 'stop' })
   } else {
     e.preventDefault()
     isQuitting = true
-    Promise.resolve().then(() => behavior.stop()).catch(() => {}).finally(() => app.quit())
+    Promise.resolve()
+      .then(() => stopHookIpcServer())
+      .then(() => behavior.stop())
+      .catch(() => {})
+      .finally(() => app.quit())
   }
 })
 
