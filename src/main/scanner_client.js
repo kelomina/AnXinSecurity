@@ -17,9 +17,10 @@ function createScannerClient(getConfig, deps = {}) {
     const scanner = cfg && cfg.scanner ? cfg.scanner : {}
     const nativeDll = scanner && scanner.nativeDll ? scanner.nativeDll : {}
     const timeoutMs = Number.isFinite(scanner.timeoutMs) ? scanner.timeoutMs : 5000
-    const nativeEnabled = false
+    const nativeEnabled = nativeDll && nativeDll.enabled === false ? false : true
+    const signatureEnabled = false
     const nativePrefer = nativeDll && nativeDll.prefer === true ? true : false
-    return { timeoutMs, nativeEnabled, nativePrefer }
+    return { timeoutMs, nativeEnabled, nativePrefer, signatureEnabled }
   }
 
   function resolveWorkerPoolSize() {
@@ -1608,9 +1609,16 @@ function createScannerClient(getConfig, deps = {}) {
   }
 
   function canUseNative() {
-    const { nativeEnabled } = getScannerCfg()
+    const { nativeEnabled, signatureEnabled } = getScannerCfg()
     if (!nativeEnabled) return false
-    return ensureKvdHandle() || ensureSignatureHandle()
+    if (signatureEnabled) return ensureKvdHandle() || ensureSignatureHandle()
+    return ensureKvdHandle()
+  }
+
+  function canUseSignatureEngine() {
+    const { signatureEnabled } = getScannerCfg()
+    if (!signatureEnabled) return false
+    return ensureSignatureHandle()
   }
 
   function kvdHealth() {
@@ -1730,7 +1738,7 @@ function createScannerClient(getConfig, deps = {}) {
   }
 
   async function kvdScanFileSig(filePath) {
-    if (!ensureSignatureHandle()) throw new Error('KVD_LOAD_FAILED')
+    if (!canUseSignatureEngine()) return {}
     const sp = typeof filePath === 'string' ? filePath : ''
     if (sp && verifyTrusted(sp)) {
       return { signature_verified: true, signature_hit: false, signature_score: 0, is_malware: false, confidence: 0, signature_reason: 'signature_trusted' }
@@ -1767,9 +1775,13 @@ function createScannerClient(getConfig, deps = {}) {
   }
 
   async function kvdScanPathsSig(filePaths) {
-    if (!ensureSignatureHandle()) throw new Error('KVD_LOAD_FAILED')
     const list = Array.isArray(filePaths) ? filePaths.filter(p => typeof p === 'string' && p) : []
     if (!list.length) return []
+    if (!canUseSignatureEngine()) {
+      const out = new Array(list.length)
+      for (let i = 0; i < list.length; i++) out[i] = {}
+      return out
+    }
     if (kvdSig.scanPathsBroken) return null
     if (!kvdSig.scanPaths) {
       if (!kvdSig.scanPathsMissingLogged) {
