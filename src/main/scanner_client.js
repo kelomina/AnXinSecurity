@@ -17,7 +17,7 @@ function createScannerClient(getConfig, deps = {}) {
     const scanner = cfg && cfg.scanner ? cfg.scanner : {}
     const nativeDll = scanner && scanner.nativeDll ? scanner.nativeDll : {}
     const timeoutMs = Number.isFinite(scanner.timeoutMs) ? scanner.timeoutMs : 5000
-    const nativeEnabled = nativeDll && nativeDll.enabled === false ? false : true
+    const nativeEnabled = false
     const nativePrefer = nativeDll && nativeDll.prefer === true ? true : false
     return { timeoutMs, nativeEnabled, nativePrefer }
   }
