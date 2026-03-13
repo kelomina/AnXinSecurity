@@ -287,6 +287,10 @@ function startHookIpcServer() {
           if (!line) continue
           try {
             const parsed = JSON.parse(line)
+            if (parsed && parsed.type === 'heartbeat') {
+              try { socket.write('{"type":"heartbeat_ack"}\n') } catch {}
+              continue
+            }
             pushHookIpcEvent(parsed)
             if (hookNoticeCount < 5) {
               hookNoticeCount += 1

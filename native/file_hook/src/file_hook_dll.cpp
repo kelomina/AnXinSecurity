@@ -6,6 +6,7 @@
 
 #include <string>
 #include <vector>
+#include <cwchar>
 
 using CreateFileWFn = HANDLE(WINAPI*)(
     LPCWSTR,
@@ -32,12 +33,19 @@ constexpr wchar_t kPipeNameEnv[] = L"ANXIN_HOOK_PIPE";
 constexpr DWORD kPipeConnectTimeoutMs = 200;
 constexpr DWORD kPipeOpenRetryMs = 20;
 constexpr int kPipeOpenRetries = 5;
+constexpr DWORD kHeartbeatIntervalMs = 10000;
+constexpr DWORD kHeartbeatAckTimeoutMs = 1000;
 
 CreateFileWFn gCreateFileW = ::CreateFileW;
 CreateFileAFn gCreateFileA = ::CreateFileA;
 CreateFileWFn gKernelBaseCreateFileW = nullptr;
 CreateFileAFn gKernelBaseCreateFileA = nullptr;
 thread_local bool gInsideHook = false;
+HMODULE gSelfModule = nullptr;
+HANDLE gHeartbeatThread = nullptr;
+volatile LONG gHeartbeatStop = 0;
+
+void detachDetours();
 
 std::wstring readPipeName() {
   wchar_t value[512]{};
@@ -58,14 +66,14 @@ std::string utf8FromWide(const wchar_t* ws) {
   return out;
 }
 
-std::string utf8FromAnsi(const char* s) {
+std::wstring wideFromAnsi(const char* s) {
   if (!s || !*s) return {};
   int wlen = ::MultiByteToWideChar(CP_ACP, 0, s, -1, nullptr, 0);
   if (wlen <= 1) return {};
   std::wstring ws(static_cast<std::size_t>(wlen - 1), L'\0');
   int wwritten = ::MultiByteToWideChar(CP_ACP, 0, s, -1, ws.data(), wlen - 1);
   if (wwritten <= 0) return {};
-  return utf8FromWide(ws.c_str());
+  return ws;
 }
 
 void appendEscaped(std::string& out, const std::string& text) {
@@ -91,6 +99,55 @@ void appendEscaped(std::string& out, const std::string& text) {
   }
 }
 
+std::wstring deviceToDosPath(const std::wstring& path) {
+  if (path.empty()) return path;
+  if (_wcsnicmp(path.c_str(), L"\\Device\\", 8) != 0) return path;
+  wchar_t drives[512]{};
+  DWORD n = ::GetLogicalDriveStringsW(static_cast<DWORD>(std::size(drives)), drives);
+  if (n == 0 || n >= static_cast<DWORD>(std::size(drives))) return path;
+  for (wchar_t* p = drives; *p; p += wcslen(p) + 1) {
+    std::wstring drive = p;
+    if (drive.size() < 2) continue;
+    std::wstring devName = drive.substr(0, 2);
+    wchar_t target[512]{};
+    DWORD tn = ::QueryDosDeviceW(devName.c_str(), target, static_cast<DWORD>(std::size(target)));
+    if (tn == 0) continue;
+    std::wstring devPath = target;
+    if (_wcsnicmp(path.c_str(), devPath.c_str(), devPath.size()) == 0) {
+      std::wstring rest = path.substr(devPath.size());
+      if (!rest.empty() && rest.front() != L'\\') rest.insert(rest.begin(), L'\\');
+      return drive + rest;
+    }
+  }
+  return path;
+}
+
+std::wstring normalizePathW(const wchar_t* ws) {
+  if (!ws || !*ws) return {};
+  std::wstring s(ws);
+  if (_wcsnicmp(s.c_str(), L"\\??\\", 4) == 0) {
+    s = s.substr(4);
+  }
+  if (s.size() >= 2 && s[1] == L':') return s;
+  if (s.rfind(L"\\\\", 0) == 0) return s;
+  if (_wcsnicmp(s.c_str(), L"\\\\?\\", 4) == 0) return s;
+  if (_wcsnicmp(s.c_str(), L"\\Device\\", 8) == 0) return deviceToDosPath(s);
+  wchar_t buf[4096]{};
+  DWORD len = ::GetFullPathNameW(s.c_str(), static_cast<DWORD>(std::size(buf)), buf, nullptr);
+  if (len > 0 && len < static_cast<DWORD>(std::size(buf))) return std::wstring(buf, buf + len);
+  return s;
+}
+
+std::string utf8FromWideAbs(const wchar_t* ws) {
+  std::wstring norm = normalizePathW(ws);
+  return utf8FromWide(norm.c_str());
+}
+
+std::string utf8FromAnsiAbs(const char* s) {
+  std::wstring ws = wideFromAnsi(s);
+  return utf8FromWideAbs(ws.c_str());
+}
+
 std::string buildMessage(const char* apiName, const std::string& filePathUtf8) {
   std::string out;
   out.reserve(320 + filePathUtf8.size());
@@ -108,7 +165,18 @@ std::string buildMessage(const char* apiName, const std::string& filePathUtf8) {
   return out;
 }
 
-HANDLE openPipeHandle(const std::wstring& pipeName) {
+std::string buildHeartbeat() {
+  std::string out;
+  out.reserve(160);
+  out += "{\"type\":\"heartbeat\",\"pid\":";
+  out += std::to_string(::GetCurrentProcessId());
+  out += ",\"ts\":";
+  out += std::to_string(::GetTickCount64());
+  out += "}\n";
+  return out;
+}
+
+HANDLE openPipeHandle(const std::wstring& pipeName, DWORD desiredAccess) {
   for (int i = 0; i < kPipeOpenRetries; ++i) {
     if (!::WaitNamedPipeW(pipeName.c_str(), kPipeConnectTimeoutMs)) {
       DWORD err = ::GetLastError();
@@ -120,7 +188,7 @@ HANDLE openPipeHandle(const std::wstring& pipeName) {
     }
     HANDLE hPipe = ::CreateFileW(
         pipeName.c_str(),
-        GENERIC_WRITE,
+        desiredAccess,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         nullptr,
         OPEN_EXISTING,
@@ -137,10 +205,70 @@ HANDLE openPipeHandle(const std::wstring& pipeName) {
   return INVALID_HANDLE_VALUE;
 }
 
+bool waitHeartbeatAck(HANDLE hPipe) {
+  DWORD start = ::GetTickCount();
+  std::string buf;
+  buf.reserve(256);
+  while (::GetTickCount() - start < kHeartbeatAckTimeoutMs) {
+    DWORD avail = 0;
+    if (!::PeekNamedPipe(hPipe, nullptr, 0, nullptr, &avail, nullptr)) return false;
+    if (avail > 0) {
+      char tmp[256]{};
+      DWORD toRead = avail > 255 ? 255 : avail;
+      DWORD read = 0;
+      if (!::ReadFile(hPipe, tmp, toRead, &read, nullptr)) return false;
+      if (read > 0) {
+        buf.append(tmp, tmp + read);
+        if (buf.find("heartbeat_ack") != std::string::npos) return true;
+        if (buf.find("ok") != std::string::npos) return true;
+      }
+    }
+    ::Sleep(20);
+  }
+  return false;
+}
+
+DWORD WINAPI heartbeatThreadProc(LPVOID) {
+  int missed = 0;
+  while (::InterlockedCompareExchange(&gHeartbeatStop, 0, 0) == 0) {
+    std::wstring pipeName = readPipeName();
+    bool ok = false;
+    if (!pipeName.empty()) {
+      HANDLE hPipe = openPipeHandle(pipeName, GENERIC_READ | GENERIC_WRITE);
+      if (hPipe != INVALID_HANDLE_VALUE) {
+        std::string payload = buildHeartbeat();
+        DWORD written = 0;
+        if (::WriteFile(hPipe, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr)) {
+          ok = waitHeartbeatAck(hPipe);
+        }
+        ::CloseHandle(hPipe);
+      }
+    }
+    if (ok) {
+      missed = 0;
+    } else {
+      missed += 1;
+      if (missed >= 2) {
+        detachDetours();
+        if (gSelfModule) {
+          ::FreeLibraryAndExitThread(gSelfModule, 0);
+        }
+        return 0;
+      }
+    }
+    DWORD slept = 0;
+    while (slept < kHeartbeatIntervalMs && ::InterlockedCompareExchange(&gHeartbeatStop, 0, 0) == 0) {
+      ::Sleep(200);
+      slept += 200;
+    }
+  }
+  return 0;
+}
+
 void sendNotice(const char* apiName, const std::string& pathUtf8) {
   std::wstring pipeName = readPipeName();
   if (pipeName.empty()) return;
-  HANDLE hPipe = openPipeHandle(pipeName);
+  HANDLE hPipe = openPipeHandle(pipeName, GENERIC_WRITE);
   if (hPipe == INVALID_HANDLE_VALUE) return;
   std::string payload = buildMessage(apiName, pathUtf8);
   DWORD written = 0;
@@ -171,7 +299,7 @@ HANDLE WINAPI HookCreateFileW(
     HANDLE hTemplateFile) {
   HookGuard guard;
   if (guard.entered()) {
-    sendNotice("CreateFileW", utf8FromWide(lpFileName));
+    sendNotice("CreateFileW", utf8FromWideAbs(lpFileName));
   }
   return gCreateFileW(
       lpFileName,
@@ -193,7 +321,7 @@ HANDLE WINAPI HookCreateFileA(
     HANDLE hTemplateFile) {
   HookGuard guard;
   if (guard.entered()) {
-    sendNotice("CreateFileA", utf8FromAnsi(lpFileName));
+    sendNotice("CreateFileA", utf8FromAnsiAbs(lpFileName));
   }
   return gCreateFileA(
       lpFileName,
@@ -253,10 +381,18 @@ void detachDetours() {
 
 BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
   if (reason == DLL_PROCESS_ATTACH) {
+    gSelfModule = hinst;
     ::DisableThreadLibraryCalls(hinst);
     DetourRestoreAfterWith();
     attachDetours();
+    ::InterlockedExchange(&gHeartbeatStop, 0);
+    gHeartbeatThread = ::CreateThread(nullptr, 0, heartbeatThreadProc, nullptr, 0, nullptr);
   } else if (reason == DLL_PROCESS_DETACH) {
+    ::InterlockedExchange(&gHeartbeatStop, 1);
+    if (gHeartbeatThread) {
+      ::CloseHandle(gHeartbeatThread);
+      gHeartbeatThread = nullptr;
+    }
     detachDetours();
   }
   return TRUE;
