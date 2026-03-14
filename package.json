@@ -9,7 +9,9 @@
     "test": "node --test",
     "build": "electron-builder -w nsis",
     "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build"
+    "build-storybook": "storybook build",
+    "lint": "node -e \"const fs=require('fs'),path=require('path');const root=process.cwd();const ignore=new Set(['node_modules','dist','dist2','Engine','.git']);const exts=new Set(['.js','.cjs','.mjs']);let failed=false;function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){if(entry.isDirectory()){if(ignore.has(entry.name)) continue;walk(path.join(dir,entry.name));}else{const ext=path.extname(entry.name);if(!exts.has(ext)) continue;const file=path.join(dir,entry.name);const res=require('child_process').spawnSync(process.execPath,['--check',file],{stdio:'pipe'});if(res.status!==0){failed=true;process.stdout.write(res.stderr||'');}}}}walk(root);process.exit(failed?1:0);\"",
+    "typecheck": "node -e \"console.log('typecheck: no tsconfig');\""
   },
   "build": {
     "appId": "com.anxin.security",
@@ -59,6 +61,20 @@
         "filter": [
           "file_hook_detours.dll",
           "file_hook_injector.exe"
+        ]
+      },
+      {
+        "from": "native/bin/win32-x64",
+        "to": "native/win32-x64",
+        "filter": [
+          "process_watcher.dll"
+        ]
+      },
+      {
+        "from": "native/bin/win32-x86",
+        "to": "native/win32-x86",
+        "filter": [
+          "process_watcher.dll"
         ]
       }
     ],

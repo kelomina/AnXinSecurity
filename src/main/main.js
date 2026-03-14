@@ -20,6 +20,7 @@ const { createInterceptionQueue } = require('./interception_manager')
 const { resolveTrayExitMode } = require('./tray_exit_mode')
 const { normalizePathKey, isMalware, getPayloadPaths, decideSnapshotActions } = require('./snapshot_engine_policy')
 const StartupAllowlistManager = require('./startup_allowlist_manager')
+const { startProcessWatcher, stopProcessWatcher, setSignedPaths, pollNewPid } = require('./process_watcher')
 
 const CONFIG_PATH = path.join(__dirname, '../../config/app.json')
 
@@ -235,6 +236,9 @@ const hookIpcSockets = new Set()
 const hookPipePath = '\\\\.\\pipe\\anxin_security_filehook'
 const hookInjectedPids = new Set()
 let hookNoticeCount = 0
+let processWatcherStarted = false
+let verifiedSignedPaths = []
+let processWatcherPidTimer = null
 
 function normalizeLowerPath(p) {
   if (typeof p !== 'string') return ''
@@ -297,7 +301,9 @@ function startHookIpcServer() {
               const api = parsed && typeof parsed.api === 'string' ? parsed.api : ''
               const pid = parsed && Number.isFinite(parsed.pid) ? parsed.pid : ''
               const p = parsed && typeof parsed.path === 'string' ? parsed.path : ''
-              console.log('主进程: 收到Hook消息', api, pid, p)
+              const src = parsed && typeof parsed.source === 'string' ? parsed.source : ''
+              const out = `主进程: 收到Hook消息 api=${api} pid=${pid} path=${p || '-'} source=${src || '-'}`
+              console.log(out)
             }
           } catch {}
         }
@@ -1493,13 +1499,13 @@ async function injectHookForPid(pid, artifacts) {
 }
 
 async function injectHookIntoUnsignedProcesses() {
-  if (process.platform !== 'win32') return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0 }
+  if (process.platform !== 'win32') return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0, signedPaths: [] }
   if (!winapi || typeof winapi.getProcessImageSnapshot !== 'function' || typeof winapi.verifyTrust !== 'function') {
-    return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0 }
+    return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0, signedPaths: [] }
   }
   const artifacts = resolveHookArtifacts()
   if (!(artifacts.x64.injector && artifacts.x64.dll) && !(artifacts.x86.injector && artifacts.x86.dll)) {
-    return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0 }
+    return { total: 0, injected: 0, skippedSigned: 0, skippedInvalid: 0, failed: 0, signedPaths: [] }
   }
 
   let snapshots = []
@@ -1519,11 +1525,13 @@ async function injectHookIntoUnsignedProcesses() {
   let skippedSigned = 0
   let skippedInvalid = 0
   let failed = 0
+  const signedSet = new Set()
   for (const [pid, imagePath] of unique) {
     let isSigned = false
     try { isSigned = winapi.verifyTrust(imagePath) === true } catch { isSigned = false }
     if (isSigned) {
       skippedSigned++
+      signedSet.add(imagePath)
       continue
     }
     if (!fileExists(imagePath)) {
@@ -1541,7 +1549,7 @@ async function injectHookIntoUnsignedProcesses() {
     }
   }
 
-  const result = { total: unique.size, injected, skippedSigned, skippedInvalid, failed }
+  const result = { total: unique.size, injected, skippedSigned, skippedInvalid, failed, signedPaths: [...signedSet] }
   console.log('主进程: 注入统计', result)
   return result
 }
@@ -1580,7 +1588,13 @@ app.whenReady().then(() => {
     },
     runBlockingScan: async () => {
       startHookIpcServer()
-      await injectHookIntoUnsignedProcesses()
+      const scanRes = await injectHookIntoUnsignedProcesses()
+      if (scanRes && Array.isArray(scanRes.signedPaths)) {
+        verifiedSignedPaths = scanRes.signedPaths
+        if (verifiedSignedPaths.length) {
+          try { setSignedPaths(verifiedSignedPaths) } catch {}
+        }
+      }
       if (engineCfg.autoStart !== false) {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []
         await startIfNeeded({ engine: { ...engineCfg, args: engineArgs }, ipc, baseDirs: getEngineBaseDirs() })
@@ -1601,6 +1615,37 @@ app.whenReady().then(() => {
       try { behavior.start() } catch {}
       try { behavior.setWriteEnabled(isBehaviorMonitoringEnabled(config)) } catch {}
       startHookIpcServer()
+      if (!processWatcherStarted) {
+        const artifacts = resolveHookArtifacts()
+        const res = startProcessWatcher({
+          injectorX64: artifacts.x64 && artifacts.x64.injector ? artifacts.x64.injector : '',
+          injectorX86: artifacts.x86 && artifacts.x86.injector ? artifacts.x86.injector : '',
+          dllX64: artifacts.x64 && artifacts.x64.dll ? artifacts.x64.dll : '',
+          dllX86: artifacts.x86 && artifacts.x86.dll ? artifacts.x86.dll : '',
+          intervalMs: 100
+        })
+        if (res && res.ok) {
+          processWatcherStarted = true
+          console.log('主进程: 进程监控已启动')
+          if (verifiedSignedPaths.length) {
+            try { setSignedPaths(verifiedSignedPaths) } catch {}
+          }
+          if (!processWatcherPidTimer) {
+            processWatcherPidTimer = setInterval(() => {
+              let pid = 0
+              let tries = 0
+              while (tries < 50) {
+                try { pid = pollNewPid() } catch { pid = 0 }
+                if (!pid) break
+                console.log(`主进程: 监控到新进程 pid=${pid}`)
+                tries += 1
+              }
+            }, 200)
+          }
+        } else {
+          console.log('主进程: 进程监控启动失败')
+        }
+      }
       //startEtwWorker()
       if (engineCfg.autoStart !== false && !startupEngineEnsured) {
         const engineArgs = (engineCfg && Array.isArray(engineCfg.args)) ? engineCfg.args : []

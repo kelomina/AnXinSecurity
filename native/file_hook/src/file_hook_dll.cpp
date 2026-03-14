@@ -128,9 +128,13 @@ std::wstring normalizePathW(const wchar_t* ws) {
   if (_wcsnicmp(s.c_str(), L"\\??\\", 4) == 0) {
     s = s.substr(4);
   }
+  if (_wcsnicmp(s.c_str(), L"\\\\?\\UNC\\", 8) == 0) {
+    s = L"\\" + s.substr(7);
+  } else if (_wcsnicmp(s.c_str(), L"\\\\?\\", 4) == 0) {
+    s = s.substr(4);
+  }
   if (s.size() >= 2 && s[1] == L':') return s;
   if (s.rfind(L"\\\\", 0) == 0) return s;
-  if (_wcsnicmp(s.c_str(), L"\\\\?\\", 4) == 0) return s;
   if (_wcsnicmp(s.c_str(), L"\\Device\\", 8) == 0) return deviceToDosPath(s);
   wchar_t buf[4096]{};
   DWORD len = ::GetFullPathNameW(s.c_str(), static_cast<DWORD>(std::size(buf)), buf, nullptr);
@@ -146,6 +150,14 @@ std::string utf8FromWideAbs(const wchar_t* ws) {
 std::string utf8FromAnsiAbs(const char* s) {
   std::wstring ws = wideFromAnsi(s);
   return utf8FromWideAbs(ws.c_str());
+}
+
+std::string pathFromHandleUtf8(HANDLE h) {
+  if (!h || h == INVALID_HANDLE_VALUE) return {};
+  wchar_t buf[4096]{};
+  DWORD len = ::GetFinalPathNameByHandleW(h, buf, static_cast<DWORD>(std::size(buf)), FILE_NAME_NORMALIZED);
+  if (len == 0 || len >= static_cast<DWORD>(std::size(buf))) return {};
+  return utf8FromWideAbs(buf);
 }
 
 std::string buildMessage(const char* apiName, const std::string& filePathUtf8) {
@@ -298,10 +310,7 @@ HANDLE WINAPI HookCreateFileW(
     DWORD dwFlagsAndAttributes,
     HANDLE hTemplateFile) {
   HookGuard guard;
-  if (guard.entered()) {
-    sendNotice("CreateFileW", utf8FromWideAbs(lpFileName));
-  }
-  return gCreateFileW(
+  HANDLE h = gCreateFileW(
       lpFileName,
       dwDesiredAccess,
       dwShareMode,
@@ -309,6 +318,12 @@ HANDLE WINAPI HookCreateFileW(
       dwCreationDisposition,
       dwFlagsAndAttributes,
       hTemplateFile);
+  if (guard.entered()) {
+    std::string path = pathFromHandleUtf8(h);
+    if (path.empty()) path = utf8FromWideAbs(lpFileName);
+    if (!path.empty()) sendNotice("CreateFileW", path);
+  }
+  return h;
 }
 
 HANDLE WINAPI HookCreateFileA(
@@ -320,10 +335,7 @@ HANDLE WINAPI HookCreateFileA(
     DWORD dwFlagsAndAttributes,
     HANDLE hTemplateFile) {
   HookGuard guard;
-  if (guard.entered()) {
-    sendNotice("CreateFileA", utf8FromAnsiAbs(lpFileName));
-  }
-  return gCreateFileA(
+  HANDLE h = gCreateFileA(
       lpFileName,
       dwDesiredAccess,
       dwShareMode,
@@ -331,6 +343,12 @@ HANDLE WINAPI HookCreateFileA(
       dwCreationDisposition,
       dwFlagsAndAttributes,
       hTemplateFile);
+  if (guard.entered()) {
+    std::string path = pathFromHandleUtf8(h);
+    if (path.empty()) path = utf8FromAnsiAbs(lpFileName);
+    if (!path.empty()) sendNotice("CreateFileA", path);
+  }
+  return h;
 }
 
 void attachDetours() {
