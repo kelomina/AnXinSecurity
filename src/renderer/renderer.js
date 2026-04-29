@@ -35,6 +35,23 @@ let devSettingsUnlocked = false
 let devSettingsPassword = ''
 let devSettingsData = { blackPath: '', whitePath: '' }
 
+/**
+ * - 函数: `setTheme`
+ * - Function: `setTheme`
+ * - 作用: 设置主题状态，并同步影响当前模块内的后续判断。
+ * - Purpose: Sets the theme state and synchronizes the downstream decisions made inside this module.
+ * - 调用方: `模块顶层流程`。
+ * - Callers: `模块顶层流程`.
+ * - 被调方: 当前函数主要依赖内联表达式、基础语句或外部对象方法完成处理。
+ * - Callees: The function mainly relies on inline expressions, basic statements, or external object methods.
+ * - 变量说明: 无显式入参；`cfg`, `color` 为当前函数内部维护的中间状态或派生结果。
+ * - Variables: No explicit parameters; `cfg`, `color` are the intermediate or derived values maintained inside the function.
+ * - 接入方式: 通过当前工厂或模块返回值暴露；新增同类能力时，优先经由现有返回对象复用 `setTheme`。
+ * - Integration: It is exposed through the current factory or module return value; new sibling capabilities should reuse `setTheme` through the existing returned object.
+ * - 错误处理: 主要依赖前置守卫与返回值控制流程，不在本函数内集中吞掉异常。
+ * - Error Handling: Relies on guard clauses and return values for flow control instead of swallowing failures inside the function.
+ * - 关键词: 设置 | 主题 | set | theme | 复用 | 调用链 | call chain | 错误处理 | error handling | 复用
+ */
 function setTheme() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : { themeColor: '#1677ff' }
   const color = cfg.themeColor || '#1677ff'
@@ -45,12 +62,46 @@ function setTheme() {
 let themeMedia = null
 let themeMediaBound = false
 
+/**
+ * - 函数: `resolveThemeMode`
+ * - Function: `resolveThemeMode`
+ * - 作用: 解析主题mode，并按当前运行环境返回优先可用的结果。
+ * - Purpose: Resolves the theme mode and returns the highest-priority usable result for the current runtime.
+ * - 调用方: `模块顶层流程`、`applyThemePreferences`、`handler`。
+ * - Callers: `模块顶层流程`, `applyThemePreferences`, `handler`.
+ * - 被调方: 当前函数主要依赖内联表达式、基础语句或外部对象方法完成处理。
+ * - Callees: The function mainly relies on inline expressions, basic statements, or external object methods.
+ * - 变量说明: `cfg` 为当前流程传入的cfg；`m` 为函数内部派生的中间状态。
+ * - Variables: `cfg` is the incoming cfg for this flow; `m` are derived intermediate variables inside the function.
+ * - 接入方式: 在当前模块内部直接调用 `resolveThemeMode(...)` 接入；新增同类流程时，优先复用本函数而不是重复编写分支逻辑。
+ * - Integration: Integrate by calling `resolveThemeMode(...)` inside the current module; new sibling flows should reuse this function instead of duplicating branch logic.
+ * - 错误处理: 主要依赖前置守卫与返回值控制流程，不在本函数内集中吞掉异常。
+ * - Error Handling: Relies on guard clauses and return values for flow control instead of swallowing failures inside the function.
+ * - 关键词: 解析 | 主题 | mode | resolve | theme | mode | call chain | 错误处理 | error handling | 复用
+ */
 function resolveThemeMode(cfg) {
   const m = cfg && cfg.ui && typeof cfg.ui.themeMode === 'string' ? cfg.ui.themeMode.trim() : ''
   if (m === 'dark' || m === 'light' || m === 'system') return m
   return 'system'
 }
 
+/**
+ * - 函数: `resolveThemeFromSystem`
+ * - Function: `resolveThemeFromSystem`
+ * - 作用: 解析主题fromsystem，并按当前运行环境返回优先可用的结果。
+ * - Purpose: Resolves the theme from system and returns the highest-priority usable result for the current runtime.
+ * - 调用方: `模块顶层流程`、`applyThemePreferences`、`handler`。
+ * - Callers: `模块顶层流程`, `applyThemePreferences`, `handler`.
+ * - 被调方: 当前函数主要依赖内联表达式、基础语句或外部对象方法完成处理。
+ * - Callees: The function mainly relies on inline expressions, basic statements, or external object methods.
+ * - 变量说明: 无显式入参；`mm` 为当前函数内部维护的中间状态或派生结果。
+ * - Variables: No explicit parameters; `mm` are the intermediate or derived values maintained inside the function.
+ * - 接入方式: 在当前模块内部直接调用 `resolveThemeFromSystem(...)` 接入；新增同类流程时，优先复用本函数而不是重复编写分支逻辑。
+ * - Integration: Integrate by calling `resolveThemeFromSystem(...)` inside the current module; new sibling flows should reuse this function instead of duplicating branch logic.
+ * - 错误处理: 内部包含 `try/catch` 守卫，用于隔离局部异常并保持当前流程继续推进。
+ * - Error Handling: Wraps sensitive work in `try/catch` so local failures are isolated and the current flow can continue.
+ * - 关键词: 解析 | 主题 | from | system | resolve | theme | from | system | error handling | 复用
+ */
 function resolveThemeFromSystem() {
   try {
     const mm = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
@@ -60,6 +111,23 @@ function resolveThemeFromSystem() {
   }
 }
 
+/**
+ * - 函数: `applyThemePreferences`
+ * - Function: `applyThemePreferences`
+ * - 作用: 梳理并返回applyThemePreferences负责的主题preferences局部处理结果。
+ * - Purpose: Coordinates and returns the theme preferences processing result handled by applyThemePreferences.
+ * - 调用方: `模块顶层流程`、`initSettings`。
+ * - Callers: `模块顶层流程`, `initSettings`.
+ * - 被调方: `resolveThemeMode`、`resolveThemeFromSystem`、`handler`。
+ * - Callees: `resolveThemeMode`, `resolveThemeFromSystem`, `handler`.
+ * - 变量说明: 无显式入参；`cfg`, `mode`, `theme` 为当前函数内部维护的中间状态或派生结果。
+ * - Variables: No explicit parameters; `cfg`, `mode`, `theme` are the intermediate or derived values maintained inside the function.
+ * - 接入方式: 通过当前工厂或模块返回值暴露；新增同类能力时，优先经由现有返回对象复用 `applyThemePreferences`。
+ * - Integration: It is exposed through the current factory or module return value; new sibling capabilities should reuse `applyThemePreferences` through the existing returned object.
+ * - 错误处理: 内部包含 `try/catch` 守卫，用于隔离局部异常并保持当前流程继续推进。
+ * - Error Handling: Wraps sensitive work in `try/catch` so local failures are isolated and the current flow can continue.
+ * - 关键词: apply | 主题 | preferences | apply | theme | preferences | call chain | 错误处理 | error handling | 复用
+ */
 function applyThemePreferences() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : null
   const mode = resolveThemeMode(cfg)
@@ -75,6 +143,23 @@ function applyThemePreferences() {
   if (!themeMediaBound) {
     try {
       themeMedia = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null
+      /**
+ * - 函数: `handler`
+ * - Function: `handler`
+ * - 作用: 梳理并返回handler负责的handler局部处理结果。
+ * - Purpose: Coordinates and returns the handler processing result handled by handler.
+ * - 调用方: `applyThemePreferences`。
+ * - Callers: `applyThemePreferences`.
+ * - 被调方: `resolveThemeMode`、`resolveThemeFromSystem`。
+ * - Callees: `resolveThemeMode`, `resolveThemeFromSystem`.
+ * - 变量说明: 无显式入参；`cfg2`, `mode2`, `theme2` 为当前函数内部维护的中间状态或派生结果。
+ * - Variables: No explicit parameters; `cfg2`, `mode2`, `theme2` are the intermediate or derived values maintained inside the function.
+ * - 接入方式: 通过当前工厂或模块返回值暴露；新增同类能力时，优先经由现有返回对象复用 `handler`。
+ * - Integration: It is exposed through the current factory or module return value; new sibling capabilities should reuse `handler` through the existing returned object.
+ * - 错误处理: 内部包含 `try/catch` 守卫，用于隔离局部异常并保持当前流程继续推进。
+ * - Error Handling: Wraps sensitive work in `try/catch` so local failures are isolated and the current flow can continue.
+ * - 关键词: handler | handler | 错误处理 | error handling | 复用 | 调用链 | call chain | 错误处理 | error handling | 复用
+ */
       const handler = () => {
         const cfg2 = (window.api && window.api.config) ? window.api.config.get() : null
         const mode2 = resolveThemeMode(cfg2)
@@ -127,6 +212,23 @@ window.addEventListener('unhandledrejection', (e) => {
   } catch {}
 })
 
+/**
+ * - 函数: `applyMotionPreferences`
+ * - Function: `applyMotionPreferences`
+ * - 作用: 梳理并返回applyMotionPreferences负责的动效preferences局部处理结果。
+ * - Purpose: Coordinates and returns the motion preferences processing result handled by applyMotionPreferences.
+ * - 调用方: `模块顶层流程`、`initSettings`。
+ * - Callers: `模块顶层流程`, `initSettings`.
+ * - 被调方: 当前函数主要依赖内联表达式、基础语句或外部对象方法完成处理。
+ * - Callees: The function mainly relies on inline expressions, basic statements, or external object methods.
+ * - 变量说明: 无显式入参；`cfg`, `cfgAllows`, `reduce` 为当前函数内部维护的中间状态或派生结果。
+ * - Variables: No explicit parameters; `cfg`, `cfgAllows`, `reduce` are the intermediate or derived values maintained inside the function.
+ * - 接入方式: 通过当前工厂或模块返回值暴露；新增同类能力时，优先经由现有返回对象复用 `applyMotionPreferences`。
+ * - Integration: It is exposed through the current factory or module return value; new sibling capabilities should reuse `applyMotionPreferences` through the existing returned object.
+ * - 错误处理: 内部包含 `try/catch` 守卫，用于隔离局部异常并保持当前流程继续推进。
+ * - Error Handling: Wraps sensitive work in `try/catch` so local failures are isolated and the current flow can continue.
+ * - 关键词: apply | 动效 | preferences | apply | motion | preferences | call chain | 错误处理 | error handling | 复用
+ */
 function applyMotionPreferences() {
   const cfg = (window.api && window.api.config) ? window.api.config.get() : null
   const cfgAllows = !(!cfg || !cfg.ui || cfg.ui.animations === false)
@@ -164,6 +266,23 @@ function applyMotionPreferences() {
   }
 }
 
+/**
+ * - 函数: `t`
+ * - Function: `t`
+ * - 作用: 梳理并返回t负责的t局部处理结果。
+ * - Purpose: Coordinates and returns the t processing result handled by t.
+ * - 调用方: `模块顶层流程`、`updateDevSettingsUi`、`showDevSettingsUnlock`、`onConfirm`、`formatInterceptRule`、`showInterceptModal`。
+ * - Callers: `模块顶层流程`, `updateDevSettingsUi`, `showDevSettingsUnlock`, `onConfirm`, `formatInterceptRule`, `showInterceptModal`.
+ * - 被调方: 当前函数主要依赖内联表达式、基础语句或外部对象方法完成处理。
+ * - Callees: The function mainly relies on inline expressions, basic statements, or external object methods.
+ * - 变量说明: `key` 为当前流程传入的键；`fn` 为函数内部派生的中间状态。
+ * - Variables: `key` is the incoming key for this flow; `fn` are derived intermediate variables inside the function.
+ * - 接入方式: 通过当前工厂或模块返回值暴露；新增同类能力时，优先经由现有返回对象复用 `t`。
+ * - Integration: It is exposed through the current factory or module return value; new sibling capabilities should reuse `t` through the existing returned object.
+ * - 错误处理: 主要依赖前置守卫与返回值控制流程，不在本函数内集中吞掉异常。
+ * - Error Handling: Relies on guard clauses and return values for flow control instead of swallowing failures inside the function.
+ * - 关键词: t | t | 错误处理 | error handling | 复用 | 调用链 | call chain | 错误处理 | error handling | 复用
+ */
 function t(key) {
   const fn = window.api && window.api.i18n && window.api.i18n.t
   return fn ? fn(key) : key
