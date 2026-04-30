@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
+import { setAnimationsEnabled } from '../api/config'
 
 export type ThemeMode = 'system' | 'light' | 'dark'
 
@@ -36,10 +37,25 @@ export const useThemeStore = create<ThemeState>()(
         set({ themeMode: mode, actualTheme })
       },
       
+      /**
+       * 函数名称：toggleAnimations
+       * 函数作用：切换动画开关并同步到后端持久化。
+       * Purpose: Toggles animations and syncs to backend persistence.
+       * 调用方：SettingsPage 动画开关
+       * Called by: SettingsPage animation toggle
+       * 副作用：修改 DOM data-animations 属性，调用后端 set_animations_enabled 持久化
+       * Side effect: Modifies DOM data-animations attribute, calls backend set_animations_enabled
+       * 中文关键词：动画开关，切换动画，动画持久化
+       * English keywords: animation toggle, toggle animation, animation persistence
+       */
       toggleAnimations: () => {
         const enabled = !get().animationsEnabled
         document.body.setAttribute('data-animations', enabled ? 'on' : 'off')
         set({ animationsEnabled: enabled })
+        // 同步到后端持久化 / Sync to backend persistence
+        setAnimationsEnabled(enabled).catch(err => {
+          console.error('Failed to persist animation setting:', err)
+        })
       },
       
       initializeTheme: () => {

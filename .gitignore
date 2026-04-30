@@ -133,7 +133,7 @@ data/processed_lightgbm
 benign_samples
 malicious_samples
 extracted_features.pkl
-tests
+test/
 scan_results
 reports/
 node_modules
@@ -150,6 +150,13 @@ build-x64
 bin
 startup_allowlist.enc
 
+# Agent / IDE artifacts
+helloagents/
+
+# Runtime data
+data/anxin_signature_db.bin
+data/behavior/
+
 # Tauri
 /src-tauri/target
 /src-tauri/target-check
@@ -162,3 +169,6 @@ startup_allowlist.enc
 debug
 
 .lock
+
+# Docs (本地知识文档，不提交)
+docs/

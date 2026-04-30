@@ -7,14 +7,15 @@ use uuid::Uuid;
 use chrono::Utc;
 use crate::utils::crypto::{encrypt_data, decrypt_data};
 use sha2::{Sha256, Digest};
+use rand::Rng;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct QuarantineItem {
     pub id: String,
     pub original_path: String,
     pub isolated_path: String,
     pub file_hash: String,
-    pub file_size: u64,
+    pub file_size: i64,
     pub threat_type: Option<String>,
     pub threat_family: Option<String>,
     pub status: String,
@@ -94,10 +95,37 @@ impl QuarantineService {
         Ok(format!("{:x}", result))
     }
 
-    /// 生成加密密钥（简化实现，生产环境应使用更安全的密钥管理）
+    /// 函数名称：get_encryption_key
+    /// 函数作用：
+    ///   获取文件加密密钥。优先从环境变量 ANXIN_SECURITY_QUARANTINE_KEY 读取 32 位 hex 字符串，
+    ///   若未设置则回退到开发用硬编码密钥（仅适用于非生产环境）。
+    /// Purpose:
+    ///   Returns the encryption key for file quarantine. Prefers environment variable
+    ///   ANXIN_SECURITY_QUARANTINE_KEY (32-char hex string), falls back to dev hardcoded key.
+    /// 调用方：isolate_file, restore_file
+    /// Called by: isolate_file, restore_file
+    /// 安全风险/Security risk: 回退密钥硬编码/fallback key is hardcoded — 不安全/not secure
+    ///   生产环境必须设置 ANXIN_SECURITY_QUARANTINE_KEY 环境变量（32位十六进制）。
+    ///   Production MUST set ANXIN_SECURITY_QUARANTINE_KEY env var (32 hex chars).
+    /// 中文关键词：加密密钥，环境变量，隔离区，AES，密钥管理
+    /// English keywords: encryption key, environment variable, quarantine, AES, key management
     fn get_encryption_key() -> [u8; 16] {
-        // TODO: 生产环境应使用 DPAPI 或其他安全密钥管理
-        // 这里使用固定密钥仅用于演示
+        if let Ok(hex_key) = std::env::var("ANXIN_SECURITY_QUARANTINE_KEY") {
+            if hex_key.len() == 32 {
+                if let Ok(key) = <[u8; 16]>::try_from(
+                    (0..16)
+                        .map(|i| u8::from_str_radix(&hex_key[i * 2..i * 2 + 2], 16))
+                        .collect::<Result<Vec<_>, _>>()
+                        .unwrap_or_default()
+                ) {
+                    return key;
+                }
+            }
+            eprintln!("[QuarantineService] ANXIN_SECURITY_QUARANTINE_KEY 格式无效，需要32位hex字符串，使用回退密钥");
+        }
+        // 安全警告: 回退密钥仅用于开发/演示 — 生产环境请设置环境变量
+        // Security warning: fallback key for dev/demo only — set env var in production
+        eprintln!("[QuarantineService] WARNING: 使用硬编码回退加密密钥，生产环境请设置 ANXIN_SECURITY_QUARANTINE_KEY 环境变量");
         *b"AnXinSecurityKey"
     }
 
@@ -118,7 +146,7 @@ impl QuarantineService {
         // 检查文件大小（限制 500MB）
         let metadata = fs::metadata(&original_path)
             .map_err(|e| format!("Failed to get file metadata: {}", e))?;
-        let file_size = metadata.len();
+        let file_size = metadata.len() as i64;
         
         if file_size > 500 * 1024 * 1024 {
             return Err("File size exceeds 500MB limit".to_string());
@@ -253,7 +281,18 @@ impl QuarantineService {
         Ok(true)
     }
 
-    /// 删除隔离文件：安全擦除
+    /// 函数名称：delete_quarantine
+    /// 函数作用：
+    ///   安全擦除并永久删除隔离区中的文件。执行三次覆写（随机数据→0x00→0xFF）后删除物理文件，
+    ///   并从数据库中移除记录。此操作不可撤销。
+    /// Purpose:
+    ///   Securely wipes and permanently deletes a quarantined file.
+    ///   Performs three-pass overwrite (random → zeros → 0xFF) before physical deletion,
+    ///   then removes the database record. This operation is irreversible.
+    /// 调用方：commands::quarantine::delete_quarantine
+    /// Called by: commands::quarantine::delete_quarantine
+    /// 中文关键词：安全擦除，覆写，删除，隔离区，不可逆，随机覆写，全零覆写
+    /// English keywords: secure wipe, overwrite, delete, quarantine, irreversible, random overwrite, zero overwrite
     pub async fn delete_quarantine(&self, pool: &SqlitePool, id: &str) -> Result<bool, String> {
         // 查询隔离记录
         let record: Option<(String, String)> = sqlx::query_as(
@@ -271,18 +310,27 @@ impl QuarantineService {
         let (record_id, isolated_path) = 
             record.ok_or_else(|| format!("Quarantine record not found: {}", id))?;
         
-        // 安全擦除文件（多次覆写）
+        // 三次覆写：随机数据、0x00、0xFF
         if PathBuf::from(&isolated_path).exists() {
             let file_size = fs::metadata(&isolated_path)
                 .map_err(|e| format!("Failed to get file metadata: {}", e))?
-                .len();
-            
-            // 三次覆写：随机数据、0x00、0xFF
-            for _ in 0..3 {
-                let random_data = vec![0u8; file_size as usize];
-                fs::write(&isolated_path, &random_data)
-                    .map_err(|e| format!("Failed to overwrite file: {}", e))?;
-            }
+                .len() as usize;
+
+            // 第一次覆写：随机数据
+            let mut rng = rand::thread_rng();
+            let random_data: Vec<u8> = (0..file_size).map(|_| rng.gen()).collect();
+            fs::write(&isolated_path, &random_data)
+                .map_err(|e| format!("Failed to overwrite file with random data: {}", e))?;
+
+            // 第二次覆写：全零 (0x00)
+            let zero_data = vec![0u8; file_size];
+            fs::write(&isolated_path, &zero_data)
+                .map_err(|e| format!("Failed to overwrite file with zeros: {}", e))?;
+
+            // 第三次覆写：全一 (0xFF)
+            let ff_data = vec![0xFFu8; file_size];
+            fs::write(&isolated_path, &ff_data)
+                .map_err(|e| format!("Failed to overwrite file with 0xFF: {}", e))?;
             
             // 删除文件
             fs::remove_file(&isolated_path)

@@ -226,6 +226,27 @@
         "tactic": "Persistence",
         "techniqueId": "T1112",
         "techniqueName": "Modify Registry"
+      },
+      {
+        "provider": "Registry",
+        "op": "CreateKey",
+        "tactic": "Persistence",
+        "techniqueId": "T1112",
+        "techniqueName": "Modify Registry"
+      },
+      {
+        "provider": "Registry",
+        "op": "DeleteValue",
+        "tactic": "Defense Evasion",
+        "techniqueId": "T1112",
+        "techniqueName": "Modify Registry"
+      },
+      {
+        "provider": "Network",
+        "op": "Connect",
+        "tactic": "Command and Control",
+        "techniqueId": "T1071",
+        "techniqueName": "Application Layer Protocol"
       }
     ]
   },

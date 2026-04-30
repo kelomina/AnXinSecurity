@@ -1,5 +1,12 @@
 [build]
+# 使用 MSVC 工具链编译（需 rustup 管理的 cargo，非系统自带 GNU 版 cargo）
+# Use MSVC toolchain (requires rustup-managed cargo, NOT the system-installed GNU cargo)
 target = "x86_64-pc-windows-msvc"
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
+
+# GNU 目标配置（MSVC 不可用时的回退方案）
+# GNU target config (fallback when MSVC is unavailable)
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"

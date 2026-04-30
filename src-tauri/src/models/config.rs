@@ -158,9 +158,19 @@ impl Default for AppConfig {
 }
 
 impl AppConfig {
+    /// 函数名称：load
+    /// 函数作用：从 config/app.json 加载配置。优先从 CWD 查找，未找到则尝试上级目录（适配 tauri dev 场景）。
+    /// Purpose: Loads config from config/app.json. Tries CWD first, then parent dir (for tauri dev compat).
+    /// 中文关键词：配置加载，路径解析，tauri dev，配置查找
+    /// English keywords: config loading, path resolution, tauri dev, config lookup
     pub fn load() -> Result<Self, Box<dyn std::error::Error>> {
-        let config_path = PathBuf::from("config/app.json");
-        let content = fs::read_to_string(config_path)?;
+        Self::try_load_path("config/app.json")
+            .or_else(|_| Self::try_load_path("../config/app.json"))
+    }
+
+    fn try_load_path(config_path: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        let path = PathBuf::from(config_path);
+        let content = fs::read_to_string(&path)?;
         let config: AppConfig = serde_json::from_str(&content)?;
         Ok(config)
     }

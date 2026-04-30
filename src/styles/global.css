@@ -32,19 +32,19 @@
   --divider-color: rgba(26, 31, 36, 0.6);
   
   /* Fluent 2 阴影系统（5 级）*/
-  --shadow-sm: 
+  --shadow-sm:
     0 1px 2px rgba(0, 0, 0, 0.10),
     0 0 1px rgba(0, 0, 0, 0.06);
-  --shadow-md: 
+  --shadow-md:
     0 4px 8px rgba(0, 0, 0, 0.12),
     0 2px 4px rgba(0, 0, 0, 0.08);
-  --shadow-lg: 
+  --shadow-lg:
     0 8px 16px rgba(0, 0, 0, 0.14),
     0 4px 8px rgba(0, 0, 0, 0.10);
-  --shadow-xl: 
+  --shadow-xl:
     0 16px 32px rgba(0, 0, 0, 0.18),
     0 8px 16px rgba(0, 0, 0, 0.12);
-  --shadow-brand-glow: 
+  --shadow-brand-glow:
     0 0 0 1px rgba(76, 162, 255, 0.3),
     0 4px 12px rgba(76, 162, 255, 0.25);
   
@@ -91,20 +91,19 @@ html[data-theme="light"] {
   --skeleton-bg: #f1f5f9;
   --divider-color: rgba(226, 232, 240, 0.6);
   
-  /* 浅色主题阴影（更柔和）*/
-  --shadow-sm: 
+  --shadow-sm:
     0 1px 2px rgba(2, 6, 23, 0.06),
     0 0 1px rgba(2, 6, 23, 0.04);
-  --shadow-md: 
+  --shadow-md:
     0 4px 8px rgba(2, 6, 23, 0.08),
     0 2px 4px rgba(2, 6, 23, 0.06);
-  --shadow-lg: 
+  --shadow-lg:
     0 8px 16px rgba(2, 6, 23, 0.10),
     0 4px 8px rgba(2, 6, 23, 0.08);
-  --shadow-xl: 
+  --shadow-xl:
     0 16px 32px rgba(2, 6, 23, 0.12),
     0 8px 16px rgba(2, 6, 23, 0.10);
-  --shadow-brand-glow: 
+  --shadow-brand-glow:
     0 0 0 1px rgba(76, 162, 255, 0.25),
     0 4px 12px rgba(76, 162, 255, 0.20);
 }
@@ -132,6 +131,7 @@ body {
 /* ========== Mica/Acrylic 材质效果 ========== */
 .app {
   display: flex;
+  flex-direction: column;
   width: 100%;
   height: 100%;
   background: var(--mica-dark);
@@ -150,7 +150,7 @@ html[data-theme="light"] .app {
   border-right: 1px solid var(--panel-border);
   display: flex;
   flex-direction: column;
-  transition: background-color var(--motion-dur-press) ease-in-out, 
+  transition: background-color var(--motion-dur-press) ease-in-out,
               border-color var(--motion-dur-press) ease-in-out;
 }
 
@@ -183,7 +183,7 @@ html[data-theme="light"] .app {
   border-radius: var(--radius-medium);
   text-align: left;
   cursor: pointer;
-  transition: 
+  transition:
     background var(--motion-dur-press) var(--motion-ease-standard),
     transform var(--motion-dur-press) var(--motion-ease-spring),
     box-shadow var(--motion-dur-press) var(--motion-ease-standard);
@@ -216,6 +216,12 @@ html[data-theme="light"] .app {
 }
 
 /* ========== 主内容区 ========== */
+.app-body {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
 .content {
   flex: 1;
   overflow-y: auto;
@@ -241,7 +247,7 @@ html[data-theme="light"] .app {
   border-radius: var(--radius-large);
   padding: 20px;
   box-shadow: var(--shadow-lg);
-  transition: 
+  transition:
     transform var(--motion-dur-press) var(--motion-ease-spring),
     box-shadow var(--motion-dur-press) var(--motion-ease-standard),
     background-color var(--motion-dur-press) ease-in-out,
@@ -330,7 +336,7 @@ html[data-theme="light"] .card {
   align-items: center;
   gap: 16px;
   padding: 20px;
-  transition: 
+  transition:
     transform var(--motion-dur-press) var(--motion-ease-spring),
     box-shadow var(--motion-dur-press) var(--motion-ease-standard);
 }
@@ -366,6 +372,44 @@ html[data-theme="light"] .card {
   margin: 0;
 }
 
+/* ========== 统计项 / Stat items ========== */
+.stat-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 16px;
+  background: var(--panel-bg);
+  border-radius: var(--radius-medium);
+  border: 1px solid var(--panel-border);
+}
+
+.stat-label {
+  font-size: 12px;
+  color: var(--muted-fg);
+  font-weight: 500;
+}
+
+.stat-value {
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--app-fg);
+}
+
+.stat-value.danger {
+  color: var(--color-danger);
+}
+
+.stat-value.success {
+  color: var(--color-success);
+}
+
+.scan-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
 /* ========== 按钮样式 ========== */
 .btn {
   padding: 10px 20px;
@@ -378,7 +422,7 @@ html[data-theme="light"] .card {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  transition: 
+  transition:
     opacity var(--motion-dur-press) ease,
     transform var(--motion-dur-press) var(--motion-ease-spring),
     box-shadow var(--motion-dur-press) var(--motion-ease-standard);
@@ -414,6 +458,37 @@ html[data-theme="light"] .card {
   color: white;
 }
 
+.btn-danger {
+  background: var(--color-danger);
+  color: white;
+  border: 1px solid var(--color-danger);
+}
+
+.btn-danger:hover:not(:disabled) {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+.btn-outline-danger {
+  background: transparent;
+  border: 1px solid var(--color-danger);
+  color: var(--color-danger);
+}
+
+.btn-outline-danger:hover:not(:disabled) {
+  background: var(--color-danger-bg);
+}
+
+.btn-outline-primary {
+  background: transparent;
+  border: 1px solid var(--theme-color);
+  color: var(--theme-color);
+}
+
+.btn-outline-primary:hover:not(:disabled) {
+  background: var(--color-info-bg);
+}
+
 .btn-outline-secondary {
   background: transparent;
   border: 1px solid var(--panel-border);
@@ -423,6 +498,29 @@ html[data-theme="light"] .card {
 .btn-outline-secondary:hover:not(:disabled) {
   background: var(--panel-hover);
   border-color: var(--panel-border);
+  color: var(--app-fg);
+}
+
+.btn-sm {
+  padding: 6px 12px;
+  font-size: 13px;
+}
+
+.btn-icon {
+  padding: 6px;
+  border-radius: var(--radius-small);
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  color: var(--muted-fg);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--motion-dur-press) ease, color var(--motion-dur-press) ease;
+}
+
+.btn-icon:hover {
+  background: var(--panel-hover);
   color: var(--app-fg);
 }
 
@@ -849,6 +947,7 @@ html[data-theme="light"] .card {
   height: 32px;
   background: var(--sidebar-bg);
   border-bottom: 1px solid var(--panel-border);
+  flex-shrink: 0;
   -webkit-app-region: drag;
 }
 
@@ -1063,6 +1162,16 @@ body[data-animations="off"] *::after {
   animation: none !important;
 }
 
+/* ========== 旋转动画 ========== */
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinning {
+  animation: spin 1s linear infinite;
+}
+
 /* ========== 设置页面选项卡样式 ========== */
 .settings-tabs {
   padding: 8px;
@@ -1071,4 +1180,92 @@ body[data-animations="off"] *::after {
 .settings-tabs .btn {
   font-size: 14px;
   font-weight: 500;
+}
+
+/* ========== Toast 通知样式 ========== */
+.toast-container {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 380px;
+  -webkit-app-region: no-drag;
+}
+
+.toast-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: var(--radius-medium);
+  background: var(--acrylic-dark);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow-lg);
+  -webkit-backdrop-filter: blur(20px);
+  backdrop-filter: blur(20px);
+  font-size: 14px;
+}
+
+html[data-theme="light"] .toast-item {
+  background: var(--acrylic-light);
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+}
+
+.toast-info .toast-icon { color: var(--color-info); }
+.toast-success .toast-icon { color: var(--color-success); }
+.toast-warning .toast-icon { color: var(--color-warning); }
+.toast-error .toast-icon { color: var(--color-danger); }
+
+.toast-message {
+  flex: 1;
+  color: var(--app-fg);
+}
+
+.toast-close {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  color: var(--muted-fg);
+  cursor: pointer;
+  border-radius: var(--radius-small);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background var(--motion-dur-press) ease;
+}
+
+.toast-close:hover {
+  background: var(--panel-hover);
+  color: var(--app-fg);
+}
+
+/* ========== 错误边界 / Error boundary ========== */
+.error-boundary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+}
+
+/* ========== 章节标题 / Section header ========== */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.section-header h3 {
+  margin: 0;
+  font-size: 16px;
 }

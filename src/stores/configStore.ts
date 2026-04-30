@@ -9,9 +9,11 @@ interface ConfigState {
   loading: boolean
   exclusions: ExclusionEntry[]
   allowlist: AllowlistEntry[]
+  engineStatus: 'stopped' | 'running' | 'starting'
   loadConfig: () => Promise<void>
   setCurrentPage: (page: string) => void
   setBehaviorMonitoring: (enabled: boolean) => Promise<void>
+  setEngineStatus: (status: 'stopped' | 'running' | 'starting') => void
   loadExclusions: () => Promise<void>
   addExclusion: (path: string, entryType: 'file' | 'directory' | 'process', description?: string) => Promise<void>
   removeExclusion: (path: string) => Promise<void>
@@ -26,6 +28,7 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   loading: true,
   exclusions: [],
   allowlist: [],
+  engineStatus: 'stopped',
 
   loadConfig: async () => {
     try {
@@ -49,6 +52,10 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         behaviorMonitoring: { enabled }
       } : null
     }))
+  },
+
+  setEngineStatus: (status: 'stopped' | 'running' | 'starting') => {
+    set({ engineStatus: status })
   },
 
   // 排除项管理

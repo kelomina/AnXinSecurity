@@ -76,6 +76,37 @@ impl EngineService {
         Ok(response)
     }
 
+    /// 函数名称：cancel_scan
+    /// 函数作用：向扫描引擎发送取消扫描请求。仅尝试发送请求，不等待响应。
+    /// Purpose: Sends a cancel scan request to the scan engine. Fire-and-forget, does not wait for response.
+    /// 调用方：commands::scanner::cancel_scan
+    /// Called by: commands::scanner::cancel_scan
+    /// 中文关键词：取消扫描，中断，TCP通信，引擎命令
+    /// English keywords: cancel scan, abort, TCP communication, engine command
+    pub async fn cancel_scan(&self) -> Result<bool, String> {
+        let mut stream = TcpStream::connect(format!("{}:{}", self.host, self.port))
+            .await
+            .map_err(|e| format!("Failed to connect to engine for cancel: {}", e))?;
+
+        let request = serde_json::json!({"type": "cancel"});
+        let request_bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+        let len = request_bytes.len() as u32;
+
+        stream.write_all(&len.to_le_bytes()).await.map_err(|e| e.to_string())?;
+        stream.write_all(&request_bytes).await.map_err(|e| e.to_string())?;
+
+        // 不等待响应，仅尝试发送
+        // Do not wait for response, fire-and-forget
+        Ok(true)
+    }
+
+    /// 函数名称：scan_batch
+    /// 函数作用：批量扫描多个文件，依次发到引擎并汇总结果。
+    /// Purpose: Scans multiple files in batch, sends to engine sequentially and aggregates results.
+    /// 调用方：commands::scanner::scan_batch
+    /// Called by: commands::scanner::scan_batch
+    /// 中文关键词：批量扫描，多文件扫描，TCP通信，引擎通信
+    /// English keywords: batch scan, multi-file scan, TCP communication, engine communication
     pub async fn scan_batch(
         &self,
         file_paths: &[String],

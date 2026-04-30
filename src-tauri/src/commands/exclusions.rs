@@ -1,6 +1,5 @@
 // 排除列表管理命令 - 完整实现
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::State;

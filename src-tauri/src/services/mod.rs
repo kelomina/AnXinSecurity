@@ -1,6 +1,14 @@
+pub mod etw;
 pub mod etw_service;
 pub mod engine_service;
 pub mod hook_service;
-pub mod watcher_service;
 pub mod tray_service;
 pub mod quarantine_service;
+pub mod behavior_service;
+pub mod engine_autostart_service;
+pub mod trust_service;
+pub mod process_monitor_service;
+pub mod risk_service;
+pub mod interception_service;
+pub mod snapshot_service;
+pub mod training_service;
