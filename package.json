@@ -1,113 +1,38 @@
 {
   "name": "anxin-security",
   "version": "1.0.0",
-  "description": "AnXin Security Electron app",
-  "main": "src/main/main.js",
+  "description": "AnXin Security - Tauri Application",
+  "main": "index.js",
   "scripts": {
-    "dev": "electron .",
-    "start": "electron .",
+    "dev": "tauri dev",
+    "build": "npm run build:frontend && tauri build",
+    "dev:frontend": "vite",
+    "build:frontend": "vite build",
+    "tauri": "tauri",
     "test": "node --test",
-    "build": "electron-builder -w nsis",
-    "storybook": "storybook dev -p 6006",
-    "build-storybook": "storybook build",
-    "lint": "node -e \"const fs=require('fs'),path=require('path');const root=process.cwd();const ignore=new Set(['node_modules','dist','dist2','Engine','.git']);const exts=new Set(['.js','.cjs','.mjs']);let failed=false;function walk(dir){for(const entry of fs.readdirSync(dir,{withFileTypes:true})){if(entry.isDirectory()){if(ignore.has(entry.name)) continue;walk(path.join(dir,entry.name));}else{const ext=path.extname(entry.name);if(!exts.has(ext)) continue;const file=path.join(dir,entry.name);const res=require('child_process').spawnSync(process.execPath,['--check',file],{stdio:'pipe'});if(res.status!==0){failed=true;process.stdout.write(res.stderr||'');}}}}walk(root);process.exit(failed?1:0);\"",
-    "typecheck": "node -e \"console.log('typecheck: no tsconfig');\""
+    "lint": "eslint src --ext ts,tsx",
+    "typecheck": "tsc --noEmit"
   },
-  "build": {
-    "appId": "com.anxin.security",
-    "icon": "favicon.ico",
-    "directories": {
-      "output": "dist"
-    },
-    "compression": "maximum",
-    "afterPack": "build/afterPack.js",
-    "files": [
-      "**/*",
-      "!Engine/**",
-      "!dist/**",
-      "!dist2/**",
-      "!**/node_modules/koffi/build/koffi/**",
-      "**/node_modules/koffi/build/koffi/win32_x64/**",
-      "!**/node_modules/**/test/**",
-      "!**/node_modules/**/tests/**",
-      "!**/node_modules/**/example/**",
-      "!**/node_modules/**/examples/**",
-      "!**/node_modules/**/doc/**",
-      "!**/node_modules/**/docs/**",
-      "!**/*.md"
-    ],
-    "asarUnpack": [
-      "**/*.node"
-    ],
-    "extraResources": [
-      {
-        "from": "Engine",
-        "to": "Engine",
-        "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "native/bin/win32-x64",
-        "to": "native/win32-x64",
-        "filter": [
-          "file_hook_detours.dll",
-          "file_hook_injector.exe"
-        ]
-      },
-      {
-        "from": "native/bin/win32-x86",
-        "to": "native/win32-x86",
-        "filter": [
-          "file_hook_detours.dll",
-          "file_hook_injector.exe"
-        ]
-      },
-      {
-        "from": "native/bin/win32-x64",
-        "to": "native/win32-x64",
-        "filter": [
-          "process_watcher.dll"
-        ]
-      },
-      {
-        "from": "native/bin/win32-x86",
-        "to": "native/win32-x86",
-        "filter": [
-          "process_watcher.dll"
-        ]
-      }
-    ],
-    "win": {
-      "target": "nsis",
-      "requestedExecutionLevel": "requireAdministrator"
-    },
-    "nsis": {
-      "artifactName": "${productName}-Setup-${version}.${ext}",
-      "oneClick": false,
-      "perMachine": false,
-      "allowElevation": true,
-      "allowToChangeInstallationDirectory": true
-    }
-  },
-  "author": "",
+  "author": "AnXin Security Team",
   "license": "MIT",
   "devDependencies": {
-    "@storybook/html-vite": "^10.1.11",
-    "electron": "^40.0.0",
-    "electron-builder": "^26.8.1",
-    "storybook": "^10.1.11",
-    "vite": "^7.3.1"
+    "@tauri-apps/cli": "^2.0.0",
+    "@types/react": "^18.2.0",
+    "@types/react-dom": "^18.2.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.3.0",
+    "vite": "^8.0.10"
   },
   "dependencies": {
-    "@electron/rebuild": "^4.0.3",
-    "bootstrap": "^5.3.8",
-    "gsap": "^3.14.2",
-    "koffi": "^2.15.0",
-    "lottie-web": "^5.13.0"
-  },
-  "overrides": {
-    "esbuild": "^0.25.12",
-    "tar": "^7.5.3"
+    "@tauri-apps/api": "^2.0.0",
+    "@tauri-apps/plugin-dialog": "^2.0.0",
+    "@tauri-apps/plugin-fs": "^2.0.0",
+    "@tauri-apps/plugin-shell": "^2.0.0",
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.38.0",
+    "lucide-react": "^1.14.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "zustand": "^4.5.0"
   }
 }

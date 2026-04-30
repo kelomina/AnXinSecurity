@@ -1,0 +1,49 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "AnXinSecurity",
+  "version": "1.0.0",
+  "identifier": "com.anxin.security",
+  "build": {
+    "beforeBuildCommand": "npm run build:frontend",
+    "beforeDevCommand": "npm run dev:frontend",
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1421"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "AnXin Security",
+        "width": 1200,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600,
+        "decorations": false,
+        "transparent": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": [
+      "../native/bin/win32-x64/*.dll",
+      "../native/bin/win32-x86/*.dll",
+      "../Engine/**/*"
+    ],
+    "windows": {
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+      "timestampUrl": "",
+      "webviewInstallMode": {
+        "type": "embedBootstrapper"
+      },
+      "nsis": {
+        "installerHooks": "build/nsis-hooks.nsh"
+      }
+    }
+  }
+}

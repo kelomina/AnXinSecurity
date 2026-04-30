@@ -1,0 +1,113 @@
+import { create } from 'zustand'
+import { getConfig, setBehaviorMonitoringEnabled, AppConfig } from '../api/config'
+import { ExclusionEntry, listExclusions, addExclusion, removeExclusion } from '../api/exclusions'
+import { AllowlistEntry, listAllowlist, addToAllowlist, removeFromAllowlist } from '../api/allowlist'
+
+interface ConfigState {
+  config: AppConfig | null
+  currentPage: string
+  loading: boolean
+  exclusions: ExclusionEntry[]
+  allowlist: AllowlistEntry[]
+  loadConfig: () => Promise<void>
+  setCurrentPage: (page: string) => void
+  setBehaviorMonitoring: (enabled: boolean) => Promise<void>
+  loadExclusions: () => Promise<void>
+  addExclusion: (path: string, entryType: 'file' | 'directory' | 'process', description?: string) => Promise<void>
+  removeExclusion: (path: string) => Promise<void>
+  loadAllowlist: () => Promise<void>
+  addToAllowlist: (path: string, description?: string) => Promise<void>
+  removeFromAllowlist: (path: string) => Promise<void>
+}
+
+export const useConfigStore = create<ConfigState>((set, get) => ({
+  config: null,
+  currentPage: 'overview',
+  loading: true,
+  exclusions: [],
+  allowlist: [],
+
+  loadConfig: async () => {
+    try {
+      const config = await getConfig()
+      set({ config, loading: false })
+    } catch (e) {
+      console.error('Failed to load config:', e)
+      set({ loading: false })
+    }
+  },
+
+  setCurrentPage: (page: string) => {
+    set({ currentPage: page })
+  },
+
+  setBehaviorMonitoring: async (enabled: boolean) => {
+    await setBehaviorMonitoringEnabled(enabled)
+    set((state) => ({
+      config: state.config ? {
+        ...state.config,
+        behaviorMonitoring: { enabled }
+      } : null
+    }))
+  },
+
+  // 排除项管理
+  loadExclusions: async () => {
+    try {
+      const exclusions = await listExclusions()
+      set({ exclusions })
+    } catch (e) {
+      console.error('Failed to load exclusions:', e)
+    }
+  },
+
+  addExclusion: async (path: string, entryType: 'file' | 'directory' | 'process', description?: string) => {
+    try {
+      await addExclusion(path, entryType, description)
+      await get().loadExclusions()
+    } catch (e) {
+      console.error('Failed to add exclusion:', e)
+      throw e
+    }
+  },
+
+  removeExclusion: async (path: string) => {
+    try {
+      await removeExclusion(path)
+      await get().loadExclusions()
+    } catch (e) {
+      console.error('Failed to remove exclusion:', e)
+      throw e
+    }
+  },
+
+  // 启动允许列表管理
+  loadAllowlist: async () => {
+    try {
+      const allowlist = await listAllowlist()
+      set({ allowlist })
+    } catch (e) {
+      console.error('Failed to load allowlist:', e)
+    }
+  },
+
+  addToAllowlist: async (path: string, description?: string) => {
+    try {
+      await addToAllowlist(path, description)
+      await get().loadAllowlist()
+    } catch (e) {
+      console.error('Failed to add to allowlist:', e)
+      throw e
+    }
+  },
+
+  removeFromAllowlist: async (path: string) => {
+    try {
+      await removeFromAllowlist(path)
+      await get().loadAllowlist()
+    } catch (e) {
+      console.error('Failed to remove from allowlist:', e)
+      throw e
+    }
+  }
+}))
