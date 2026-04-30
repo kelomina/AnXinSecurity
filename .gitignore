@@ -149,3 +149,16 @@ build-x86
 build-x64
 bin
 startup_allowlist.enc
+
+# Tauri
+/src-tauri/target
+/src-tauri/target-check
+/target_check
+/src-tauri/gen
+
+# Archive
+/archive/electron-legacy
+
+debug
+
+.lock
