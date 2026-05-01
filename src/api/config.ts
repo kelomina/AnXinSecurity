@@ -16,6 +16,12 @@ export interface AppConfig {
   behaviorMonitoring: {
     enabled: boolean
   }
+  processMonitoring: {
+    enabled: boolean
+  }
+  fileMonitoring: {
+    enabled: boolean
+  }
   ui: {
     themeMode: string
     animations: boolean
@@ -112,6 +118,36 @@ export async function requestExitConfirmation(): Promise<ExitConfirmation> {
  */
 export async function executeExit(keepService: boolean): Promise<void> {
   return await invoke('execute_exit', { keepService })
+}
+
+/**
+ * 函数名称：setProcessMonitoringEnabled
+ * 函数作用：启用或禁用进程监控，持久化到配置文件。
+ * Purpose: Enables or disables process monitoring, persisted to config file.
+ * 调用方：SettingsPage 进程监控开关
+ * Called by: SettingsPage process monitoring toggle
+ * 副作用：写入 config/app.json
+ * Side effect: Writes to config/app.json
+ * 中文关键词：进程监控，启用监控，禁用监控
+ * English keywords: process monitoring, enable, disable
+ */
+export async function setProcessMonitoringEnabled(enabled: boolean): Promise<void> {
+  return await invoke('set_process_monitoring_enabled', { enabled })
+}
+
+/**
+ * 函数名称：setFileMonitoringEnabled
+ * 函数作用：启用或禁用文件监控，持久化到配置文件。
+ * Purpose: Enables or disables file monitoring, persisted to config file.
+ * 调用方：SettingsPage 文件监控开关
+ * Called by: SettingsPage file monitoring toggle
+ * 副作用：写入 config/app.json
+ * Side effect: Writes to config/app.json
+ * 中文关键词：文件监控，启用监控，禁用监控
+ * English keywords: file monitoring, enable, disable
+ */
+export async function setFileMonitoringEnabled(enabled: boolean): Promise<void> {
+  return await invoke('set_file_monitoring_enabled', { enabled })
 }
 
 /**

@@ -9,16 +9,19 @@ mod utils;
 
 use tauri::Manager;
 use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 use sqlx::SqlitePool;
 use crate::models::config::AppConfig;
 use crate::services::etw_service::EtwService;
 use crate::services::engine_service::EngineService;
+use crate::services::native_engine_service::NativeEngineService;
 use crate::services::tray_service::TrayService;
 use crate::services::quarantine_service::QuarantineService;
 use crate::services::behavior_service::BehaviorService;
-use crate::services::engine_autostart_service::EngineAutostartService;
 use crate::services::trust_service::TrustService;
 use crate::services::process_monitor_service::ProcessMonitorService;
+use crate::services::process_scanner_service::ProcessScannerService;
+use crate::services::file_monitor_service::FileMonitorService;
 use crate::services::hook_service::HookService;
 use crate::services::interception_service::InterceptionService;
 use crate::services::risk_service::RiskService;
@@ -44,20 +47,33 @@ fn main() {
             let etw_service = EtwService::new();
             app.manage(etw_service);
 
-            // 初始化扫描引擎服务 — 从配置读取 IPC 地址和端口
-            let engine_host = config.scanner.ipc.host.clone();
-            let engine_port = config.scanner.ipc.port;
-            let engine_service = EngineService::new(&engine_host, engine_port);
-            app.manage(engine_service);
+            // 初始化原生 Axon DLL 扫描引擎（直接加载 axon_engine.dll）
+            // Initialize native Axon DLL scan engine (loads axon_engine.dll directly)
+            // 先解析引擎路径，支持开发和生产多种运行场景
+            // Resolve engine path first, supporting dev and production scenarios
+            let (engine_dll_path, engine_root_path) = match resolve_engine_dll_path(app) {
+                Ok(paths) => paths,
+                Err(e) => {
+                    return Err(format!("Failed to resolve engine DLL path: {}", e).into());
+                }
+            };
+            let native_engine = match NativeEngineService::new(
+                &engine_dll_path.to_string_lossy(),
+                &engine_root_path.to_string_lossy()
+            ) {
+                Ok(engine) => {
+                    eprintln!("[main] Native Axon engine initialized successfully");
+                    Arc::new(engine)
+                }
+                Err(e) => {
+                    eprintln!("[main] Failed to initialize native Axon engine: {}", e);
+                    return Err(format!("Failed to initialize native engine: {}", e).into());
+                }
+            };
 
-            // 初始化引擎自动启动服务
-            let engine_path = "Engine/Axon/axon_engine.exe";
-            let autostart_service = EngineAutostartService::new(
-                engine_path,
-                &engine_host,
-                engine_port
-            );
-            app.manage(Arc::new(Mutex::new(autostart_service)));
+            // 初始化引擎服务（包装原生引擎，使用 Arc 共享引用）
+            let engine_service = Arc::new(EngineService::new(native_engine));
+            app.manage(engine_service.clone());
 
             // 初始化 SQLite 数据库池
             let mut db_root = std::env::current_dir()
@@ -138,6 +154,31 @@ fn main() {
             let training_service = TrainingService::new();
             app.manage(training_service);
 
+            // 初始化进程扫描服务（新进程恶意代码检测）
+            let process_scanner = ProcessScannerService::new();
+            if config.process_monitoring.enabled {
+                process_scanner.start(engine_service.clone(), 2000);
+                eprintln!("[main] Process scanner started");
+            } else {
+                eprintln!("[main] Process scanner disabled by config");
+            }
+            app.manage(process_scanner);
+
+            // 初始化文件监控服务（ETW 文件事件检测）
+            let file_monitor = FileMonitorService::new();
+            if config.file_monitoring.enabled {
+                if let Some(etw_state) = app.try_state::<Arc<std::sync::Mutex<EtwService>>>() {
+                    if let Ok(etw) = etw_state.lock() {
+                        let etw_rx = etw.subscribe();
+                        file_monitor.start(engine_service.clone(), etw_rx);
+                        eprintln!("[main] File monitor started");
+                    }
+                }
+            } else {
+                eprintln!("[main] File monitor disabled by config");
+            }
+            app.manage(file_monitor);
+
             // 管理池状态
             app.manage(pool);
 
@@ -174,9 +215,11 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            // 配置 (4)
+            // 配置 (6)
             commands::config::get_config,
             commands::config::set_behavior_monitoring_enabled,
+            commands::config::set_process_monitoring_enabled,
+            commands::config::set_file_monitoring_enabled,
             commands::config::set_theme_mode,
             commands::config::set_animations_enabled,
             // 扫描器 (4)
@@ -256,16 +299,12 @@ fn main() {
             // 错误追踪 (2) — 新增
             commands::error_trace::report_error,
             commands::error_trace::get_error_logs,
-            // 签名库 (3) — 新增
-            commands::signature_store::list_signature_versions,
-            commands::signature_store::get_current_signature_version,
-            commands::signature_store::rollback_signature_version,
             // 日志 (3) — 新增
             commands::logs::get_recent_logs,
             commands::logs::clear_logs,
             commands::logs::get_log_status,
             // 文件系统 (2) — 新增
-            commands::fs::walk_directory,
+            commands::fs::start_background_walk,
             commands::fs::cancel_walk,
             // 文件钩子 (3) — 新增
             commands::hook::start_hook_service,
@@ -290,4 +329,67 @@ async fn start_etw_monitoring(app_handle: tauri::AppHandle) -> Result<(), String
     etw_service.start(app_handle_clone)?;
 
     Ok(())
+}
+
+/// 函数名称：resolve_engine_dll_path
+/// 函数作用：按优先级尝试多个路径寻找 axon_engine.dll，返回 (dll_abs_path, engine_root_abs_path)。
+/// Purpose: Tries multiple paths to find axon_engine.dll by priority,
+///          returns (dll_abs_path, engine_root_abs_path).
+///
+/// 尝试顺序：
+///   1. resource_dir / Engine/Axon/axon_engine.dll（生产部署）
+///   2. CWD / Engine/Axon/axon_engine.dll（npm run tauri dev）
+///   3. CWD/../Engine/Axon/axon_engine.dll（cargo run from src-tauri）
+///
+/// 中文关键词：引擎路径，路径解析，DLL查找，部署部署
+/// English keywords: engine path, path resolution, DLL lookup, production deployment
+fn resolve_engine_dll_path(app: &tauri::App) -> Result<(PathBuf, PathBuf), String> {
+    let mut candidates: Vec<PathBuf> = Vec::new();
+
+    // 策略 1: resource_dir（生产部署时有效）
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("Engine/Axon/axon_engine.dll"));
+    }
+
+    // 策略 2: CWD 相对路径（npm run tauri dev / npx tauri dev）
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("Engine/Axon/axon_engine.dll"));
+    }
+
+    // 策略 3: CWD 上级目录（cargo run / cargo check from src-tauri/）
+    if let Ok(cwd) = std::env::current_dir() {
+        if let Some(parent) = cwd.parent() {
+            candidates.push(parent.join("Engine/Axon/axon_engine.dll"));
+        }
+    }
+
+    // 去重后逐个检查存在性
+    let mut tried_paths = Vec::new();
+    for candidate in &candidates {
+        let normalized = if candidate.is_absolute() {
+            candidate.clone()
+        } else {
+            std::env::current_dir().unwrap_or_default().join(candidate)
+        };
+        tried_paths.push(normalized.to_string_lossy().to_string());
+
+        if normalized.exists() {
+            // 不使用 canonicalize（会添加 \\?\ 前缀导致 LoadLibraryExW 依赖解析失败）
+            // Don't use canonicalize (adds \\?\ prefix which breaks dependency resolution)
+            let abs_str = normalized.to_string_lossy().to_string();
+            let clean_path = abs_str.strip_prefix(r"\\?\").unwrap_or(&abs_str);
+            let dll_path = PathBuf::from(clean_path);
+            let engine_root = dll_path.parent()
+                .ok_or_else(|| format!("Cannot get parent of {:?}", clean_path))?
+                .to_path_buf();
+            eprintln!("[main] Engine DLL resolved: {:?}", dll_path);
+            eprintln!("[main] Engine root: {:?}", engine_root);
+            return Ok((dll_path, engine_root));
+        }
+    }
+
+    Err(format!(
+        "Cannot find Engine/Axon/axon_engine.dll. Tried:\n  {}",
+        tried_paths.join("\n  ")
+    ))
 }

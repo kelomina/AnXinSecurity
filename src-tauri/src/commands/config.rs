@@ -55,6 +55,46 @@ pub fn set_theme_mode(
     Ok(())
 }
 
+/// 函数名称：set_process_monitoring_enabled
+/// 函数作用：启用或禁用进程监控，持久化到配置文件。
+/// Purpose: Enables or disables process monitoring, persisted to config file.
+/// 调用方：前端 SettingsPage 进程监控开关
+/// Called by: Frontend SettingsPage process monitoring toggle
+/// 副作用：修改配置并写入 config/app.json
+/// Side effect: Modifies config and writes to config/app.json
+/// 中文关键词：进程监控，启用，禁用，设置，持久化
+/// English keywords: process monitoring, enable, disable, setting, persist
+#[tauri::command]
+pub fn set_process_monitoring_enabled(
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<AppConfig>>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut config = state.lock().map_err(|e| e.to_string())?;
+    config.process_monitoring.enabled = enabled;
+    config.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 函数名称：set_file_monitoring_enabled
+/// 函数作用：启用或禁用文件监控，持久化到配置文件。
+/// Purpose: Enables or disables file monitoring, persisted to config file.
+/// 调用方：前端 SettingsPage 文件监控开关
+/// Called by: Frontend SettingsPage file monitoring toggle
+/// 副作用：修改配置并写入 config/app.json
+/// Side effect: Modifies config and writes to config/app.json
+/// 中文关键词：文件监控，启用，禁用，设置，持久化
+/// English keywords: file monitoring, enable, disable, setting, persist
+#[tauri::command]
+pub fn set_file_monitoring_enabled(
+    state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<AppConfig>>>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut config = state.lock().map_err(|e| e.to_string())?;
+    config.file_monitoring.enabled = enabled;
+    config.save().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 函数名称：set_animations_enabled
 /// 函数作用：启用或禁用 UI 动画效果，修改配置并持久化保存。
 /// Purpose: Enables or disables UI animations, modifies config and persists it.

@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { getConfig, setBehaviorMonitoringEnabled, AppConfig } from '../api/config'
+import { getConfig, setBehaviorMonitoringEnabled, setProcessMonitoringEnabled, setFileMonitoringEnabled, AppConfig } from '../api/config'
 import { ExclusionEntry, listExclusions, addExclusion, removeExclusion } from '../api/exclusions'
 import { AllowlistEntry, listAllowlist, addToAllowlist, removeFromAllowlist } from '../api/allowlist'
 
@@ -13,6 +13,8 @@ interface ConfigState {
   loadConfig: () => Promise<void>
   setCurrentPage: (page: string) => void
   setBehaviorMonitoring: (enabled: boolean) => void
+  setProcessMonitoring: (enabled: boolean) => void
+  setFileMonitoring: (enabled: boolean) => void
   setEngineStatus: (status: 'stopped' | 'running' | 'starting') => void
   loadExclusions: () => Promise<void>
   addExclusion: (path: string, entryType: 'file' | 'directory' | 'process', description?: string) => Promise<void>
@@ -45,8 +47,6 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   },
 
   setBehaviorMonitoring: (enabled: boolean) => {
-    // 乐观更新：先更新本地 UI 状态，再异步调用后端（不等待、不回滚）
-    // Optimistic update: update local UI state first, persist asynchronously (fire-and-forget)
     set((state) => {
       const cfg = state.config ?? {
         brand: '',
@@ -54,6 +54,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
         defaultPage: '',
         minimizeToTray: false,
         behaviorMonitoring: { enabled },
+        processMonitoring: { enabled: true },
+        fileMonitoring: { enabled: true },
         ui: { themeMode: 'system', animations: true }
       }
       return {
@@ -62,6 +64,44 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     })
     setBehaviorMonitoringEnabled(enabled).catch((e) => {
       console.error('[configStore] Failed to persist behavior monitoring:', e)
+    })
+  },
+
+  setProcessMonitoring: (enabled: boolean) => {
+    set((state) => {
+      const cfg = state.config ?? {
+        brand: '',
+        themeColor: '',
+        defaultPage: '',
+        minimizeToTray: false,
+        behaviorMonitoring: { enabled: false },
+        processMonitoring: { enabled },
+        fileMonitoring: { enabled: true },
+        ui: { themeMode: 'system', animations: true }
+      }
+      return { config: { ...cfg, processMonitoring: { enabled } } }
+    })
+    setProcessMonitoringEnabled(enabled).catch((e) => {
+      console.error('[configStore] Failed to persist process monitoring:', e)
+    })
+  },
+
+  setFileMonitoring: (enabled: boolean) => {
+    set((state) => {
+      const cfg = state.config ?? {
+        brand: '',
+        themeColor: '',
+        defaultPage: '',
+        minimizeToTray: false,
+        behaviorMonitoring: { enabled: false },
+        processMonitoring: { enabled: true },
+        fileMonitoring: { enabled },
+        ui: { themeMode: 'system', animations: true }
+      }
+      return { config: { ...cfg, fileMonitoring: { enabled } } }
+    })
+    setFileMonitoringEnabled(enabled).catch((e) => {
+      console.error('[configStore] Failed to persist file monitoring:', e)
     })
   },
 

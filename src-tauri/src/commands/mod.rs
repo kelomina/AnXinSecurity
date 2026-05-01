@@ -17,7 +17,6 @@ pub mod system;
 pub mod i18n;
 pub mod dev_settings;
 pub mod error_trace;
-pub mod signature_store;
 pub mod logs;
 pub mod fs;
 pub mod hook;

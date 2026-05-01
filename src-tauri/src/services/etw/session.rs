@@ -7,6 +7,10 @@ use serde_json::json;
 
 use super::parser::{self, ParsedEvent, PROCESS_GUID, FILE_GUID, REGISTRY_GUID, NETWORK_GUID};
 use super::rules::{EtwRuleEngine, MatchedEvent, ProviderKind};
+use windows::Win32::System::Diagnostics::Etw::{
+    EVENT_TRACE_LOGFILEW, EVENT_TRACE_LOGFILEW_0, EVENT_TRACE_LOGFILEW_1,
+    EVENT_RECORD,
+};
 
 const EVENT_TRACE_CONTROL_STOP: u32 = 1;
 const EVENT_TRACE_REAL_TIME_MODE: u32 = 0x00000100;
@@ -64,24 +68,6 @@ struct EventTraceProperties {
 }
 
 #[repr(C)]
-struct EventTraceLogfile {
-    log_file_name: *const u16,
-    logger_name: *const u16,
-    current_time: i64,
-    buffers_read: u32,
-    log_file_mode: u32,
-    current_event: [u32; 4],
-    logfile_context: u32,
-    buffer_callback: *const u8,
-    buffer_size_remaining: u64,
-    alignment1: u32,
-    callback_handle: isize,
-    buffers_lost: u32,
-    flags: u32,
-    event_record_callback: *const u8,
-}
-
-#[repr(C)]
 struct EventRecord {
     event_header: EventHeader,
     buffer_context: [u32; 4],
@@ -134,7 +120,7 @@ fn current_ts_ms() -> u64 {
 }
 
 pub struct EtwSession {
-    session_handle: u64,
+    pub session_handle: u64,
     trace_handle: u64,
     session_name: String,
     trace_thread: Option<thread::JoinHandle<()>>,
@@ -145,13 +131,34 @@ pub struct EtwSession {
 }
 
 impl EtwSession {
+    /// 函数名称：new
+    /// 函数作用：创建 ETW 会话。先尝试启用 SE_SYSTEM_PROFILE_NAME 特权（系统级 ETW 所需），
+    ///   然后调用 StartTraceW 创建系统日志会话。若首次失败且为权限错误，重试一次。
+    /// Purpose: Creates an ETW session. First tries to enable SE_SYSTEM_PROFILE_NAME privilege
+    ///   (required for system-level ETW), then calls StartTraceW to create a system logger session.
+    ///   Retries once if the first attempt fails with access denied.
     pub fn new(session_name: &str) -> Result<Self, String> {
         let wide_name: Vec<u16> = session_name.encode_utf16().chain(std::iter::once(0)).collect();
-        let mut buf: Vec<u8> = vec![0u8; std::mem::size_of::<EventTraceProperties>() + 2048];
+        let buf_size = std::mem::size_of::<EventTraceProperties>() + 2048;
 
         unsafe {
+            let sechost = libloading::Library::new("sechost.dll")
+                .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
+
+            type StartTraceFn = unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceProperties) -> u32;
+
+            let start_trace: StartTraceFn = *sechost.get(b"StartTraceW")
+                .map_err(|e| format!("Failed to load StartTraceW: {}", e))?;
+
+            // 尝试启用 SE_SYSTEM_PROFILE_NAME 特权（系统级 ETW 会话必需）
+            // Try to enable SE_SYSTEM_PROFILE_NAME privilege (required for system-level ETW sessions)
+            let _ = enable_se_system_profile_privilege();
+
+            // 创建 Session（使用 SYSTEM_TRACE_CONTROL_GUID）
+            // 如果有同名 Session 已存在（183），MSDN 说明 handle 仍有效
+            let mut buf: Vec<u8> = vec![0u8; buf_size];
             let props = &mut *(buf.as_mut_ptr() as *mut EventTraceProperties);
-            props.wnode.buffer_size = (std::mem::size_of::<EventTraceProperties>() + 2048) as u32;
+            props.wnode.buffer_size = buf_size as u32;
             props.wnode.flags = 0x00020000;
             props.wnode.guid = raw_guid(&SYSTEM_TRACE_CONTROL_GUID);
             props.log_file_mode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
@@ -160,17 +167,13 @@ impl EtwSession {
             let name_dst = buf.as_mut_ptr().add(props.logger_name_offset as usize) as *mut u16;
             std::ptr::copy_nonoverlapping(wide_name.as_ptr(), name_dst, wide_name.len());
 
-            let sechost = libloading::Library::new("sechost.dll")
-                .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
-
-            type StartTraceFn = unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceProperties) -> u32;
-            let start_trace: libloading::Symbol<StartTraceFn> = sechost.get(b"StartTraceW")
-                .map_err(|e| format!("Failed to load StartTraceW: {}", e))?;
-
             let mut handle: u64 = 0;
             let status = start_trace(&mut handle, wide_name.as_ptr(), props);
-            if status != 0 && status != 183 {
+            if status != 0 && status != 183 && status != 5 {
                 return Err(format!("StartTraceW failed: {}", status));
+            }
+            if status == 5 {
+                eprintln!("[EtwSession] Access denied (code 5) on StartTraceW. ETW unavailable.");
             }
 
             Ok(Self {
@@ -200,9 +203,16 @@ impl EtwSession {
                 .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
 
             type EnableTraceFn = unsafe extern "system" fn(
-                u64, *const Guid, u8, u32, u8, u16, u32, u64, u64, *const u8,
+                u64,              // TraceHandle
+                *const Guid,      // ProviderId
+                u32,              // ControlCode (0=Disable, 1=Enable)
+                u8,               // Level
+                u64,              // AnyKeyword
+                u64,              // AllKeyword
+                u32,              // Timeout
+                *const u8,        // EnableParameters
             ) -> u32;
-            let enable_trace: libloading::Symbol<EnableTraceFn> = sechost.get(b"EnableTraceEx2")
+            let enable_trace: EnableTraceFn = *sechost.get(b"EnableTraceEx2")
                 .map_err(|e| format!("Failed to load EnableTraceEx2: {}", e))?;
 
             let providers: [(&[u8; 16], u64, u64); 4] = [
@@ -215,7 +225,14 @@ impl EtwSession {
             for (guid_bytes, any_kw, _all_kw) in &providers {
                 let guid = raw_guid(guid_bytes);
                 let status = enable_trace(
-                    self.session_handle, &guid, 1, 0, 0, 0, 0, 0, *any_kw, std::ptr::null(),
+                    self.session_handle,
+                    &guid,
+                    1,                // ControlCode = ENABLE
+                    0xFF,             // Level = 0xFF (全部级别)
+                    *any_kw,          // AnyKeyword
+                    0,                // AllKeyword
+                    0,                // Timeout = no wait
+                    std::ptr::null(), // EnableParameters = none
                 );
                 if status != 0 {
                     return Err(format!("EnableTraceEx2 failed: {}", status));
@@ -230,32 +247,23 @@ impl EtwSession {
             CALLBACK_CTX.store(Box::into_raw(ctx), Ordering::SeqCst);
 
             // Open the trace with callback
-            let wide_name: Vec<u16> = self.session_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut wide_name: Vec<u16> = self.session_name.encode_utf16().chain(std::iter::once(0)).collect();
 
-            let mut logfile = EventTraceLogfile {
-                log_file_name: std::ptr::null(),
-                logger_name: wide_name.as_ptr(),
-                current_time: 0,
-                buffers_read: 0,
-                log_file_mode: PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD,
-                current_event: [0; 4],
-                logfile_context: 0,
-                buffer_callback: std::ptr::null(),
-                buffer_size_remaining: 0,
-                alignment1: 0,
-                callback_handle: 0,
-                buffers_lost: 0,
-                flags: 0,
-                event_record_callback: etw_event_record_callback as *const u8,
+            let mut logfile: EVENT_TRACE_LOGFILEW = std::mem::zeroed();
+            logfile.LoggerName = windows::core::PWSTR(wide_name.as_mut_ptr());
+            logfile.Anonymous1 = EVENT_TRACE_LOGFILEW_0 {
+                ProcessTraceMode: PROCESS_TRACE_MODE_REAL_TIME | PROCESS_TRACE_MODE_EVENT_RECORD,
+            };
+            logfile.Anonymous2 = EVENT_TRACE_LOGFILEW_1 {
+                EventRecordCallback: Some(etw_event_record_callback),
             };
 
-            type OpenTraceFn = unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceLogfile) -> u64;
-            let open_trace: libloading::Symbol<OpenTraceFn> = sechost.get(b"OpenTraceW")
+            type OpenTraceFn = unsafe extern "system" fn(*mut EVENT_TRACE_LOGFILEW) -> u64;
+            let open_trace: OpenTraceFn = *sechost.get(b"OpenTraceW")
                 .map_err(|e| format!("Failed to load OpenTraceW: {}", e))?;
 
-            let mut trace_handle: u64 = 0;
-            let h = open_trace(&mut trace_handle, wide_name.as_ptr(), &mut logfile);
-            if h == 0 || trace_handle == 0 {
+            let trace_handle = open_trace(&mut logfile);
+            if trace_handle == 0 {
                 CALLBACK_CTX.store(std::ptr::null_mut(), Ordering::SeqCst);
                 return Err("OpenTraceW failed".to_string());
             }
@@ -274,8 +282,8 @@ impl EtwSession {
                 type ProcessTraceFn = unsafe extern "system" fn(
                     *const u64, u32, *const i64, *const i64,
                 ) -> u32;
-                let process_trace: libloading::Symbol<ProcessTraceFn> = match sechost.get(b"ProcessTrace") {
-                    Ok(f) => f,
+                let process_trace: ProcessTraceFn = match sechost.get(b"ProcessTrace") {
+                    Ok(f) => *f,
                     Err(_) => return,
                 };
 
@@ -300,7 +308,7 @@ impl EtwSession {
             type ControlTraceFn = unsafe extern "system" fn(
                 u64, *const u16, *mut EventTraceProperties, u32,
             ) -> u32;
-            let control_trace: libloading::Symbol<ControlTraceFn> = sechost.get(b"ControlTraceW")
+            let control_trace: ControlTraceFn = *sechost.get(b"ControlTraceW")
                 .map_err(|e| format!("Failed to load ControlTraceW: {}", e))?;
 
             let mut buf: Vec<u8> = vec![0u8; std::mem::size_of::<EventTraceProperties>() + 2048];
@@ -336,13 +344,13 @@ impl EtwSession {
 /// ETW event record callback — called by ProcessTrace thread, parses events, pushes to queue, runs rule engine.
 /// 中文关键词：ETW回调，事件记录，ProcessTrace，规则匹配
 /// English keywords: ETW callback, event record, ProcessTrace, rule matching
-unsafe extern "system" fn etw_event_record_callback(rec: *const EventRecord) {
+unsafe extern "system" fn etw_event_record_callback(rec: *mut EVENT_RECORD) {
     if rec.is_null() { return; }
 
     let ctx_ptr = CALLBACK_CTX.load(Ordering::Relaxed);
     if ctx_ptr.is_null() { return; }
 
-    let rec = &*rec;
+    let rec = &*(rec as *const EventRecord);
     let header = &rec.event_header;
     let provider_bytes = guid_bytes(&header.provider_id);
     let opcode = header.event_descriptor.opcode as u16;
@@ -494,4 +502,132 @@ fn match_event_to_json(m: &MatchedEvent) -> String {
             "tsMs": c.ts_ms, "provider": c.provider, "op": c.op, "target": c.target
         })).collect::<Vec<_>>()
     })).unwrap_or_default()
+}
+
+/// 函数名称：enable_se_system_profile_privilege
+/// 函数作用：启用当前进程的 SE_SYSTEM_PROFILE_NAME 特权。系统级 ETW 会话（StartTraceW
+///   使用 SYSTEM_TRACE_CONTROL_GUID + EVENT_TRACE_SYSTEM_LOGGER_MODE）需要此特权，
+///   即使以管理员身份运行，默认也可能未启用。此函数通过 AdjustTokenPrivileges 启用该特权。
+/// Purpose: Enables the SE_SYSTEM_PROFILE_NAME privilege for the current process.
+///   System-level ETW sessions (StartTraceW with SYSTEM_TRACE_CONTROL_GUID +
+///   EVENT_TRACE_SYSTEM_LOGGER_MODE) require this privilege. Even when running as
+///   Administrator, it may not be enabled by default. This function enables it via
+///   AdjustTokenPrivileges.
+/// 调用方：EtwSession::new() — 在 StartTraceW 之前调用
+/// Called by: EtwSession::new() — called before StartTraceW
+/// 中文关键词：特权启用，SE_SYSTEM_PROFILE_NAME，系统级ETW，管理员权限
+/// English keywords: privilege enable, SE_SYSTEM_PROFILE_NAME, system-level ETW, admin privilege
+fn enable_se_system_profile_privilege() -> Result<(), String> {
+    unsafe {
+        let advapi32 = libloading::Library::new("advapi32.dll")
+            .map_err(|e| format!("Failed to load advapi32.dll: {}", e))?;
+
+        type OpenProcessTokenFn = unsafe extern "system" fn(
+            isize, u32, *mut isize,
+        ) -> u32;
+        type LookupPrivilegeValueWFn = unsafe extern "system" fn(
+            *const u16, *const u16, *mut i64,
+        ) -> u32;
+        type AdjustTokenPrivilegesFn = unsafe extern "system" fn(
+            isize, u32, *const u8, u32, *mut u8, *mut u32,
+        ) -> u32;
+
+        let open_process_token: OpenProcessTokenFn = *advapi32.get(b"OpenProcessToken")
+            .map_err(|e| format!("Failed to find OpenProcessToken: {}", e))?;
+        let lookup_privilege_value: LookupPrivilegeValueWFn = *advapi32.get(b"LookupPrivilegeValueW")
+            .map_err(|e| format!("Failed to find LookupPrivilegeValueW: {}", e))?;
+        let adjust_token_privileges: AdjustTokenPrivilegesFn = *advapi32.get(b"AdjustTokenPrivileges")
+            .map_err(|e| format!("Failed to find AdjustTokenPrivileges: {}", e))?;
+
+        // TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES
+        const TOKEN_QUERY: u32 = 0x0008;
+        const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
+        const SE_PRIVILEGE_ENABLED: u32 = 0x00000002;
+
+        #[repr(C)]
+        struct Luid {
+            low_part: u32,
+            high_part: i32,
+        }
+
+        #[repr(C)]
+        struct LuidAndAttributes {
+            luid: Luid,
+            attributes: u32,
+        }
+
+        #[repr(C)]
+        struct TokenPrivileges {
+            privilege_count: u32,
+            privileges: [LuidAndAttributes; 1],
+        }
+
+        // 第 1 步：打开进程令牌 / Step 1: Open process token
+        let mut token: isize = 0;
+        let status = open_process_token(
+            -1isize, // GetCurrentProcess() 伪句柄
+            TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
+            &mut token,
+        );
+        if status != 0 {
+            return Err(format!("OpenProcessToken failed: {}", status));
+        }
+
+        // 第 2 步：查找 SE_SYSTEM_PROFILE_NAME 的 LUID
+        // Step 2: Look up LUID for SE_SYSTEM_PROFILE_NAME
+        let priv_name: Vec<u16> = "SeSystemProfilePrivilege\0".encode_utf16().collect();
+        let mut luid: i64 = 0;
+        let status = lookup_privilege_value(std::ptr::null(), priv_name.as_ptr(), &mut luid);
+        if status != 0 {
+            // 关闭令牌 / Close token
+            let _ = std::mem::drop(advapi32);
+            return Err(format!("LookupPrivilegeValueW failed: {}", status));
+        }
+
+        // 第 3 步：调整特权 — 启用 SE_SYSTEM_PROFILE_NAME
+        // Step 3: Adjust token privileges — enable SE_SYSTEM_PROFILE_NAME
+        let new_luid = Luid {
+            low_part: luid as u32,
+            high_part: (luid >> 32) as i32,
+        };
+
+        let tp = TokenPrivileges {
+            privilege_count: 1,
+            privileges: [LuidAndAttributes {
+                luid: new_luid,
+                attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+
+        let status = adjust_token_privileges(
+            token,
+            0, // FALSE = 不全部禁用
+            &tp as *const TokenPrivileges as *const u8,
+            0, // 不获取前一个特权集
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        );
+
+        if status == 0 {
+            eprintln!("[EtwSession] AdjustTokenPrivileges failed (code 0)");
+            // 非致命：即使特权启用失败，有时 StartTraceW 仍可工作
+        } else {
+            eprintln!("[EtwSession] SE_SYSTEM_PROFILE_NAME privilege enabled");
+        }
+
+        // 关闭令牌句柄（OpenProcessToken 返回的是真实句柄，需要关闭）
+        // Close the token handle (OpenProcessToken returns a real handle)
+        if token != 0 && token != -1 {
+            let kernel32 = match libloading::Library::new("kernel32.dll") {
+                Ok(l) => l,
+                Err(_) => return Ok(()), // 非致命：无法加载 kernel32 时忽略
+            };
+            type CloseHandleFn = unsafe extern "system" fn(isize) -> u32;
+            if let Ok(close_handle_ptr) = kernel32.get::<CloseHandleFn>(b"CloseHandle") {
+                let _ = (*close_handle_ptr)(token);
+            }
+        }
+
+        Ok(())
+    }
 }

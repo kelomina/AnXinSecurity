@@ -16,13 +16,6 @@
       "minHeight": 600
     }
   },
-  "engine": {
-    "autoStart": false,
-    "exeRelativePath": "",
-    "processName": "",
-    "args": [],
-    "exitTimeoutMs": 1000
-  },
   "scanner": {
     "timeoutMs": 5000,
     "healthPollIntervalMs": 3000,
@@ -67,6 +60,12 @@
   },
   "behaviorMonitoring": {
     "enabled": false
+  },
+  "processMonitoring": {
+    "enabled": true
+  },
+  "fileMonitoring": {
+    "enabled": true
   },
   "etw": {
     "enabled": true,

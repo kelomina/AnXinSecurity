@@ -1,7 +1,8 @@
 // 托盘图标与菜单服务
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
-    tray::{TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     AppHandle, Emitter, Manager,
 };
 
@@ -20,13 +21,23 @@ impl TrayService {
         let menu = Menu::with_items(app, &[&show_main, &separator, &exit])
             .map_err(|e| e.to_string())?;
 
+        // 在编译时嵌入托盘图标
+        let icon = Image::from_bytes(include_bytes!("../../icons/icon.ico"))
+            .map_err(|e| format!("Failed to load tray icon: {}", e))?;
+
         let _tray = TrayIconBuilder::new()
+            .icon(icon)
             .menu(&menu)
             .on_menu_event(|app, event| {
                 Self::handle_menu_event(event.id.as_ref(), &app);
             })
             .on_tray_icon_event(|tray, event| {
-                if let TrayIconEvent::Click { .. } = event {
+                // 仅左键点击打开主界面；右键由 Tauri 自动弹出上下文菜单
+                if let TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    ..
+                } = event
+                {
                     let app = tray.app_handle();
                     Self::show_main_window(app);
                 }
@@ -44,6 +55,8 @@ impl TrayService {
                 Self::show_main_window(app);
             }
             "exit" => {
+                // 先显示窗口，确保用户能看到退出确认弹窗
+                Self::show_main_window(app);
                 // 触发前端退出确认流程
                 if let Err(e) = app.emit("tray-exit-requested", ()) {
                     eprintln!("Failed to emit tray exit event: {}", e);

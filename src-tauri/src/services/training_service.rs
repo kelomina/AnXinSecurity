@@ -158,12 +158,28 @@ impl TrainingService {
 /// Recursively collects executable files from the given directory
 fn collect_training_samples(path: &str) -> Result<Vec<String>, String> {
     let mut samples = Vec::new();
-    collect_samples_recursive(std::path::Path::new(path), &mut samples)?;
+    let mut visited = std::collections::HashSet::<std::path::PathBuf>::new();
+    if let Ok(canonical) = std::path::Path::new(path).canonicalize() {
+        visited.insert(canonical);
+    }
+    collect_samples_recursive(std::path::Path::new(path), &mut samples, &mut visited, 0)?;
     Ok(samples)
 }
 
 /// 递归收集可执行文件 / Recursively collect executable files
-fn collect_samples_recursive(dir: &std::path::Path, samples: &mut Vec<String>) -> Result<(), String> {
+fn collect_samples_recursive(
+    dir: &std::path::Path,
+    samples: &mut Vec<String>,
+    visited: &mut std::collections::HashSet<std::path::PathBuf>,
+    depth: u32,
+) -> Result<(), String> {
+    // 深度保护，防止极深目录或 junction 循环导致栈溢出
+    // Depth protection against extremely deep directories or junction loops
+    const MAX_DEPTH: u32 = 32;
+    if depth > MAX_DEPTH {
+        return Ok(());
+    }
+
     if !dir.exists() {
         return Ok(());
     }
@@ -175,7 +191,14 @@ fn collect_samples_recursive(dir: &std::path::Path, samples: &mut Vec<String>) -
         let path = entry.path();
 
         if path.is_dir() {
-            collect_samples_recursive(&path, samples)?;
+            // 用规范化路径检测 junction 循环
+            // Detect junction loops via canonicalized path
+            if let Ok(canonical) = path.canonicalize() {
+                if !visited.insert(canonical) {
+                    continue;
+                }
+            }
+            collect_samples_recursive(&path, samples, visited, depth + 1)?;
         } else if path.is_file() {
             if let Some(ext) = path.extension() {
                 let ext_lower = ext.to_string_lossy().to_lowercase();

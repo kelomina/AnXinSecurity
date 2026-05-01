@@ -13,8 +13,10 @@
  */
 import React from 'react'
 import { useScannerStore } from '../stores/scannerStore'
-import { Play, Pause, FolderOpen, FileSearch, AlertTriangle, X, Shield, CheckCircle } from 'lucide-react'
+import { useI18nStore } from '../stores/i18nStore'
+import { Play, Pause, FolderOpen, FileSearch, AlertTriangle, Loader, X, Shield, CheckCircle } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
+import { startBackgroundWalk, onWalkFileBatch, onWalkComplete } from '../api/fs'
 
 const ScanPage: React.FC = () => {
   const {
@@ -30,23 +32,105 @@ const ScanPage: React.FC = () => {
     startScan,
     cancelScan,
     clearError,
+    appendPendingFiles,
+    setWalkComplete,
   } = useScannerStore()
+  const { t } = useI18nStore()
+
+  const [isWalking, setIsWalking] = React.useState(false)
 
   /**
    * 选择目录扫描 / Select directory to scan
+   *
+   * 最多等待遍历 3 秒，随后自动开始扫描已发现的文件。
+   * 遍历在后台持续进行，新发现的文件会自动追加到扫描队列。
+   * Waits at most 3 seconds for directory traversal, then auto-starts
+   * scanning discovered files. Walk continues in background; newly
+   * discovered files are automatically appended to the scan queue.
    */
   const handleSelectDirectory = async () => {
+    let unlistenBatch: (() => void) | null = null
+    let unlistenComplete: (() => void) | null = null
+    let dirs: string[] = []
+
     try {
       const selected = await open({
         directory: true,
         multiple: true,
         title: '选择要扫描的目录'
       })
-      if (selected) {
-        addSelectedFiles(Array.isArray(selected) ? selected : [selected])
+      if (!selected) return
+
+      dirs = Array.isArray(selected) ? selected : [selected]
+      setIsWalking(true)
+
+      // 3 秒内收集的文件 / Files collected within 3 seconds
+      const initialFiles: string[] = []
+      // 已完成的遍历数
+      let completedWalks = 0
+      const totalWalks = dirs.length
+      // 是否仍在初始收集阶段
+      let isInInitialPhase = true
+
+      // 注册文件批次监听 / Register file batch listener
+      unlistenBatch = onWalkFileBatch((files) => {
+        if (isInInitialPhase) {
+          initialFiles.push(...files)
+        } else {
+          appendPendingFiles(files)
+        }
+      })
+
+      // 注册遍历完成监听 / Register walk complete listener
+      unlistenComplete = onWalkComplete(() => {
+        completedWalks++
+        if (completedWalks >= totalWalks) {
+          setWalkComplete()
+          setIsWalking(false)
+        }
+      })
+
+      // 启动所有后台遍历 / Start all background walks
+      for (const dir of dirs) {
+        await startBackgroundWalk(dir, ['Windows', 'System32', 'AppData', '$Recycle.Bin'])
       }
+
+      // 等待 3 秒或全部遍历完成（先到先得）
+      // Wait 3 seconds or all walks complete, whichever comes first
+      await Promise.race([
+        new Promise<void>(resolve => setTimeout(resolve, 3000)),
+        new Promise<void>(resolve => {
+          const checkInterval = setInterval(() => {
+            if (completedWalks >= totalWalks) {
+              clearInterval(checkInterval)
+              resolve()
+            }
+          }, 100)
+        })
+      ])
+
+      // 切换到直接追加模式，开始扫描
+      // Switch to direct-append mode and start scanning
+      isInInitialPhase = false
+
+      if (initialFiles.length > 0) {
+        addSelectedFiles(initialFiles)
+        startScan()
+      }
+
+      // 等待全部遍历完成（保持监听器存活）
+      // Wait for all walks to finish (keeping listeners alive)
+      while (completedWalks < totalWalks) {
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+
     } catch (e) {
       console.error('[ScanPage] Select directory failed:', e)
+    } finally {
+      // 清理监听器
+      unlistenBatch?.()
+      unlistenComplete?.()
+      setIsWalking(false)
     }
   }
 
@@ -84,35 +168,38 @@ const ScanPage: React.FC = () => {
 
   /**
    * 获取严重程度徽章 / Get severity badge component
+   *
+   * 根据 verdict 显示对应的本地化严重程度文本。
+   * Shows localized severity level text based on verdict.
    */
-  const getSeverityBadge = (verdict: string, threatType?: string) => {
+  const getSeverityBadge = (verdict: string) => {
     switch (verdict) {
       case 'malware':
         return (
           <span className="severity-badge severity-high">
             <AlertTriangle size={14} />
-            {threatType || '恶意软件'}
+            {t('intercept_level_critical', '严重')}
           </span>
         )
       case 'suspicious':
         return (
           <span className="severity-badge severity-medium">
-            {threatType || '可疑'}
+            {t('intercept_level_high', '高')}
           </span>
         )
       case 'clean':
         return (
           <span className="severity-badge severity-low">
             <CheckCircle size={14} />
-            安全
+            {t('intercept_level_low', '低')}
           </span>
         )
       default:
-        return <span className="severity-badge">未知</span>
+        return <span className="severity-badge">{t('intercept_level_unknown', '未知')}</span>
     }
   }
 
-  const threats = scanResults.filter(r => r.verdict !== 'clean')
+  const threats = scanResults.filter(r => r.verdict && r.verdict !== 'clean')
 
   return (
     <section id="page-scan" className="page">
@@ -123,11 +210,11 @@ const ScanPage: React.FC = () => {
         <div className="scan-actions">
           <button
             onClick={handleSelectDirectory}
-            disabled={isScanning}
+            disabled={isScanning || isWalking}
             className="btn btn-outline-secondary scan-action"
           >
-            <FolderOpen size={18} />
-            <span>选择目录</span>
+            {isWalking ? <Loader size={18} className="spinning" /> : <FolderOpen size={18} />}
+            <span>{isWalking ? '正在遍历...' : '选择目录'}</span>
           </button>
           <button
             onClick={handleSelectFiles}
@@ -274,12 +361,12 @@ const ScanPage: React.FC = () => {
                     </td>
                     <td>
                       <strong style={{ color: threat.verdict === 'malware' ? 'var(--color-danger)' : 'var(--color-warning)' }}>
-                        {threat.verdict.toUpperCase()}
+                        {(threat.verdict ?? 'unknown').toUpperCase()}
                       </strong>
                     </td>
                     <td>{threat.threatType || '-'}</td>
                     <td>
-                      {getSeverityBadge(threat.verdict, threat.threatType)}
+                      {getSeverityBadge(threat.verdict)}
                     </td>
                   </tr>
                 ))}

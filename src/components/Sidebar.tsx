@@ -9,7 +9,7 @@ const Sidebar: React.FC = () => {
     { id: 'overview', label: '概览', icon: LayoutDashboard },
     { id: 'scan', label: '扫描', icon: Search },
     { id: 'quarantine', label: '隔离区', icon: ShieldAlert },
-    { id: 'behavior', label: '行为分析', icon: Activity },
+    { id: 'behavior', label: 'EDR', icon: Activity },
     { id: 'settings', label: '设置', icon: Settings },
   ]
 

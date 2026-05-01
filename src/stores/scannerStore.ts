@@ -25,6 +25,8 @@ interface ScannerState {
   scanResults: ScanResult[]
   lastScanStats?: ScanStats
   error: string | null
+  pendingFiles: string[]
+  isWalkComplete: boolean
 
   setSelectedFiles: (files: string[]) => void
   addSelectedFiles: (files: string[]) => void
@@ -33,6 +35,8 @@ interface ScannerState {
   cancelScan: () => Promise<void>
   clearResults: () => void
   clearError: () => void
+  appendPendingFiles: (files: string[]) => void
+  setWalkComplete: () => void
 }
 
 export const useScannerStore = create<ScannerState>((set, get) => ({
@@ -43,6 +47,8 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
   scanResults: [],
   lastScanStats: undefined,
   error: null,
+  pendingFiles: [],
+  isWalkComplete: false,
 
   /**
    * 函数名称：setSelectedFiles
@@ -83,18 +89,24 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
 
   /**
    * 函数名称：startScan
-   * 函数作用：开始扫描选中文件。单文件调 scanFile，多文件调 scanBatch。
-   *   同时监听 scan-progress 事件以逐文件更新进度。
-   * Purpose: Starts scanning selected files. Single file uses scanFile, multiple use scanBatch.
-   *   Also listens for scan-progress events for per-file progress updates.
-   * 调用方：ScanPage 开始扫描按钮
-   * Called by: ScanPage start scan button
+   * 函数作用：开始扫描选中文件，支持增量追加。
+   *   扫描当前 selectedFiles 后，自动检查 pendingFiles：
+   *   - 有等待文件 → 移到 selectedFiles 继续扫描
+   *   - 无等待文件 + 遍历未完成 → 轮询等待
+   *   - 无等待文件 + 遍历完成 → 结束
+   * Purpose: Starts scanning selected files with incremental append support.
+   *   After current batch, checks pendingFiles:
+   *   - Has pending → move to selectedFiles and continue
+   *   - No pending + walk incomplete → poll and wait
+   *   - No pending + walk complete → finish
+   * 调用方：ScanPage 开始扫描按钮 / handleSelectDirectory（自动触发）
+   * Called by: ScanPage start scan button / handleSelectDirectory (auto-trigger)
    * 副作用：调用引擎 TCP API，监听进度事件，更新 store 状态
    * Side effect: Calls engine TCP API, listens for progress events, updates store state
    * 错误处理：引擎连接失败、扫描超时、返回值异常均捕获并设置 error
    * Error handling: Engine connection failures, scan timeouts, abnormal returns all caught and set to error
-   * 中文关键词：开始扫描，执行扫描，进度更新，扫描引擎
-   * English keywords: start scan, execute scan, progress update, scan engine
+   * 中文关键词：开始扫描，增量扫描，边扫边遍历，批量扫描
+   * English keywords: start scan, incremental scan, scan-while-walk, batch scan
    */
   startScan: async () => {
     const { selectedFiles } = get()
@@ -116,33 +128,68 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       })
     })
 
+    let allResults: ScanResult[] = []
+
     try {
-      let results: ScanResult[]
+      // 循环扫描：处理当前批次 → 检查 pending → 继续或结束
+      // Loop: process current batch → check pending → continue or finish
+      while (true) {
+        const currentBatch = get().selectedFiles
+        if (currentBatch.length === 0) break
 
-      if (selectedFiles.length === 1) {
-        const result = await scanFile(selectedFiles[0])
-        results = [result]
-      } else {
-        const batchResult = await scanBatch(selectedFiles)
-        results = batchResult.results || []
-      }
+        let batchResults: ScanResult[]
 
-      const threats = results.filter(r => r.verdict !== 'clean').length
-      const clean = results.length - threats
-      const elapsedTime = Math.round((Date.now() - startTime) / 1000)
-
-      set({
-        scanResults: results,
-        isScanning: false,
-        scanProgress: 100,
-        currentFile: undefined,
-        lastScanStats: {
-          totalFiles: results.length,
-          threatsFound: threats,
-          cleanFiles: clean,
-          elapsedTime,
+        if (currentBatch.length === 1) {
+          const result = await scanFile(currentBatch[0])
+          batchResults = [result]
+        } else {
+          const batchResult = await scanBatch(currentBatch)
+          batchResults = batchResult.results || []
         }
-      })
+
+        allResults.push(...batchResults)
+
+        // 更新已完成的扫描结果
+        // Update completed scan results
+        const threats = allResults.filter(r => r.verdict && r.verdict !== 'clean').length
+        const clean = allResults.length - threats
+        const elapsedTime = Math.round((Date.now() - startTime) / 1000)
+
+        set({
+          scanResults: [...allResults],
+          selectedFiles: [],
+          lastScanStats: {
+            totalFiles: allResults.length,
+            threatsFound: threats,
+            cleanFiles: clean,
+            elapsedTime,
+          }
+        })
+
+        // 检查下一批待扫描文件
+        // Check next batch
+        const state = get()
+        if (state.pendingFiles.length > 0) {
+          // 有等待文件 → 移到 selectedFiles 继续扫描
+          // Has pending files → move to selectedFiles and continue
+          set({
+            selectedFiles: [...state.pendingFiles],
+            pendingFiles: [],
+          })
+        } else if (state.isWalkComplete) {
+          // 遍历完成 + 无等待 → 全部扫描完成
+          // Walk complete + no pending → all done
+          break
+        } else {
+          // 遍历未完成但无等待文件 → 等待轮询
+          // Walk incomplete but no pending → poll and wait
+          // 每次轮询间隔 500ms，防止忙等
+          // 500ms poll interval to prevent busy waiting
+          await new Promise(resolve => setTimeout(resolve, 500))
+          // 继续循环检查 pendingFiles / isWalkComplete
+          // Continue loop to re-check pendingFiles / isWalkComplete
+        }
+      }
     } catch (err) {
       set({
         error: err instanceof Error ? err.message : '扫描失败',
@@ -150,9 +197,18 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
         scanProgress: 0,
         currentFile: undefined,
       })
+      return
     } finally {
       unlistenProgress()
     }
+
+    // 正常结束
+    // Normal completion
+    set({
+      isScanning: false,
+      scanProgress: 100,
+      currentFile: undefined,
+    })
   },
 
   /**
@@ -200,4 +256,44 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
    * English keywords: clear error, dismiss error
    */
   clearError: () => set({ error: null }),
+
+  /**
+   * 函数名称：appendPendingFiles
+   * 函数作用：将后台遍历新发现的文件加入待扫描队列。
+   *   若正在扫描则放入 pendingFiles，等待当前批次完成后自动处理；
+   *   若未在扫描则直接加入 selectedFiles。
+   * Purpose: Adds newly discovered files from background walk to the scan queue.
+   *   If scanning: adds to pendingFiles, auto-processed after current batch.
+   *   If not scanning: directly adds to selectedFiles.
+   * 调用方：ScanPage handleSelectDirectory（walk-file-batch 事件回调）
+   * Called by: ScanPage handleSelectDirectory (walk-file-batch event callback)
+   * 中文关键词：追加文件，待扫描队列，增量扫描
+   * English keywords: append files, pending queue, incremental scan
+   */
+  appendPendingFiles: (files: string[]) => {
+    const { isScanning, isWalkComplete } = get()
+    if (isScanning) {
+      // 正在扫描 → 放入待扫描队列，当前批次完成后自动处理
+      // Scanning → queue for next batch cycle
+      set(state => ({ pendingFiles: [...state.pendingFiles, ...files] }))
+    } else if (!isWalkComplete) {
+      // 未在扫描 + 遍历未完成 → 放入 selectedFiles 供用户触发扫描
+      // Not scanning + walk in progress → add to selectedFiles
+      set(state => {
+        const unique = [...new Set([...state.selectedFiles, ...files])]
+        return { selectedFiles: unique }
+      })
+    }
+  },
+
+  /**
+   * 函数名称：setWalkComplete
+   * 函数作用：标记后台遍历已完成，通知扫描循环可以结束。
+   * Purpose: Marks background walk as complete, notifying the scan loop to finish.
+   * 调用方：ScanPage handleSelectDirectory（walk-complete 事件回调）
+   * Called by: ScanPage handleSelectDirectory (walk-complete event callback)
+   * 中文关键词：遍历完成，扫描结束，后台遍历状态
+   * English keywords: walk complete, scan finish, background walk status
+   */
+  setWalkComplete: () => set({ isWalkComplete: true }),
 }))

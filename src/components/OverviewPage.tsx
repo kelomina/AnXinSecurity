@@ -2,20 +2,20 @@
  * 概览页面
  * Overview page
  *
- * 显示引擎健康状态、系统信息、实时监控状态、隔离区文件数、签名库版本、
+ * 显示引擎健康状态、系统信息、实时监控状态、隔离区文件数、
  * 实时ETW日志面板、快照扫描结果、风险分析统计等概览信息。
  * Displays engine health, system info, monitoring status, quarantine count,
- * signature version, real-time ETW log panel, snapshot results, risk stats, etc.
+ * real-time ETW log panel, snapshot results, risk stats, etc.
  *
- * 中文关键词：概览，引擎状态，系统信息，日志面板，签名版本，快照结果
- * English keywords: overview, engine status, system info, log panel, signature version, snapshot result
+ * 中文关键词：概览，引擎状态，系统信息，日志面板，快照结果
+ * English keywords: overview, engine status, system info, log panel, snapshot result
  */
 import React, { useEffect, useState } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import { useQuarantineStore } from '../stores/quarantineStore'
 import { scannerHealth } from '../api/scanner'
 import { getSystemInfo, type SystemInfo } from '../api/system'
-import { getCurrentSignatureVersion } from '../api/signatureStore'
+
 import { getRecentLogs, clearLogs } from '../api/logs'
 import { listen } from '@tauri-apps/api/event'
 import { Activity, Cpu, Database, HardDrive, ShieldCheck, ShieldAlert, Eye, FileWarning, Layers, Trash2 } from 'lucide-react'
@@ -30,7 +30,6 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
   const loadQuarantineItems = useQuarantineStore((state) => state.loadItems)
   const [engineStatus, setEngineStatus] = useState<'ok' | 'error' | 'loading'>('loading')
   const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
-  const [sigVersion, setSigVersion] = useState('--')
   const [logs, setLogs] = useState<string[]>([])
   const [snapshotResult, setSnapshotResult] = useState<Record<string, unknown> | null>(null)
 
@@ -47,8 +46,6 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
 
     // 加载系统信息
     getSystemInfo().then(setSystemInfo).catch((e: unknown) => { console.error('[OverviewPage] Failed to load system info:', e) })
-    // 加载签名版本
-    getCurrentSignatureVersion().then(setSigVersion).catch((e: unknown) => { console.error('[OverviewPage] Failed to load sig version:', e) })
     // 加载日志
     getRecentLogs().then(setLogs).catch((e: unknown) => { console.error('[OverviewPage] Failed to load recent logs:', e) })
 
@@ -95,9 +92,7 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
               {engineStatus === 'loading' ? '检查中...' : engineStatus === 'ok' ? '引擎运行正常' : '引擎异常 — 请检查引擎是否已启动'}
             </span>
           </div>
-          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-            签名库 v{sigVersion}
-          </span>
+
         </div>
       </div>
 

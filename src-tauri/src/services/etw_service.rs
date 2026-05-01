@@ -37,15 +37,22 @@ impl EtwService {
     /// 中文关键词：启动ETW，事件监控，风险管线，拦截管线
     /// English keywords: start ETW, event monitoring, risk pipeline, interception pipeline
     pub fn start(&self, app_handle: AppHandle) -> Result<(), String> {
+        // 创建 ETW Session（内部自动清理已存在的同名 Session）
         let mut session = EtwSession::new("AnXinETWSession")?;
 
-        session.start(
-            0x00000000, 0x00000001,
-            0x00000000, 0x00000010,
-            0x00000000, 0x00000100,
-            0x00000000, 0x00001000,
-            1, 0, 0, 65536,
-        )?;
+        // 如果 session_handle 为 0（无管理员权限），跳过启用提供者和轮询
+        // If session_handle is 0 (no admin), skip enabling providers and polling
+        if session.session_handle != 0 {
+            session.start(
+                0x00000000, 0x00000001,
+                0x00000000, 0x00000010,
+                0x00000000, 0x00000100,
+                0x00000000, 0x00001000,
+                1, 0, 0, 65536,
+            )?;
+        } else {
+            eprintln!("[EtwService] ETW skipped (no admin)");
+        }
 
         let tx = self.tx.clone();
         let running = self.running.clone();
@@ -121,6 +128,17 @@ impl EtwService {
     /// Called by: commands::behavior::pause_etw
     /// 中文关键词：暂停ETW，停止监控
     /// English keywords: pause ETW, stop monitoring
+    /// 函数名称：subscribe
+    /// 函数作用：获取 ETW 事件广播接收器，用于订阅实时事件。
+    /// Purpose: Gets an ETW event broadcast receiver for subscribing to real-time events.
+    /// 调用方：file_monitor_service 等需要监听 ETW 事件的服务
+    /// Called by: file_monitor_service and other services that need to listen to ETW events
+    /// 中文关键词：订阅事件，ETW订阅，事件接收器
+    /// English keywords: subscribe events, ETW subscribe, event receiver
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.tx.subscribe()
+    }
+
     pub fn pause(&self) -> Result<(), String> {
         let mut guard = self.session.lock().map_err(|e| e.to_string())?;
         if let Some(ref mut session) = *guard {

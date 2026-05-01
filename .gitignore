@@ -172,3 +172,6 @@ debug
 
 # Docs (本地知识文档，不提交)
 docs/
+src-tauri/data/behavior/anxin_etw_behavior.db
+src-tauri/Cargo.lock
+package-lock.json

@@ -72,17 +72,14 @@ pub async fn execute_exit(
                 let _ = config.save();
             }
         }
-
-        // 停止扫描引擎（通过发送退出命令）
-        // 引擎自动启动服务在 main.rs 中被管理为 Arc<Mutex<EngineAutostartService>>
-        // 引擎退出由其自身进程管理，在此处仅尝试发送退出信号
-        use crate::services::engine_autostart_service::EngineAutostartService;
-        if let Some(autostart_state) = app_handle.try_state::<Arc<Mutex<EngineAutostartService>>>() {
-            if let Ok(autostart) = autostart_state.lock() {
-                let _ = autostart.post_exit_command();
-            }
-        }
     }
+
+    // 先关闭窗口，让 WebView2 有机会正常清理窗口类，避免 Chrome_WidgetWin_0 注销错误
+    if let Some(window) = app_handle.get_webview_window("main") {
+        let _ = window.close();
+    }
+    // 等待 WebView2 完成清理
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
     // 退出应用
     app_handle.exit(0);

@@ -19,6 +19,10 @@ pub struct AppConfig {
     pub scanner: ScannerConfig,
     #[serde(rename = "behaviorMonitoring")]
     pub behavior_monitoring: BehaviorConfig,
+    #[serde(rename = "processMonitoring")]
+    pub process_monitoring: ProcessMonitorConfig,
+    #[serde(rename = "fileMonitoring")]
+    pub file_monitoring: FileMonitorConfig,
     #[serde(rename = "behaviorAnalyzer")]
     pub behavior_analyzer: BehaviorAnalyzerConfig,
     // 新增：扫描排除项列表
@@ -88,6 +92,16 @@ pub struct BehaviorConfig {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ProcessMonitorConfig {
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct FileMonitorConfig {
+    pub enabled: bool,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BehaviorAnalyzerConfig {
     pub enabled: bool,
     #[serde(rename = "flushIntervalMs")]
@@ -139,6 +153,12 @@ impl Default for AppConfig {
                 },
             },
             behavior_monitoring: BehaviorConfig {
+                enabled: false,
+            },
+            process_monitoring: ProcessMonitorConfig {
+                enabled: true,
+            },
+            file_monitoring: FileMonitorConfig {
                 enabled: true,
             },
             behavior_analyzer: BehaviorAnalyzerConfig {

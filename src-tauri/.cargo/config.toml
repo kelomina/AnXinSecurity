@@ -1,5 +1,5 @@
 [build]
-# 使用 MSVC 工具链编译（需 rustup 管理的 cargo，非系统自带 GNU 版 cargo）
+# 使用 MSVC 工具链编译（需 rustup 管理的 cargo，非系统自带 GNU cargo）
 # Use MSVC toolchain (requires rustup-managed cargo, NOT the system-installed GNU cargo)
 target = "x86_64-pc-windows-msvc"
 

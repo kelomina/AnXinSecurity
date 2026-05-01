@@ -1,6 +1,8 @@
 use tauri::State;
 use crate::services::engine_service::EngineService;
 
+use std::sync::Arc;
+
 /// 函数名称：scanner_health
 /// 函数作用：检查扫描引擎健康状态，返回引擎状态 JSON。
 /// Purpose: Checks the scan engine health and returns status JSON.
@@ -10,7 +12,7 @@ use crate::services::engine_service::EngineService;
 /// English keywords: engine health check, scan engine, heartbeat, health status
 #[tauri::command]
 pub async fn scanner_health(
-    engine: State<'_, EngineService>,
+    engine: State<'_, Arc<EngineService>>,
 ) -> Result<serde_json::Value, String> {
     engine.health_check().await
 }
@@ -25,7 +27,7 @@ pub async fn scanner_health(
 /// English keywords: file scan, single file scan, threat scan, security scan
 #[tauri::command]
 pub async fn scan_file(
-    engine: State<'_, EngineService>,
+    engine: State<'_, Arc<EngineService>>,
     file_path: String,
     options: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
@@ -43,7 +45,7 @@ pub async fn scan_file(
 /// English keywords: batch scan, multi-file scan, batch detection
 #[tauri::command]
 pub async fn scan_batch(
-    engine: State<'_, EngineService>,
+    engine: State<'_, Arc<EngineService>>,
     file_paths: Vec<String>,
     options: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
@@ -62,7 +64,7 @@ pub async fn scan_batch(
 /// English keywords: cancel scan, abort scan, stop scan, cancel operation
 #[tauri::command]
 pub async fn cancel_scan(
-    engine: State<'_, EngineService>,
+    engine: State<'_, Arc<EngineService>>,
 ) -> Result<bool, String> {
     engine.cancel_scan().await
 }

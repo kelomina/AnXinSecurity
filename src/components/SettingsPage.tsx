@@ -2,31 +2,31 @@
  * 设置页面
  * Settings page
  *
- * 提供通用设置、排除项、允许列表、签名库管理、开发者设置、训练功能。
- * Provides general settings, exclusions, allowlist, signature store, dev settings, training.
+ * 提供通用设置、排除项、允许列表、开发者设置、模型训练。
+ * Provides general settings, exclusions, allowlist, dev settings, training.
  *
- * 中文关键词：设置，排除项，允许列表，签名库，开发者设置，训练
- * English keywords: settings, exclusions, allowlist, signature store, dev settings, training
+ * 中文关键词：设置，排除项，允许列表，开发者设置，训练
+ * English keywords: settings, exclusions, allowlist, dev settings, training
  */
 import React, { useEffect, useState } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore, ThemeMode } from '../stores/themeStore'
-import { Moon, Sun, Monitor, Zap, FolderOpen, FilePlus, Trash2, Shield, Plus, Database, Key, Brain, RefreshCw, Download } from 'lucide-react'
+import { Moon, Sun, Monitor, Zap, FolderOpen, FilePlus, Trash2, Shield, Plus, Key, Brain, RefreshCw } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { listSignatureVersions, rollbackSignatureVersion, type SignatureMetadata } from '../api/signatureStore'
+
 import { devSettingsUnlock, devSettingsSave } from '../api/devSettings'
 import { trainFromPath, getTrainingStatus, cancelTraining } from '../api/training'
 
 const SettingsPage: React.FC = () => {
   const {
-    config, setBehaviorMonitoring,
+    config, setBehaviorMonitoring, setProcessMonitoring, setFileMonitoring,
     exclusions, allowlist,
     loadExclusions, addExclusion, removeExclusion,
     loadAllowlist, addToAllowlist, removeFromAllowlist
   } = useConfigStore()
   const { themeMode, setThemeMode, animationsEnabled, toggleAnimations } = useThemeStore()
 
-  const [activeTab, setActiveTab] = useState<'general'|'exclusions'|'allowlist'|'signature'|'dev'|'training'>('general')
+  const [activeTab, setActiveTab] = useState<'general'|'exclusions'|'allowlist'|'dev'|'training'>('general')
   const [confirmDeleteIndex, setConfirmDeleteIndex] = useState<number | null>(null)
   const [confirmDeleteAllow, setConfirmDeleteAllow] = useState<number | null>(null)
 
@@ -38,9 +38,6 @@ const SettingsPage: React.FC = () => {
   const [newAllowlistPath, setNewAllowlistPath] = useState('')
   const [newAllowlistDesc, setNewAllowlistDesc] = useState('')
 
-  // 签名库状态
-  const [sigMeta, setSigMeta] = useState<SignatureMetadata | null>(null)
-  const [sigLoading, setSigLoading] = useState(false)
   // 开发者设置
   const [devPassword, setDevPassword] = useState('')
   const [devData, setDevData] = useState('')
@@ -51,16 +48,6 @@ const SettingsPage: React.FC = () => {
   const [trainStatus, setTrainStatus] = useState('idle')
 
   useEffect(() => { loadExclusions(); loadAllowlist() }, [loadExclusions, loadAllowlist])
-
-  const loadSigVersions = async () => {
-    setSigLoading(true)
-    try { setSigMeta(await listSignatureVersions()) } catch (e) { console.error('[SettingsPage] Failed to load signature versions:', e) }
-    setSigLoading(false)
-  }
-
-  useEffect(() => {
-    if (activeTab === 'signature') loadSigVersions()
-  }, [activeTab])
 
   const themeOptions: { value: ThemeMode; label: string; icon: React.ElementType }[] = [
     { value: 'system', label: '跟随系统', icon: Monitor },
@@ -143,18 +130,10 @@ const SettingsPage: React.FC = () => {
     if (selected) setTrainPath(selected as string)
   }
 
-  // 签名库回滚
-  const handleRollbackSig = async (version: string) => {
-    if (!confirm(`确定要回滚签名库到版本 ${version} 吗？回滚后安全防护能力可能降低。`)) return
-    try { await rollbackSignatureVersion(version); loadSigVersions() }
-    catch (e) { alert(`回滚失败: ${e}`) }
-  }
-
   const tabs = [
     { id: 'general' as const, label: '通用设置' },
     { id: 'exclusions' as const, label: `排除项 (${exclusions.length})` },
     { id: 'allowlist' as const, label: `允许列表 (${allowlist.length})` },
-    { id: 'signature' as const, label: '签名库' },
     { id: 'dev' as const, label: '开发者' },
     { id: 'training' as const, label: '模型训练' },
   ]
@@ -182,8 +161,10 @@ const SettingsPage: React.FC = () => {
           <h3>监控设置</h3>
           <div className="toggle-setting">
             <div className="toggle-info">
-              <span className="toggle-label">启用行为监控</span>
-              <span className="toggle-description">实时监控系统进程行为</span>
+              <span className="toggle-label">EDR 行为监控</span>
+              <span className="toggle-description">
+                实时监控系统进程行为，消耗较多系统资源，非必要不建议开启
+              </span>
             </div>
             <div
               className={`toggle-switch ${config?.behaviorMonitoring?.enabled ? 'toggle-active' : ''}`}
@@ -197,6 +178,58 @@ const SettingsPage: React.FC = () => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault()
                   setBehaviorMonitoring(!(config?.behaviorMonitoring?.enabled || false))
+                }
+              }}
+            >
+              <span className="toggle-slider" />
+            </div>
+          </div>
+
+          <div className="toggle-setting" style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
+            <div className="toggle-info">
+              <span className="toggle-label">进程监控</span>
+              <span className="toggle-description">
+                遍历系统进程并对新创建的进程调用扫描引擎进行检测
+              </span>
+            </div>
+            <div
+              className={`toggle-switch ${config?.processMonitoring?.enabled ? 'toggle-active' : ''}`}
+              onClick={() => {
+                setProcessMonitoring(!(config?.processMonitoring?.enabled || false))
+              }}
+              role="switch"
+              aria-checked={config?.processMonitoring?.enabled || false}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setProcessMonitoring(!(config?.processMonitoring?.enabled || false))
+                }
+              }}
+            >
+              <span className="toggle-slider" />
+            </div>
+          </div>
+
+          <div className="toggle-setting" style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
+            <div className="toggle-info">
+              <span className="toggle-label">文件监控</span>
+              <span className="toggle-description">
+                从 ETW 中读取文件创建和修改事件，对这些事件中的文件调用扫描引擎进行检测
+              </span>
+            </div>
+            <div
+              className={`toggle-switch ${config?.fileMonitoring?.enabled ? 'toggle-active' : ''}`}
+              onClick={() => {
+                setFileMonitoring(!(config?.fileMonitoring?.enabled || false))
+              }}
+              role="switch"
+              aria-checked={config?.fileMonitoring?.enabled || false}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setFileMonitoring(!(config?.fileMonitoring?.enabled || false))
                 }
               }}
             >
@@ -342,45 +375,6 @@ const SettingsPage: React.FC = () => {
                 </div>
               </div>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* 签名库管理 */}
-      {activeTab === 'signature' && (
-        <div className="settings-section card">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ margin: 0 }}>签名库版本管理</h3>
-            <button className="btn btn-outline-secondary btn-sm" onClick={loadSigVersions} disabled={sigLoading}>
-              <RefreshCw size={14} className={sigLoading ? 'spinning' : ''} /> 刷新
-            </button>
-          </div>
-          <p style={{ color: 'var(--muted-fg)', fontSize: '14px', marginBottom: '16px' }}>
-            当前版本: <strong>{sigMeta?.currentVersion || '--'}</strong>
-          </p>
-          {sigLoading ? (
-            <div className="skeleton-list">{Array(3).fill(0).map((_, i) => <div key={i} className="skeleton-event" style={{ height: '48px', marginBottom: '8px' }} />)}</div>
-          ) : sigMeta?.versions?.length ? (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-              {sigMeta.versions.map((v, i) => (
-                <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', background: 'var(--panel-bg)', borderRadius: 'var(--radius-medium)', border: v.current ? '2px solid var(--brand-color)' : '1px solid var(--panel-border)' }}>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                      <span style={{ fontWeight: 600 }}>{v.version}</span>
-                      {v.current && <span style={{ fontSize: '11px', background: 'var(--brand-color)', color: '#fff', padding: '2px 8px', borderRadius: '10px' }}>当前</span>}
-                    </div>
-                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '4px' }}>{v.date} · {v.count} 条签名</div>
-                  </div>
-                  {!v.current && (
-                    <button className="btn btn-outline-warning btn-sm" onClick={() => handleRollbackSig(v.version)}>
-                      <Download size={14} /> 回滚到此版本
-                    </button>
-                  )}
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="empty-state"><Database size={48} /><p>暂无版本信息</p></div>
           )}
         </div>
       )}

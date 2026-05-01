@@ -3,25 +3,20 @@
  * Tray exit confirmation prompt
  *
  * 监听 tray-exit-requested 事件，显示退出确认对话框。
- * 用户可勾选是否保留后台扫描引擎服务。
+ * 用户必须勾选"我确认要退出AnXin Security"后方可点击确认退出按钮。
  * Listens for tray-exit-requested event and displays exit confirmation dialog.
- * User can choose whether to keep the background scan engine service running.
+ * User must check "I confirm to exit AnXin Security" to enable the confirm button.
  *
  * 调用方：App.tsx（由 tray-exit-requested 事件触发 isOpen）
  * Called by: App.tsx (triggered via tray-exit-requested event setting isOpen)
  *
- * 中文关键词：托盘退出，退出确认，扫描引擎，确认弹窗，后台服务
- * English keywords: tray exit, exit confirmation, scan engine, confirmation modal, background service
+ * 中文关键词：托盘退出，退出确认，确认勾选，退出弹窗
+ * English keywords: tray exit, exit confirmation, confirm checkbox, exit prompt
  */
-import React, { useState, useEffect } from 'react'
+import React, { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Power, X } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
-
-interface ExitConfirmation {
-  keep_service: boolean
-  prompt_enabled: boolean
-}
 
 interface TrayExitPromptProps {
   isOpen: boolean
@@ -29,45 +24,21 @@ interface TrayExitPromptProps {
 }
 
 const TrayExitPrompt: React.FC<TrayExitPromptProps> = ({ isOpen, onClose }) => {
-  const [keepService, setKeepService] = useState<boolean>(true)
+  const [confirmed, setConfirmed] = useState<boolean>(false)
   const [isLoading, setIsLoading] = useState<boolean>(false)
 
-  /**
-   * 弹窗打开时获取退出确认配置
-   * Fetch exit confirmation config when prompt opens
-   */
-  useEffect(() => {
-    if (isOpen) {
-      const fetchConfig = async () => {
-        try {
-          const config: ExitConfirmation = await invoke('request_exit_confirmation')
-          setKeepService(config.keep_service)
-        } catch (error) {
-          console.error('Failed to get exit confirmation:', error)
-        }
-      }
-      fetchConfig()
-    }
-  }, [isOpen])
-
-  /**
-   * 执行退出 / Execute exit
-   */
-  const executeExit = async (keep: boolean) => {
+  const handleConfirm = async () => {
     try {
       setIsLoading(true)
-      await invoke('execute_exit', { keepService: keep })
+      await invoke('execute_exit', { keepService: false })
     } catch (error) {
       console.error('Failed to execute exit:', error)
       setIsLoading(false)
     }
   }
 
-  const handleConfirm = async () => {
-    await executeExit(keepService)
-  }
-
   const handleCancel = () => {
+    setConfirmed(false)
     onClose()
   }
 
@@ -109,23 +80,13 @@ const TrayExitPrompt: React.FC<TrayExitPromptProps> = ({ isOpen, onClose }) => {
                 <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
                   <input
                     type="checkbox"
-                    checked={keepService}
-                    onChange={(e) => setKeepService(e.target.checked)}
+                    checked={confirmed}
+                    onChange={(e) => setConfirmed(e.target.checked)}
                     disabled={isLoading}
                     style={{ width: '16px', height: '16px', cursor: 'pointer' }}
                   />
-                  <span>保持扫描引擎服务运行</span>
+                  <span>我确认要退出 AnXin Security</span>
                 </label>
-                <p className="option-description" style={{
-                  fontSize: '12px',
-                  color: 'var(--muted-fg)',
-                  marginLeft: '24px',
-                  marginTop: '4px'
-                }}>
-                  {keepService
-                    ? '扫描引擎将继续在后台运行，提供实时保护'
-                    : '扫描引擎将完全停止，系统将不再受保护'}
-                </p>
               </div>
             </div>
 
@@ -140,7 +101,7 @@ const TrayExitPrompt: React.FC<TrayExitPromptProps> = ({ isOpen, onClose }) => {
               <button
                 className="btn btn-danger"
                 onClick={handleConfirm}
-                disabled={isLoading}
+                disabled={!confirmed || isLoading}
               >
                 {isLoading ? '退出中...' : '确认退出'}
               </button>
