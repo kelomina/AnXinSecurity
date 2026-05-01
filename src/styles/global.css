@@ -904,19 +904,13 @@ html[data-theme="light"] .card {
   margin-left: 16px;
 }
 
-.toggle-input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
 .toggle-slider {
   position: absolute;
   inset: 0;
-  background: var(--muted-fg);
   border-radius: var(--radius-circular);
   cursor: pointer;
   transition: background var(--motion-dur-press) ease;
+  background: var(--muted-fg);
 }
 
 .toggle-slider::before {
@@ -931,11 +925,11 @@ html[data-theme="light"] .card {
   transition: transform var(--motion-dur-press) var(--motion-ease-spring);
 }
 
-.toggle-input:checked + .toggle-slider {
+.toggle-active .toggle-slider {
   background: var(--theme-color);
 }
 
-.toggle-input:checked + .toggle-slider::before {
+.toggle-active .toggle-slider::before {
   transform: translateX(20px);
 }
 

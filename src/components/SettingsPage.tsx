@@ -180,16 +180,29 @@ const SettingsPage: React.FC = () => {
       {activeTab === 'general' && (<>
         <div className="settings-section card">
           <h3>监控设置</h3>
-          <label className="toggle-setting">
+          <div className="toggle-setting">
             <div className="toggle-info">
               <span className="toggle-label">启用行为监控</span>
               <span className="toggle-description">实时监控系统进程行为</span>
             </div>
-            <div className="toggle-switch">
-              <input type="checkbox" checked={config?.behaviorMonitoring?.enabled || false} onChange={(e) => setBehaviorMonitoring(e.target.checked)} className="toggle-input" />
+            <div
+              className={`toggle-switch ${config?.behaviorMonitoring?.enabled ? 'toggle-active' : ''}`}
+              onClick={() => {
+                setBehaviorMonitoring(!(config?.behaviorMonitoring?.enabled || false))
+              }}
+              role="switch"
+              aria-checked={config?.behaviorMonitoring?.enabled || false}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  setBehaviorMonitoring(!(config?.behaviorMonitoring?.enabled || false))
+                }
+              }}
+            >
               <span className="toggle-slider" />
             </div>
-          </label>
+          </div>
         </div>
         <div className="settings-section card">
           <h3>界面设置</h3>
@@ -206,16 +219,27 @@ const SettingsPage: React.FC = () => {
               })}
             </div>
           </div>
-          <label className="toggle-setting">
+          <div className="toggle-setting">
             <div className="toggle-info">
               <div className="toggle-label-row"><Zap size={18} /><span className="toggle-label">启用动画效果</span></div>
               <span className="toggle-description">页面切换和交互动画</span>
             </div>
-            <div className="toggle-switch">
-              <input type="checkbox" checked={animationsEnabled} onChange={toggleAnimations} className="toggle-input" />
+            <div
+              className={`toggle-switch ${animationsEnabled ? 'toggle-active' : ''}`}
+              onClick={toggleAnimations}
+              role="switch"
+              aria-checked={animationsEnabled}
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault()
+                  toggleAnimations()
+                }
+              }}
+            >
               <span className="toggle-slider" />
             </div>
-          </label>
+          </div>
         </div>
       </>)}
 

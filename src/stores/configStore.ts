@@ -12,7 +12,7 @@ interface ConfigState {
   engineStatus: 'stopped' | 'running' | 'starting'
   loadConfig: () => Promise<void>
   setCurrentPage: (page: string) => void
-  setBehaviorMonitoring: (enabled: boolean) => Promise<void>
+  setBehaviorMonitoring: (enabled: boolean) => void
   setEngineStatus: (status: 'stopped' | 'running' | 'starting') => void
   loadExclusions: () => Promise<void>
   addExclusion: (path: string, entryType: 'file' | 'directory' | 'process', description?: string) => Promise<void>
@@ -44,14 +44,25 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     set({ currentPage: page })
   },
 
-  setBehaviorMonitoring: async (enabled: boolean) => {
-    await setBehaviorMonitoringEnabled(enabled)
-    set((state) => ({
-      config: state.config ? {
-        ...state.config,
-        behaviorMonitoring: { enabled }
-      } : null
-    }))
+  setBehaviorMonitoring: (enabled: boolean) => {
+    // 乐观更新：先更新本地 UI 状态，再异步调用后端（不等待、不回滚）
+    // Optimistic update: update local UI state first, persist asynchronously (fire-and-forget)
+    set((state) => {
+      const cfg = state.config ?? {
+        brand: '',
+        themeColor: '',
+        defaultPage: '',
+        minimizeToTray: false,
+        behaviorMonitoring: { enabled },
+        ui: { themeMode: 'system', animations: true }
+      }
+      return {
+        config: { ...cfg, behaviorMonitoring: { enabled } }
+      }
+    })
+    setBehaviorMonitoringEnabled(enabled).catch((e) => {
+      console.error('[configStore] Failed to persist behavior monitoring:', e)
+    })
   },
 
   setEngineStatus: (status: 'stopped' | 'running' | 'starting') => {

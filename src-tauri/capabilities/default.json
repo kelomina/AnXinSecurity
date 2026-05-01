@@ -1,0 +1,17 @@
+{
+  "identifier": "default",
+  "description": "默认权限配置（窗口控制、对话框、Shell、文件系统）",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-is-maximized",
+    "dialog:default",
+    "shell:default",
+    "fs:default"
+  ]
+}

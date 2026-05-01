@@ -26,22 +26,30 @@ const TitleBar: React.FC = () => {
    * Init: check if window is currently maximized
    */
   useEffect(() => {
-    appWindow.isMaximized().then(setIsMaximized).catch(() => {})
+    appWindow.isMaximized().then(setIsMaximized).catch((e) => console.error('[TitleBar] isMaximized failed:', e))
   }, [appWindow])
 
   /**
    * 最小化窗口 / Minimize window
    */
   const handleMinimize = async () => {
-    await appWindow.minimize()
+    try {
+      await appWindow.minimize()
+    } catch (e) {
+      console.error('[TitleBar] Minimize failed:', e)
+    }
   }
 
   /**
    * 最大化/还原窗口 / Maximize / restore window
    */
   const handleMaximize = async () => {
-    await appWindow.toggleMaximize()
-    setIsMaximized(!isMaximized)
+    try {
+      await appWindow.toggleMaximize()
+      setIsMaximized(!isMaximized)
+    } catch (e) {
+      console.error('[TitleBar] Toggle maximize failed:', e)
+    }
   }
 
   /**

@@ -36,13 +36,17 @@ const ScanPage: React.FC = () => {
    * 选择目录扫描 / Select directory to scan
    */
   const handleSelectDirectory = async () => {
-    const selected = await open({
-      directory: true,
-      multiple: true,
-      title: '选择要扫描的目录'
-    })
-    if (selected) {
-      addSelectedFiles(Array.isArray(selected) ? selected : [selected])
+    try {
+      const selected = await open({
+        directory: true,
+        multiple: true,
+        title: '选择要扫描的目录'
+      })
+      if (selected) {
+        addSelectedFiles(Array.isArray(selected) ? selected : [selected])
+      }
+    } catch (e) {
+      console.error('[ScanPage] Select directory failed:', e)
     }
   }
 
@@ -50,16 +54,20 @@ const ScanPage: React.FC = () => {
    * 选择文件扫描 / Select files to scan
    */
   const handleSelectFiles = async () => {
-    const selected = await open({
-      multiple: true,
-      title: '选择要扫描的文件',
-      filters: [{
-        name: 'Executable Files',
-        extensions: ['exe', 'dll', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'msi', 'scr']
-      }]
-    })
-    if (selected) {
-      addSelectedFiles(Array.isArray(selected) ? selected : [selected])
+    try {
+      const selected = await open({
+        multiple: true,
+        title: '选择要扫描的文件',
+        filters: [{
+          name: 'Executable Files',
+          extensions: ['exe', 'dll', 'bat', 'cmd', 'ps1', 'js', 'vbs', 'msi', 'scr']
+        }]
+      })
+      if (selected) {
+        addSelectedFiles(Array.isArray(selected) ? selected : [selected])
+      }
+    } catch (e) {
+      console.error('[ScanPage] Select files failed:', e)
     }
   }
 
