@@ -166,7 +166,7 @@ src-tauri/data/
 /src-tauri/gen
 
 # Archive
-/archive/electron-legacy
+/archive/
 
 debug
 

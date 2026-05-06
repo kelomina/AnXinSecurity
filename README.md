@@ -83,7 +83,7 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 | **前端** | React 18 + TypeScript + Vite + Zustand + Framer Motion |
 | **后端** | Rust (Tauri 2.0) + Tokio 异步运行时 |
 | **原生模块** | C++ DLL (ETW Bridge, Process Watcher, File Hook via Detours) |
-| **安全引擎** | Axon（Apache 2.0 开源）/ Raven 扫描引擎 DLL；签名引擎已集成至 Rust 后端 |
+| **安全引擎** | Axon（Apache 2.0 开源，预编译 DLL）/ Raven 扫描引擎 DLL + 签名引擎 DLL |
 | **数据库** | SQLite (sqlx ORM) |
 | **加密** | AES-128-GCM + SHA-256 |
 | **构建** | Vite + Tauri CLI + NSIS 安装包 |
@@ -142,9 +142,7 @@ AnXinSecurity/
 │   ├── file_hook/                # 文件钩子 (Detours 4.0.1, MIT)
 │   ├── raven_engine/             # Raven 扫描引擎
 │   └── trust_bridge/             # 可信证书桥接
-├── Engine/                       # 已编译扫描引擎（含 THIRD-PARTY 归属文件）
-│   ├── Axon/                     # Axon 引擎 DLL + LIEF/LightGBM/fmt/spdlog
-│   └── Raven/                    # Raven 引擎 DLL
+├── Engine/                       # 已编译扫描引擎（gitignored，本地构建生成）
 ├── config/                       # 运行时配置
 │   ├── app.json                  # 主应用配置
 │   ├── etw_match_rules.json      # ETW 匹配规则
@@ -155,16 +153,10 @@ AnXinSecurity/
 │   ├── integration/
 │   ├── mocks/
 │   └── fixtures/
-├── data/                         # 运行时数据
-│   ├── anxin_signature_db.bin    # 签名数据库
-│   ├── behavior/                 # 行为日志 SQLite
-│   └── logs/                     # 日志
-├── build/                        # 构建辅助文件
-│   └── nsis-hooks.nsh            # NSIS 安装器钩子
+├── data/                         # 运行时数据（gitignored，首次运行自动生成）
+├── build/                        # 构建输出与安装包辅助文件（gitignored，打包生成）
 ├── assets/                       # 静态资源
 │   └── ui/pico.min.css           # 基础 CSS 重置
-└── archive/                      # 已归档的旧版 Electron 代码
-    └── electron-legacy/
 ```
 
 ---
@@ -409,16 +401,19 @@ cargo build
 
 | 组件 | 许可证 | 位置 |
 |------|--------|------|
-| Axon 引擎 | Apache 2.0 | [kelomina/Axon_ML](https://github.com/kelomina/Axon_ML) |
 | LIEF | Apache 2.0 | `Engine/Axon/LIEF.dll` |
 | LightGBM | MIT | `Engine/Axon/lib_lightgbm.dll` |
 | spdlog | MIT | `Engine/Axon/spdlog.dll` |
 | {fmt} | MIT | `Engine/Axon/fmt.dll` |
 
-> **Raven 引擎** 和 **签名引擎**（已集成至 Rust 后端 `src-tauri/`）为专有组件，未开源。
+> **Axon 引擎**（`Engine/Axon/axon_engine.dll`）以 Apache 2.0 协议开源：
+> [https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML)
 >
-> 完整归属声明和免责条款见 `Engine/THIRD-PARTY`。
-> Axon 引擎现已以 Apache 2.0 协议在 [https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML) 开源。
+> **Raven 引擎**（`Engine/Raven/raven_engine.dll`）为专有组件，以 MIT 许可证授权但仅限作为本应用的组成部分使用。
+>
+> **签名引擎**（`Engine/Axon/signature_engine.dll` + `Engine/Raven/signature_engine.dll`）为专有组件，与项目深度集成，适用上述限制。
+>
+> 完整第三方归属声明见 `Engine/THIRD-PARTY`。
 
 </details>
 
@@ -442,10 +437,11 @@ This project is open source under the MIT License. See individual components for
 
 ### 专有组件说明 / Proprietary Components
 
-> `Engine/` 目录中的 **Raven 引擎** (`Engine/Raven/raven_engine.dll`) 是 AnXin Security 的专有组件，以 MIT 许可证授权，但仅限于作为 AnXin Security 应用程序的组成部分使用。未经明确书面许可，不得单独分发、逆向工程或独立使用。
+> **Raven 引擎** (`Engine/Raven/raven_engine.dll`) — 专有组件，以 MIT 许可证授权但仅限于作为本应用的组成部分使用。未经明确书面许可，不得单独分发、逆向工程或独立使用。
 >
-> **签名引擎** 先前作为独立 DLL 发布，现已集成至 Rust 后端 (`src-tauri/`)，同样未开源，适用上述限制。
+> **签名引擎** (`Engine/Axon/signature_engine.dll` + `Engine/Raven/signature_engine.dll`) — 专有组件，与项目深度集成，适用上述限制。
 >
-> **Axon 引擎** 已以 Apache 2.0 协议开源，仓库地址：[https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML)。详情见对应仓库的许可证文件。
+> **Axon 引擎** (`Engine/Axon/axon_engine.dll`) — 以 Apache 2.0 协议开源：
+> [https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML)
 >
 > 详情见 `License` 文件中的 Engine DLL License Notice 章节。

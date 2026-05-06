@@ -22,28 +22,26 @@ THE SOFTWARE.
 
 ---
 
-Engine DLL License Notice
-==========================
+Engine DLL Licensing
+====================
 
-The following pre-built binary DLLs in the `Engine/` directory are
-proprietary components of AnXin Security. They are licensed under the
-same MIT License as the main project, provided that they are used
-solely as integral parts of the AnXin Security application.
-Redistribution, reverse engineering, or standalone use of these DLLs
-outside the context of AnXin Security is not permitted without
-explicit written permission.
+The `Engine/` directory contains pre-built binary DLLs for threat detection.
 
-- **Raven Engine** (`Engine/Raven/raven_engine.dll`)
+**Axon Engine** (`Engine/Axon/axon_engine.dll`)
+  Open-source under Apache 2.0 at https://github.com/kelomina/Axon_ML
+
+**Raven Engine** (`Engine/Raven/raven_engine.dll`)
+  Proprietary component of AnXin Security. Licensed under the same MIT License
+  as the main project, provided that it is used solely as an integral part of
+  the AnXin Security application. Redistribution, reverse engineering, or
+  standalone use outside this context is not permitted without explicit
+  written permission.
+
+**Signature Engine** (`Engine/Axon/signature_engine.dll` and
+  `Engine/Raven/signature_engine.dll`)
+  Proprietary component, deeply integrated into the project. Same licensing
+  terms as the Raven Engine above.
 
 Third-party open-source libraries linked into or distributed alongside
 these DLLs are governed by their respective licenses. See
 `Engine/THIRD-PARTY` for full attribution details.
-
-Other Engine Components
-=======================
-
-- **Axon Engine** — Now open-source under Apache 2.0 at
-  https://github.com/kelomina/Axon_ML
-- **Signature Engine** — Previously shipped as a separate DLL, now
-  integrated into the Rust backend (`src-tauri/`) and is not open
-  source.
