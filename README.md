@@ -409,12 +409,14 @@ cargo build
 
 | 组件 | 许可证 | 位置 |
 |------|--------|------|
+| Axon 引擎 | Apache 2.0 | [kelomina/Axon_ML](https://github.com/kelomina/Axon_ML) |
 | LIEF | Apache 2.0 | `Engine/Axon/LIEF.dll` |
 | LightGBM | MIT | `Engine/Axon/lib_lightgbm.dll` |
 | spdlog | MIT | `Engine/Axon/spdlog.dll` |
 | {fmt} | MIT | `Engine/Axon/fmt.dll` |
 
 完整归属声明和免责条款见 `Engine/THIRD-PARTY`。
+Axon 引擎现已以 Apache 2.0 协议在 [https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML) 开源。
 
 </details>
 
@@ -438,6 +440,8 @@ This project is open source under the MIT License. See individual components for
 
 ### 专有组件说明 / Proprietary Components
 
-> `Engine/` 目录中的 Axon 引擎、Raven 引擎及其签名引擎 DLL 是 AnXin Security 的专有组件，以 MIT 许可证授权，但仅限于作为 AnXin Security 应用程序的组成部分使用。未经明确书面许可，不得单独分发、逆向工程或独立使用这些 DLL。
+> `Engine/` 目录中的 Raven 引擎及其签名引擎 DLL 是 AnXin Security 的专有组件，以 MIT 许可证授权，但仅限于作为 AnXin Security 应用程序的组成部分使用。未经明确书面许可，不得单独分发、逆向工程或独立使用这些 DLL。
+>
+> **Axon 引擎** 已以 Apache 2.0 协议开源，仓库地址：[https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML)。详情见对应仓库的许可证文件。
 >
 > 详情见 `License` 文件中的 Engine DLL License Notice 章节。
