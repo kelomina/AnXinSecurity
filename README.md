@@ -83,7 +83,7 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 | **前端** | React 18 + TypeScript + Vite + Zustand + Framer Motion |
 | **后端** | Rust (Tauri 2.0) + Tokio 异步运行时 |
 | **原生模块** | C++ DLL (ETW Bridge, Process Watcher, File Hook via Detours) |
-| **安全引擎** | Axon / Raven 扫描引擎 DLL |
+| **安全引擎** | Axon（Apache 2.0 开源）/ Raven 扫描引擎 DLL；签名引擎已集成至 Rust 后端 |
 | **数据库** | SQLite (sqlx ORM) |
 | **加密** | AES-128-GCM + SHA-256 |
 | **构建** | Vite + Tauri CLI + NSIS 安装包 |
@@ -415,8 +415,10 @@ cargo build
 | spdlog | MIT | `Engine/Axon/spdlog.dll` |
 | {fmt} | MIT | `Engine/Axon/fmt.dll` |
 
-完整归属声明和免责条款见 `Engine/THIRD-PARTY`。
-Axon 引擎现已以 Apache 2.0 协议在 [https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML) 开源。
+> **Raven 引擎** 和 **签名引擎**（已集成至 Rust 后端 `src-tauri/`）为专有组件，未开源。
+>
+> 完整归属声明和免责条款见 `Engine/THIRD-PARTY`。
+> Axon 引擎现已以 Apache 2.0 协议在 [https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML) 开源。
 
 </details>
 
@@ -440,7 +442,9 @@ This project is open source under the MIT License. See individual components for
 
 ### 专有组件说明 / Proprietary Components
 
-> `Engine/` 目录中的 Raven 引擎及其签名引擎 DLL 是 AnXin Security 的专有组件，以 MIT 许可证授权，但仅限于作为 AnXin Security 应用程序的组成部分使用。未经明确书面许可，不得单独分发、逆向工程或独立使用这些 DLL。
+> `Engine/` 目录中的 **Raven 引擎** (`Engine/Raven/raven_engine.dll`) 是 AnXin Security 的专有组件，以 MIT 许可证授权，但仅限于作为 AnXin Security 应用程序的组成部分使用。未经明确书面许可，不得单独分发、逆向工程或独立使用。
+>
+> **签名引擎** 先前作为独立 DLL 发布，现已集成至 Rust 后端 (`src-tauri/`)，同样未开源，适用上述限制。
 >
 > **Axon 引擎** 已以 Apache 2.0 协议开源，仓库地址：[https://github.com/kelomina/Axon_ML](https://github.com/kelomina/Axon_ML)。详情见对应仓库的许可证文件。
 >
