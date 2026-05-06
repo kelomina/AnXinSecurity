@@ -1,15 +1,17 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicPtr, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, AtomicPtr, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
-use super::parser::{self, ParsedEvent, PROCESS_GUID, FILE_GUID, REGISTRY_GUID, NETWORK_GUID};
+use super::parser::{self, ParsedEvent, FILE_GUID, NETWORK_GUID, PROCESS_GUID, REGISTRY_GUID};
 use super::rules::{EtwRuleEngine, MatchedEvent, ProviderKind};
 use windows::Win32::System::Diagnostics::Etw::{
-    EVENT_TRACE_LOGFILEW, EVENT_TRACE_LOGFILEW_0, EVENT_TRACE_LOGFILEW_1,
-    EVENT_RECORD,
+    EVENT_RECORD, EVENT_TRACE_LOGFILEW, EVENT_TRACE_LOGFILEW_0, EVENT_TRACE_LOGFILEW_1,
 };
 
 const EVENT_TRACE_CONTROL_STOP: u32 = 1;
@@ -19,8 +21,7 @@ const PROCESS_TRACE_MODE_REAL_TIME: u32 = 0x00000100;
 const PROCESS_TRACE_MODE_EVENT_RECORD: u32 = 0x10000000;
 
 const SYSTEM_TRACE_CONTROL_GUID: [u8; 16] = [
-    0x68, 0xDD, 0x9E, 0x9E, 0x0C, 0x8D, 0x84, 0x45,
-    0x82, 0x77, 0x7D, 0x5D, 0x82, 0xA9, 0xAC, 0xE4,
+    0x68, 0xDD, 0x9E, 0x9E, 0x0C, 0x8D, 0x84, 0x45, 0x82, 0x77, 0x7D, 0x5D, 0x82, 0xA9, 0xAC, 0xE4,
 ];
 
 // Global static for the callback context (set before ProcessTrace, cleared after)
@@ -138,16 +139,21 @@ impl EtwSession {
     ///   (required for system-level ETW), then calls StartTraceW to create a system logger session.
     ///   Retries once if the first attempt fails with access denied.
     pub fn new(session_name: &str) -> Result<Self, String> {
-        let wide_name: Vec<u16> = session_name.encode_utf16().chain(std::iter::once(0)).collect();
+        let wide_name: Vec<u16> = session_name
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
         let buf_size = std::mem::size_of::<EventTraceProperties>() + 2048;
 
         unsafe {
             let sechost = libloading::Library::new("sechost.dll")
                 .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
 
-            type StartTraceFn = unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceProperties) -> u32;
+            type StartTraceFn =
+                unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceProperties) -> u32;
 
-            let start_trace: StartTraceFn = *sechost.get(b"StartTraceW")
+            let start_trace: StartTraceFn = *sechost
+                .get(b"StartTraceW")
                 .map_err(|e| format!("Failed to load StartTraceW: {}", e))?;
 
             // 尝试启用 SE_SYSTEM_PROFILE_NAME 特权（系统级 ETW 会话必需）
@@ -191,11 +197,17 @@ impl EtwSession {
 
     pub fn start(
         &mut self,
-        process_all: u64, process_any: u64,
-        file_all: u64, file_any: u64,
-        registry_all: u64, registry_any: u64,
-        network_all: u64, network_any: u64,
-        _network_enabled: i32, _filter_private_ips: i32, _skip_loopback: i32,
+        process_all: u64,
+        process_any: u64,
+        file_all: u64,
+        file_any: u64,
+        registry_all: u64,
+        registry_any: u64,
+        network_all: u64,
+        network_any: u64,
+        _network_enabled: i32,
+        _filter_private_ips: i32,
+        _skip_loopback: i32,
         _user_data_max_bytes: u32,
     ) -> Result<(), String> {
         unsafe {
@@ -203,16 +215,17 @@ impl EtwSession {
                 .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
 
             type EnableTraceFn = unsafe extern "system" fn(
-                u64,              // TraceHandle
-                *const Guid,      // ProviderId
-                u32,              // ControlCode (0=Disable, 1=Enable)
-                u8,               // Level
-                u64,              // AnyKeyword
-                u64,              // AllKeyword
-                u32,              // Timeout
-                *const u8,        // EnableParameters
+                u64,         // TraceHandle
+                *const Guid, // ProviderId
+                u32,         // ControlCode (0=Disable, 1=Enable)
+                u8,          // Level
+                u64,         // AnyKeyword
+                u64,         // AllKeyword
+                u32,         // Timeout
+                *const u8,   // EnableParameters
             ) -> u32;
-            let enable_trace: EnableTraceFn = *sechost.get(b"EnableTraceEx2")
+            let enable_trace: EnableTraceFn = *sechost
+                .get(b"EnableTraceEx2")
                 .map_err(|e| format!("Failed to load EnableTraceEx2: {}", e))?;
 
             let providers: [(&[u8; 16], u64, u64); 4] = [
@@ -247,7 +260,11 @@ impl EtwSession {
             CALLBACK_CTX.store(Box::into_raw(ctx), Ordering::SeqCst);
 
             // Open the trace with callback
-            let mut wide_name: Vec<u16> = self.session_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let mut wide_name: Vec<u16> = self
+                .session_name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
 
             let mut logfile: EVENT_TRACE_LOGFILEW = std::mem::zeroed();
             logfile.LoggerName = windows::core::PWSTR(wide_name.as_mut_ptr());
@@ -259,7 +276,8 @@ impl EtwSession {
             };
 
             type OpenTraceFn = unsafe extern "system" fn(*mut EVENT_TRACE_LOGFILEW) -> u64;
-            let open_trace: OpenTraceFn = *sechost.get(b"OpenTraceW")
+            let open_trace: OpenTraceFn = *sechost
+                .get(b"OpenTraceW")
                 .map_err(|e| format!("Failed to load OpenTraceW: {}", e))?;
 
             let trace_handle = open_trace(&mut logfile);
@@ -279,9 +297,8 @@ impl EtwSession {
                     Ok(l) => l,
                     Err(_) => return,
                 };
-                type ProcessTraceFn = unsafe extern "system" fn(
-                    *const u64, u32, *const i64, *const i64,
-                ) -> u32;
+                type ProcessTraceFn =
+                    unsafe extern "system" fn(*const u64, u32, *const i64, *const i64) -> u32;
                 let process_trace: ProcessTraceFn = match sechost.get(b"ProcessTrace") {
                     Ok(f) => *f,
                     Err(_) => return,
@@ -305,18 +322,27 @@ impl EtwSession {
             let sechost = libloading::Library::new("sechost.dll")
                 .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
 
-            type ControlTraceFn = unsafe extern "system" fn(
-                u64, *const u16, *mut EventTraceProperties, u32,
-            ) -> u32;
-            let control_trace: ControlTraceFn = *sechost.get(b"ControlTraceW")
+            type ControlTraceFn =
+                unsafe extern "system" fn(u64, *const u16, *mut EventTraceProperties, u32) -> u32;
+            let control_trace: ControlTraceFn = *sechost
+                .get(b"ControlTraceW")
                 .map_err(|e| format!("Failed to load ControlTraceW: {}", e))?;
 
             let mut buf: Vec<u8> = vec![0u8; std::mem::size_of::<EventTraceProperties>() + 2048];
             let props = &mut *(buf.as_mut_ptr() as *mut EventTraceProperties);
             props.wnode.buffer_size = (std::mem::size_of::<EventTraceProperties>() + 2048) as u32;
 
-            let wide_name: Vec<u16> = self.session_name.encode_utf16().chain(std::iter::once(0)).collect();
-            let _ = control_trace(self.session_handle, wide_name.as_ptr(), props, EVENT_TRACE_CONTROL_STOP);
+            let wide_name: Vec<u16> = self
+                .session_name
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let _ = control_trace(
+                self.session_handle,
+                wide_name.as_ptr(),
+                props,
+                EVENT_TRACE_CONTROL_STOP,
+            );
         }
 
         if let Some(handle) = self.trace_thread.take() {
@@ -326,7 +352,9 @@ impl EtwSession {
         // Clean up callback context
         let ptr = CALLBACK_CTX.swap(std::ptr::null_mut(), Ordering::SeqCst);
         if !ptr.is_null() {
-            unsafe { drop(Box::from_raw(ptr)); }
+            unsafe {
+                drop(Box::from_raw(ptr));
+            }
         }
 
         Ok(())
@@ -336,7 +364,6 @@ impl EtwSession {
         let mut queue = self.event_queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.drain(..).collect()
     }
-
 }
 
 /// ETW event record callback — called from ProcessTrace thread
@@ -345,10 +372,14 @@ impl EtwSession {
 /// 中文关键词：ETW回调，事件记录，ProcessTrace，规则匹配
 /// English keywords: ETW callback, event record, ProcessTrace, rule matching
 unsafe extern "system" fn etw_event_record_callback(rec: *mut EVENT_RECORD) {
-    if rec.is_null() { return; }
+    if rec.is_null() {
+        return;
+    }
 
     let ctx_ptr = CALLBACK_CTX.load(Ordering::Relaxed);
-    if ctx_ptr.is_null() { return; }
+    if ctx_ptr.is_null() {
+        return;
+    }
 
     let rec = &*(rec as *const EventRecord);
     let header = &rec.event_header;
@@ -372,13 +403,23 @@ unsafe extern "system" fn etw_event_record_callback(rec: *mut EVENT_RECORD) {
     };
 
     let ev = parser::parse_event_record(
-        &provider_bytes, opcode, id, pid, tid, ts_ms, user_data_slice,
+        &provider_bytes,
+        opcode,
+        id,
+        pid,
+        tid,
+        ts_ms,
+        user_data_slice,
     );
 
     let ctx = &*ctx_ptr;
 
     // Run rule engine (if locked, skip)
-    let matched = ctx.rule_engine.lock().ok().and_then(|mut engine| engine.on_event(&ev));
+    let matched = ctx
+        .rule_engine
+        .lock()
+        .ok()
+        .and_then(|mut engine| engine.on_event(&ev));
 
     // Build JSON and push to queue
     let now = current_ts_ms();
@@ -415,7 +456,9 @@ fn raw_guid(bytes: &[u8; 16]) -> Guid {
         data1: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
         data2: u16::from_le_bytes([bytes[4], bytes[5]]),
         data3: u16::from_le_bytes([bytes[6], bytes[7]]),
-        data4: [bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]],
+        data4: [
+            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15],
+        ],
     }
 }
 
@@ -501,7 +544,8 @@ fn match_event_to_json(m: &MatchedEvent) -> String {
         "context": m.context.iter().map(|c| json!({
             "tsMs": c.ts_ms, "provider": c.provider, "op": c.op, "target": c.target
         })).collect::<Vec<_>>()
-    })).unwrap_or_default()
+    }))
+    .unwrap_or_default()
 }
 
 /// 函数名称：enable_se_system_profile_privilege
@@ -522,21 +566,20 @@ fn enable_se_system_profile_privilege() -> Result<(), String> {
         let advapi32 = libloading::Library::new("advapi32.dll")
             .map_err(|e| format!("Failed to load advapi32.dll: {}", e))?;
 
-        type OpenProcessTokenFn = unsafe extern "system" fn(
-            isize, u32, *mut isize,
-        ) -> u32;
-        type LookupPrivilegeValueWFn = unsafe extern "system" fn(
-            *const u16, *const u16, *mut i64,
-        ) -> u32;
-        type AdjustTokenPrivilegesFn = unsafe extern "system" fn(
-            isize, u32, *const u8, u32, *mut u8, *mut u32,
-        ) -> u32;
+        type OpenProcessTokenFn = unsafe extern "system" fn(isize, u32, *mut isize) -> u32;
+        type LookupPrivilegeValueWFn =
+            unsafe extern "system" fn(*const u16, *const u16, *mut i64) -> u32;
+        type AdjustTokenPrivilegesFn =
+            unsafe extern "system" fn(isize, u32, *const u8, u32, *mut u8, *mut u32) -> u32;
 
-        let open_process_token: OpenProcessTokenFn = *advapi32.get(b"OpenProcessToken")
+        let open_process_token: OpenProcessTokenFn = *advapi32
+            .get(b"OpenProcessToken")
             .map_err(|e| format!("Failed to find OpenProcessToken: {}", e))?;
-        let lookup_privilege_value: LookupPrivilegeValueWFn = *advapi32.get(b"LookupPrivilegeValueW")
+        let lookup_privilege_value: LookupPrivilegeValueWFn = *advapi32
+            .get(b"LookupPrivilegeValueW")
             .map_err(|e| format!("Failed to find LookupPrivilegeValueW: {}", e))?;
-        let adjust_token_privileges: AdjustTokenPrivilegesFn = *advapi32.get(b"AdjustTokenPrivileges")
+        let adjust_token_privileges: AdjustTokenPrivilegesFn = *advapi32
+            .get(b"AdjustTokenPrivileges")
             .map_err(|e| format!("Failed to find AdjustTokenPrivileges: {}", e))?;
 
         // TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES

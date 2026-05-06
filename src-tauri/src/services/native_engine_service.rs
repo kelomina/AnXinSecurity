@@ -31,10 +31,25 @@ type KvdHandle = std::ffi::c_void;
 
 type KvdCreateFn = unsafe extern "C" fn(*const KvdConfig) -> *mut KvdHandle;
 type KvdDestroyFn = unsafe extern "C" fn(*mut KvdHandle);
-type KvdScanPathFn = unsafe extern "C" fn(*mut KvdHandle, *const std::os::raw::c_char, *mut *mut std::os::raw::c_char, *mut usize) -> std::os::raw::c_int;
-type KvdScanBytesFn = unsafe extern "C" fn(*mut KvdHandle, *const u8, usize, *mut *mut std::os::raw::c_char, *mut usize) -> std::os::raw::c_int;
+type KvdScanPathFn = unsafe extern "C" fn(
+    *mut KvdHandle,
+    *const std::os::raw::c_char,
+    *mut *mut std::os::raw::c_char,
+    *mut usize,
+) -> std::os::raw::c_int;
+type KvdScanBytesFn = unsafe extern "C" fn(
+    *mut KvdHandle,
+    *const u8,
+    usize,
+    *mut *mut std::os::raw::c_char,
+    *mut usize,
+) -> std::os::raw::c_int;
 type KvdFreeFn = unsafe extern "C" fn(*mut std::os::raw::c_char);
-type KvdValidateModelsFn = unsafe extern "C" fn(*const KvdConfig, *mut *mut std::os::raw::c_char, *mut usize) -> std::os::raw::c_int;
+type KvdValidateModelsFn = unsafe extern "C" fn(
+    *const KvdConfig,
+    *mut *mut std::os::raw::c_char,
+    *mut usize,
+) -> std::os::raw::c_int;
 
 /// 原生 Axon 扫描引擎服务
 /// Native Axon scan engine service
@@ -109,27 +124,33 @@ impl NativeEngineService {
         // 获取所有导出函数指针（立刻解引用为 Copy 的函数指针值）
         // Get all export function pointers (immediately deref to Copy fn ptr)
         let kvd_create: KvdCreateFn = unsafe {
-            *library.get(b"kvd_create")
+            *library
+                .get(b"kvd_create")
                 .map_err(|e| format!("Failed to find kvd_create: {}", e))?
         };
         let kvd_destroy: KvdDestroyFn = unsafe {
-            *library.get(b"kvd_destroy")
+            *library
+                .get(b"kvd_destroy")
                 .map_err(|e| format!("Failed to find kvd_destroy: {}", e))?
         };
         let kvd_scan_path: KvdScanPathFn = unsafe {
-            *library.get(b"kvd_scan_path")
+            *library
+                .get(b"kvd_scan_path")
                 .map_err(|e| format!("Failed to find kvd_scan_path: {}", e))?
         };
         let kvd_scan_bytes: KvdScanBytesFn = unsafe {
-            *library.get(b"kvd_scan_bytes")
+            *library
+                .get(b"kvd_scan_bytes")
                 .map_err(|e| format!("Failed to find kvd_scan_bytes: {}", e))?
         };
         let kvd_free: KvdFreeFn = unsafe {
-            *library.get(b"kvd_free")
+            *library
+                .get(b"kvd_free")
                 .map_err(|e| format!("Failed to find kvd_free: {}", e))?
         };
         let kvd_validate_models: KvdValidateModelsFn = unsafe {
-            *library.get(b"kvd_validate_models")
+            *library
+                .get(b"kvd_validate_models")
                 .map_err(|e| format!("Failed to find kvd_validate_models: {}", e))?
         };
 
@@ -143,7 +164,12 @@ impl NativeEngineService {
         let family_classifier_path = hdbscan_dir.join("family_classifier.json");
 
         // 验证模型文件存在（不验证内容）
-        for p in [&model_path, &model_normal_path, &model_packed_path, &family_classifier_path] {
+        for p in [
+            &model_path,
+            &model_normal_path,
+            &model_packed_path,
+            &family_classifier_path,
+        ] {
             if !p.exists() {
                 return Err(format!("Model file not found: {:?}", p));
             }
@@ -156,8 +182,9 @@ impl NativeEngineService {
             .map_err(|e| format!("Invalid normal model path: {}", e))?;
         let model_packed_path_c = CString::new(model_packed_path.to_string_lossy().as_bytes())
             .map_err(|e| format!("Invalid packed model path: {}", e))?;
-        let family_classifier_path_c = CString::new(family_classifier_path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("Invalid family classifier path: {}", e))?;
+        let family_classifier_path_c =
+            CString::new(family_classifier_path.to_string_lossy().as_bytes())
+                .map_err(|e| format!("Invalid family classifier path: {}", e))?;
 
         let cfg = KvdConfig {
             model_path: model_path_c.as_ptr(),
@@ -172,26 +199,29 @@ impl NativeEngineService {
         // 第一次验证模型 / First validation
         let mut err_ptr: *mut std::os::raw::c_char = std::ptr::null_mut();
         let mut err_len: usize = 0;
-        let check = unsafe {
-            kvd_validate_models(&cfg, &mut err_ptr, &mut err_len)
-        };
+        let check = unsafe { kvd_validate_models(&cfg, &mut err_ptr, &mut err_len) };
 
         if check != 0 {
             let err_msg = if !err_ptr.is_null() {
-                let msg = unsafe {
-                    CStr::from_ptr(err_ptr).to_string_lossy().into_owned()
-                };
-                unsafe { kvd_free(err_ptr); }
+                let msg = unsafe { CStr::from_ptr(err_ptr).to_string_lossy().into_owned() };
+                unsafe {
+                    kvd_free(err_ptr);
+                }
                 msg
             } else {
                 format!("kvd_validate_models failed with code: {}", check)
             };
-            eprintln!("[NativeEngine] Model validation warning (non-fatal): {}", err_msg);
+            eprintln!(
+                "[NativeEngine] Model validation warning (non-fatal): {}",
+                err_msg
+            );
         } else {
             if !err_ptr.is_null() {
                 let msg = unsafe { CStr::from_ptr(err_ptr).to_string_lossy().into_owned() };
                 eprintln!("[NativeEngine] Model validation message: {}", msg);
-                unsafe { kvd_free(err_ptr); }
+                unsafe {
+                    kvd_free(err_ptr);
+                }
             }
             eprintln!("[NativeEngine] Model validation passed");
         }
@@ -258,25 +288,29 @@ impl NativeEngineService {
     ///
     /// 中文关键词：文件扫描，单文件扫描，威胁检测，恶意软件检测
     /// English keywords: file scan, single file scan, threat detection, malware detection
-    pub fn scan_file(&self, file_path: &str, _options: serde_json::Value) -> Result<serde_json::Value, String> {
+    pub fn scan_file(
+        &self,
+        file_path: &str,
+        _options: serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
         let handle = self.handle.lock().map_err(|e| e.to_string())?;
         if handle.is_null() {
             return Err("Engine handle is null".to_string());
         }
 
-        let path_c = CString::new(file_path)
-            .map_err(|e| format!("Invalid file path: {}", e))?;
+        let path_c = CString::new(file_path).map_err(|e| format!("Invalid file path: {}", e))?;
 
         let mut out_json: *mut std::os::raw::c_char = std::ptr::null_mut();
         let mut out_len: usize = 0;
 
-        let rc = unsafe {
-            (self.kvd_scan_path)(*handle, path_c.as_ptr(), &mut out_json, &mut out_len)
-        };
+        let rc =
+            unsafe { (self.kvd_scan_path)(*handle, path_c.as_ptr(), &mut out_json, &mut out_len) };
 
         if rc != 0 {
             if !out_json.is_null() {
-                unsafe { (self.kvd_free)(out_json); }
+                unsafe {
+                    (self.kvd_free)(out_json);
+                }
             }
             return Err(format!("kvd_scan_path failed with code: {}", rc));
         }
@@ -289,10 +323,10 @@ impl NativeEngineService {
             }));
         }
 
-        let result_str = unsafe {
-            CStr::from_ptr(out_json).to_string_lossy().into_owned()
-        };
-        unsafe { (self.kvd_free)(out_json); }
+        let result_str = unsafe { CStr::from_ptr(out_json).to_string_lossy().into_owned() };
+        unsafe {
+            (self.kvd_free)(out_json);
+        }
 
         match serde_json::from_str::<serde_json::Value>(&result_str) {
             Ok(val) => Ok(val),
@@ -326,12 +360,20 @@ impl NativeEngineService {
         let mut out_len: usize = 0;
 
         let rc = unsafe {
-            (self.kvd_scan_bytes)(*handle, data.as_ptr(), data.len(), &mut out_json, &mut out_len)
+            (self.kvd_scan_bytes)(
+                *handle,
+                data.as_ptr(),
+                data.len(),
+                &mut out_json,
+                &mut out_len,
+            )
         };
 
         if rc != 0 {
             if !out_json.is_null() {
-                unsafe { (self.kvd_free)(out_json); }
+                unsafe {
+                    (self.kvd_free)(out_json);
+                }
             }
             return Err(format!("kvd_scan_bytes failed with code: {}", rc));
         }
@@ -343,13 +385,12 @@ impl NativeEngineService {
             }));
         }
 
-        let result_str = unsafe {
-            CStr::from_ptr(out_json).to_string_lossy().into_owned()
-        };
-        unsafe { (self.kvd_free)(out_json); }
+        let result_str = unsafe { CStr::from_ptr(out_json).to_string_lossy().into_owned() };
+        unsafe {
+            (self.kvd_free)(out_json);
+        }
 
-        serde_json::from_str(&result_str)
-            .map_err(|e| format!("Failed to parse scan result: {}", e))
+        serde_json::from_str(&result_str).map_err(|e| format!("Failed to parse scan result: {}", e))
     }
 
     /// 函数名称：is_malware
@@ -361,8 +402,14 @@ impl NativeEngineService {
     /// English keywords: malware check, quick detection, boolean result
     pub fn is_malware(&self, file_path: &str) -> Result<(bool, f64), String> {
         let result = self.scan_file(file_path, serde_json::json!({}))?;
-        let is_malware = result.get("is_malware").and_then(|v| v.as_bool()).unwrap_or(false);
-        let confidence = result.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let is_malware = result
+            .get("is_malware")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let confidence = result
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         Ok((is_malware, confidence))
     }
 

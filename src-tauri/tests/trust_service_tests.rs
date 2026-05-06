@@ -11,7 +11,7 @@
 // English keywords: trust service, signature verification, cache config, SHA-256 validation,
 // LRU cache, unit test
 
-use anxin_security::services::trust_service::{TrustService, SignatureVerdict, SignerInfo};
+use anxin_security::services::trust_service::{SignatureVerdict, SignerInfo, TrustService};
 
 mod common;
 
@@ -128,7 +128,10 @@ fn test_scan_cache_store_invalid_hash_too_short() {
 #[test]
 fn test_scan_cache_store_invalid_hash_wrong_chars() {
     let svc = TrustService::new();
-    let result = svc.scan_cache_store("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", 0);
+    let result = svc.scan_cache_store(
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        0,
+    );
     // 包含非法 hex 字符 / Contains invalid hex chars
     assert!(result.is_err(), "包含非hex字符的哈希应返回错误");
 }
@@ -146,14 +149,20 @@ fn test_scan_cache_store_empty_hash() {
 
 #[test]
 fn test_signature_verdict_trusted() {
-    let v = SignatureVerdict { trusted: true, status: 0 };
+    let v = SignatureVerdict {
+        trusted: true,
+        status: 0,
+    };
     assert!(v.trusted);
     assert_eq!(v.status, 0);
 }
 
 #[test]
 fn test_signature_verdict_untrusted() {
-    let v = SignatureVerdict { trusted: false, status: -1 };
+    let v = SignatureVerdict {
+        trusted: false,
+        status: -1,
+    };
     assert!(!v.trusted);
     assert_eq!(v.status, -1);
 }
@@ -161,10 +170,22 @@ fn test_signature_verdict_untrusted() {
 #[test]
 fn test_signature_verdict_various_statuses() {
     // 验证不同 WinVerifyTrust 状态码场景 / Verify various WinVerifyTrust status code scenarios
-    let trusted = SignatureVerdict { trusted: true, status: 0 }; // TRUST_E_SUBJECT_NOT_TRUSTED? No, 0 = SUCCESS
-    let revocation_ok = SignatureVerdict { trusted: true, status: 0 };
-    let untrusted = SignatureVerdict { trusted: false, status: 0x80096004u32 as i32 }; // TRUST_E_SUBJECT_NOT_TRUSTED
-    let expired = SignatureVerdict { trusted: false, status: 0x800B0101u32 as i32 }; // CERT_E_EXPIRED
+    let trusted = SignatureVerdict {
+        trusted: true,
+        status: 0,
+    }; // TRUST_E_SUBJECT_NOT_TRUSTED? No, 0 = SUCCESS
+    let revocation_ok = SignatureVerdict {
+        trusted: true,
+        status: 0,
+    };
+    let untrusted = SignatureVerdict {
+        trusted: false,
+        status: 0x80096004u32 as i32,
+    }; // TRUST_E_SUBJECT_NOT_TRUSTED
+    let expired = SignatureVerdict {
+        trusted: false,
+        status: 0x800B0101u32 as i32,
+    }; // CERT_E_EXPIRED
 
     assert!(trusted.trusted);
     assert!(revocation_ok.trusted);
@@ -235,7 +256,7 @@ fn test_cache_eviction_with_small_limit() {
 fn test_cache_handles_zero_ttl() {
     let svc = TrustService::new();
     svc.set_cache_config(10, 0); // TTL 为 0 回退到默认 / TTL 0 falls back to default
-    // 存储和查询不 panic / Store and query without panic
+                                 // 存储和查询不 panic / Store and query without panic
     let hash = "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef";
     assert!(svc.scan_cache_store(hash, 0).is_ok());
 }

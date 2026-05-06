@@ -86,7 +86,15 @@ struct ContextRing {
 impl ContextRing {
     fn new(capacity: usize) -> Self {
         Self {
-            buf: vec![ContextItem { ts_ms: 0, provider: String::new(), op: String::new(), target: String::new() }; capacity],
+            buf: vec![
+                ContextItem {
+                    ts_ms: 0,
+                    provider: String::new(),
+                    op: String::new(),
+                    target: String::new()
+                };
+                capacity
+            ],
             next: 0,
             full: false,
         }
@@ -202,14 +210,18 @@ impl EtwRuleEngine {
     }
 
     fn is_tracked(&self, pid: u32) -> bool {
-        if self.tracked.is_empty() { true }
-        else { self.tracked.contains(&pid) }
+        if self.tracked.is_empty() {
+            true
+        } else {
+            self.tracked.contains(&pid)
+        }
     }
 
     fn push_context(&mut self, ev: &ParsedEvent) {
-        let ring = self.contexts.entry(ev.pid).or_insert_with(|| {
-            ContextRing::new(self.context_capacity)
-        });
+        let ring = self
+            .contexts
+            .entry(ev.pid)
+            .or_insert_with(|| ContextRing::new(self.context_capacity));
         ring.push(ContextItem {
             ts_ms: ev.ts_ms,
             provider: ev.provider.name().to_string(),
@@ -219,29 +231,44 @@ impl EtwRuleEngine {
     }
 
     fn snapshot_context(&self, pid: u32) -> Vec<ContextItem> {
-        self.contexts.get(&pid)
+        self.contexts
+            .get(&pid)
             .map(|r| r.snapshot().into_iter().take(100).collect())
             .unwrap_or_default()
     }
 
     fn match_rule_by_idx(&self, idx: usize, ev: &ParsedEvent, evidence: &mut Vec<String>) -> bool {
-        if idx >= self.rules.len() { return false; }
+        if idx >= self.rules.len() {
+            return false;
+        }
         let rule = &self.rules[idx];
         let target_lower = normalize_str(&ev.target);
         if !rule.target_contains.is_empty() {
-            if !rule.target_contains.iter().any(|tc| target_lower.contains(tc.as_str())) {
+            if !rule
+                .target_contains
+                .iter()
+                .any(|tc| target_lower.contains(tc.as_str()))
+            {
                 return false;
             }
             evidence.push(format!("target contains: {}", target_lower));
         }
         if !rule.target_prefix.is_empty() {
-            if !rule.target_prefix.iter().any(|tp| target_lower.starts_with(tp.as_str())) {
+            if !rule
+                .target_prefix
+                .iter()
+                .any(|tp| target_lower.starts_with(tp.as_str()))
+            {
                 return false;
             }
             evidence.push(format!("target prefix: {}", target_lower));
         }
         if !rule.target_patterns.is_empty() {
-            if !rule.target_patterns.iter().any(|pat| simple_wildcard_match(pat, &target_lower)) {
+            if !rule
+                .target_patterns
+                .iter()
+                .any(|pat| simple_wildcard_match(pat, &target_lower))
+            {
                 return false;
             }
             evidence.push(format!("target pattern: {}", target_lower));
@@ -249,22 +276,31 @@ impl EtwRuleEngine {
         true
     }
 
-    fn match_window_rule(&mut self, idx: usize, ev: &ParsedEvent, evidence: &mut Vec<String>) -> bool {
+    fn match_window_rule(
+        &mut self,
+        idx: usize,
+        ev: &ParsedEvent,
+        evidence: &mut Vec<String>,
+    ) -> bool {
         if !self.match_rule_by_idx(idx, ev, evidence) {
             return false;
         }
         let rule_id = self.rules[idx].rule_id.clone();
         let window_ms = self.rules[idx].window_ms;
-        let required_ops: Vec<(char, String)> = self.rules[idx].required_ops.iter()
+        let required_ops: Vec<(char, String)> = self.rules[idx]
+            .required_ops
+            .iter()
             .map(|ro| (ro.provider.key_char(), ro.op.clone()))
             .collect();
         let now = ev.ts_ms;
         let pid = ev.pid;
 
         let state = self.window_states.get(&pid);
-        let (window_start, _last_update, seen_ops) = state.map(|s| {
-            s.get(&rule_id)
-        }).flatten().cloned().unwrap_or((0, 0, std::collections::HashSet::new()));
+        let (window_start, _last_update, seen_ops) = state
+            .map(|s| s.get(&rule_id))
+            .flatten()
+            .cloned()
+            .unwrap_or((0, 0, std::collections::HashSet::new()));
 
         let effective_start = if window_start > 0 && (now - window_start) <= window_ms as u64 {
             window_start
@@ -283,7 +319,9 @@ impl EtwRuleEngine {
             seen.contains(&needle)
         });
 
-        self.window_states.entry(pid).or_default()
+        self.window_states
+            .entry(pid)
+            .or_default()
             .insert(rule_id, (effective_start, now, seen));
 
         if all_required {
@@ -303,11 +341,17 @@ fn index_key(provider: ProviderKind, op: &str) -> String {
 /// 中文关键词：字符串规范化，大小写转换，路径规范化
 /// English keywords: string normalization, case conversion, path normalization
 fn normalize_str(s: &str) -> String {
-    s.chars().map(|c| {
-        if c == '/' { '\\' }
-        else if c.is_ascii_uppercase() { c.to_ascii_lowercase() }
-        else { c }
-    }).collect()
+    s.chars()
+        .map(|c| {
+            if c == '/' {
+                '\\'
+            } else if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
+        .collect()
 }
 
 /// 函数名称：simple_wildcard_match

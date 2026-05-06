@@ -1,6 +1,6 @@
 // 开发者设置命令 — 密码保护的加密配置管理
 // Developer settings commands — password-protected encrypted configuration management
-use crate::utils::crypto::{encrypt_data, decrypt_data};
+use crate::utils::crypto::{decrypt_data, encrypt_data};
 use std::sync::{Arc, Mutex};
 
 /// 加密的开发者设置数据 / Encrypted developer settings data
@@ -31,7 +31,7 @@ pub async fn dev_settings_unlock(
     password: String,
     _config: tauri::State<'_, Arc<Mutex<crate::models::config::AppConfig>>>,
 ) -> Result<serde_json::Value, String> {
-    use sha2::{Sha256, Digest};
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
@@ -46,11 +46,11 @@ pub async fn dev_settings_unlock(
     }
 
     // 解密载荷 / Decrypt payload
-    let payload_bytes = hex::decode(&dev_config.payload)
-        .map_err(|e| format!("解码载荷失败: {}", e))?;
+    let payload_bytes =
+        hex::decode(&dev_config.payload).map_err(|e| format!("解码载荷失败: {}", e))?;
     let decrypted = decrypt_data(&payload_bytes, password.as_bytes())?;
-    let value: serde_json::Value = serde_json::from_slice(&decrypted)
-        .map_err(|e| format!("解析设置失败: {}", e))?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&decrypted).map_err(|e| format!("解析设置失败: {}", e))?;
 
     Ok(value)
 }
@@ -66,18 +66,14 @@ pub async fn dev_settings_unlock(
 /// 中文关键词：保存设置，加密配置，开发者设置保存
 /// English keywords: save settings, encrypt config, developer settings save
 #[tauri::command]
-pub async fn dev_settings_save(
-    password: String,
-    data: serde_json::Value,
-) -> Result<bool, String> {
-    use sha2::{Sha256, Digest};
+pub async fn dev_settings_save(password: String, data: serde_json::Value) -> Result<bool, String> {
+    use sha2::{Digest, Sha256};
 
     let mut hasher = Sha256::new();
     hasher.update(password.as_bytes());
     let hash = format!("{:x}", hasher.finalize());
 
-    let plaintext = serde_json::to_string(&data)
-        .map_err(|e| format!("序列化设置失败: {}", e))?;
+    let plaintext = serde_json::to_string(&data).map_err(|e| format!("序列化设置失败: {}", e))?;
     let encrypted = encrypt_data(plaintext.as_bytes(), password.as_bytes())?;
     let payload = hex::encode(&encrypted);
 
@@ -105,28 +101,28 @@ pub async fn dev_settings_save(
 
 fn read_dev_settings_file() -> Result<DevSettings, String> {
     let path = std::path::PathBuf::from("config/app.json");
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取配置文件失败: {}", e))?;
-    let config: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("解析配置文件失败: {}", e))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取配置文件失败: {}", e))?;
+    let config: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析配置文件失败: {}", e))?;
 
-    let dev = config.get("devSettings")
+    let dev = config
+        .get("devSettings")
         .ok_or("配置文件中未找到 devSettings")?;
 
-    let password_hash = dev.get("salt")
+    let password_hash = dev
+        .get("salt")
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let payload = dev.get("payload")
+    let payload = dev
+        .get("payload")
         .and_then(|v| v.get("data"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
 
-    let updated_at = dev.get("updatedAt")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let updated_at = dev.get("updatedAt").and_then(|v| v.as_u64()).unwrap_or(0);
 
     Ok(DevSettings {
         password_hash,
@@ -137,17 +133,15 @@ fn read_dev_settings_file() -> Result<DevSettings, String> {
 
 fn save_dev_settings_to_file(dev_settings: &serde_json::Value) -> Result<(), String> {
     let path = std::path::PathBuf::from("config/app.json");
-    let content = std::fs::read_to_string(&path)
-        .map_err(|e| format!("读取配置文件失败: {}", e))?;
-    let mut config: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("解析配置文件失败: {}", e))?;
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("读取配置文件失败: {}", e))?;
+    let mut config: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("解析配置文件失败: {}", e))?;
 
     config["devSettings"] = dev_settings.clone();
 
-    let json_str = serde_json::to_string_pretty(&config)
-        .map_err(|e| format!("序列化配置失败: {}", e))?;
-    std::fs::write(&path, json_str)
-        .map_err(|e| format!("写入配置文件失败: {}", e))?;
+    let json_str =
+        serde_json::to_string_pretty(&config).map_err(|e| format!("序列化配置失败: {}", e))?;
+    std::fs::write(&path, json_str).map_err(|e| format!("写入配置文件失败: {}", e))?;
 
     Ok(())
 }

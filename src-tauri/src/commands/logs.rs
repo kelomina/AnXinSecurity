@@ -1,13 +1,12 @@
 // 日志命令 — 实时 ETW 日志流和历史日志查询
 // Log commands — real-time ETW log stream and historical log query
-use std::sync::{Arc, Mutex};
 use once_cell::sync::Lazy;
+use std::sync::{Arc, Mutex};
 
 /// 内存日志缓冲区 / In-memory log buffer
 /// 存储最近的事件日志供前端查询 / Stores recent event logs for frontend queries
-static LOG_BUFFER: Lazy<Arc<Mutex<Vec<String>>>> = Lazy::new(|| {
-    Arc::new(Mutex::new(Vec::with_capacity(LOG_CAPACITY)))
-});
+static LOG_BUFFER: Lazy<Arc<Mutex<Vec<String>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(Vec::with_capacity(LOG_CAPACITY))));
 
 /// 日志缓冲区最大容量 / Log buffer max capacity
 const LOG_CAPACITY: usize = 500;

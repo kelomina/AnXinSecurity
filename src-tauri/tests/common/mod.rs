@@ -8,7 +8,12 @@ use serde_json::json;
 ///
 /// 中文关键词：测试工厂，事件构造，mock事件，威胁测试数据
 /// English keywords: test factory, event construction, mock event, threat test data
-pub fn make_threat_event(pid: u32, process_name: &str, severity: u32, threat_type: &str) -> serde_json::Value {
+pub fn make_threat_event(
+    pid: u32,
+    process_name: &str,
+    severity: u32,
+    threat_type: &str,
+) -> serde_json::Value {
     json!({
         "type": "threat",
         "timestamp": "2026-05-01T00:00:00Z",
@@ -27,7 +32,12 @@ pub fn make_threat_event(pid: u32, process_name: &str, severity: u32, threat_typ
 
 /// 构造一个无威胁标记的普通 ETW 事件 JSON
 /// Construct a normal ETW event JSON without threat flags
-pub fn make_normal_event(pid: u32, process_name: &str, provider: &str, operation: &str) -> serde_json::Value {
+pub fn make_normal_event(
+    pid: u32,
+    process_name: &str,
+    provider: &str,
+    operation: &str,
+) -> serde_json::Value {
     json!({
         "type": provider,
         "timestamp": "2026-05-01T00:00:00Z",

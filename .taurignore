@@ -1,0 +1,9 @@
+data/**
+logs/**
+config/scan_cache.json
+config/quarantine_index.json
+config/startup_allowlist.enc
+data/runtime/**
+src-tauri/data/**
+src-tauri/target/**
+src-tauri/target-check/**

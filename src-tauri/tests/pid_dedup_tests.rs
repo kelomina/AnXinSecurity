@@ -3,9 +3,7 @@
 //
 // 中文关键词：PID去重，重复拦截，去重测试，幂等性
 // English keywords: PID dedup, repeated interception, dedup test, idempotency
-use anxin_security::services::interception_service::{
-    InterceptionService, InterceptionEntry,
-};
+use anxin_security::services::interception_service::{InterceptionEntry, InterceptionService};
 
 mod common;
 
@@ -30,8 +28,8 @@ fn make_entry(pid: u32) -> InterceptionEntry {
 fn test_same_pid_different_entries_only_enqueues_once() {
     let svc = InterceptionService::new();
     svc.enqueue(make_entry(42));
-    svc.enqueue(make_entry(42));  // 相同 PID
-    svc.enqueue(make_entry(42));  // 再次相同 PID
+    svc.enqueue(make_entry(42)); // 相同 PID
+    svc.enqueue(make_entry(42)); // 再次相同 PID
     assert_eq!(svc.get_queue_size(), 1, "同 PID 多次入队应只保留一个");
 }
 
@@ -49,9 +47,9 @@ fn test_interleaved_pid_enqueue_still_dedup() {
     let svc = InterceptionService::new();
     svc.enqueue(make_entry(1));
     svc.enqueue(make_entry(2));
-    svc.enqueue(make_entry(1));  // 重复
+    svc.enqueue(make_entry(1)); // 重复
     svc.enqueue(make_entry(3));
-    svc.enqueue(make_entry(2));  // 重复
+    svc.enqueue(make_entry(2)); // 重复
     assert_eq!(svc.get_queue_size(), 3, "交错重复入队后应去重");
     assert_eq!(svc.get_paused_pids(), vec![1, 2, 3]);
 }
@@ -64,7 +62,7 @@ fn test_dedup_applies_to_high_medium_low_all_levels() {
     e1.risk_level = "high".to_string();
     svc.enqueue(e1);
 
-    let mut e2 = make_entry(100);  // 同 PID，不同风险等级
+    let mut e2 = make_entry(100); // 同 PID，不同风险等级
     e2.risk_level = "medium".to_string();
     svc.enqueue(e2);
 

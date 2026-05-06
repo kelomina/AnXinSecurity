@@ -3,30 +3,151 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
-mod services;
 mod models;
+mod services;
 mod utils;
 
-use tauri::Manager;
-use std::sync::{Arc, Mutex};
-use std::path::PathBuf;
-use sqlx::SqlitePool;
 use crate::models::config::AppConfig;
-use crate::services::etw_service::EtwService;
-use crate::services::engine_service::EngineService;
-use crate::services::native_engine_service::NativeEngineService;
-use crate::services::tray_service::TrayService;
-use crate::services::quarantine_service::QuarantineService;
 use crate::services::behavior_service::BehaviorService;
-use crate::services::trust_service::TrustService;
-use crate::services::process_monitor_service::ProcessMonitorService;
-use crate::services::process_scanner_service::ProcessScannerService;
+use crate::services::engine_service::EngineService;
+use crate::services::etw_service::EtwService;
 use crate::services::file_monitor_service::FileMonitorService;
 use crate::services::hook_service::HookService;
 use crate::services::interception_service::InterceptionService;
+use crate::services::native_engine_service::NativeEngineService;
+use crate::services::process_monitor_service::ProcessMonitorService;
+use crate::services::process_scanner_service::ProcessScannerService;
+use crate::services::quarantine_service::QuarantineService;
 use crate::services::risk_service::RiskService;
+use crate::services::scan_result_cache_service::ScanResultCacheService;
 use crate::services::snapshot_service::SnapshotService;
 use crate::services::training_service::TrainingService;
+use crate::services::tray_service::TrayService;
+use crate::services::trust_service::TrustService;
+use sqlx::SqlitePool;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
+
+/// 函数名称：resolve_behavior_database_path
+/// 函数作用：解析行为分析与隔离区共用 SQLite 数据库路径；相对路径写入 APPDATA，避免 tauri dev 监听仓库运行时文件后重载。
+/// Function name: resolve_behavior_database_path
+/// Purpose: Resolves the shared behavior/quarantine SQLite path; relative paths are stored under APPDATA to avoid tauri dev reloads from repository runtime writes.
+/// 调用方：main setup 初始化 SQLite pool。
+/// Called by: main setup while initializing the SQLite pool.
+/// 被调用方：std::env::var，std::env::current_dir，std::fs::create_dir_all，migrate_legacy_behavior_database。
+/// Calls: std::env::var, std::env::current_dir, std::fs::create_dir_all, migrate_legacy_behavior_database.
+/// 参数说明：config 为应用配置对象，读取 behaviorAnalyzer.sqlite.directory 与 fileName。
+/// Parameters: config is the application config, using behaviorAnalyzer.sqlite.directory and fileName.
+/// 返回值说明：成功返回数据库文件路径；目录创建或路径解析失败返回 String。
+/// Returns: database file path on success; directory creation or path resolution failures return String.
+/// 内部关键变量：configured_dir 是配置目录；database_dir 是最终目录；database_path 是最终 SQLite 文件。
+/// Internal variables: configured_dir is the configured directory; database_dir is the final directory; database_path is the final SQLite file.
+/// 接入方式：仅在基础设施初始化阶段调用；业务命令不应自行拼接数据库路径。
+/// Integration: Called only during infrastructure initialization; business commands should not compose database paths.
+/// 错误处理：目录创建失败向上返回；APPDATA 缺失时回退到当前目录下的配置路径。
+/// Error handling: directory creation failures propagate; missing APPDATA falls back to the configured path under the current directory.
+/// 副作用：可能创建 APPDATA 下的数据库目录，并可能迁移旧数据库文件副本。
+/// Side effects: may create the APPDATA database directory and copy a legacy database file.
+/// 事务边界：无 Unit of Work；SQLite 连接池后续管理事务。
+/// Transaction boundary: no Unit of Work; later SQLite pool usage owns transactions.
+/// 并发与幂等：路径解析可重复；迁移仅在目标库不存在时复制一次。
+/// Concurrency and idempotency: path resolution is repeatable; migration copies only when the target database does not exist.
+/// 中文关键词：数据库路径，APPDATA，隔离区，行为数据库，开发重载，运行时数据，SQLite，路径迁移，tauri dev，配置解析
+/// English keywords: database path, APPDATA, quarantine, behavior database, dev reload, runtime data, SQLite, path migration, tauri dev, config resolution
+fn resolve_behavior_database_path(config: &AppConfig) -> Result<PathBuf, String> {
+    let configured_dir = PathBuf::from(&config.behavior_analyzer.sqlite.directory);
+    let database_dir = if configured_dir.is_absolute() {
+        configured_dir.clone()
+    } else {
+        std::env::var("APPDATA")
+            .map(|app_data| {
+                PathBuf::from(app_data)
+                    .join("AnXinSecurity")
+                    .join(&configured_dir)
+            })
+            .unwrap_or_else(|_| {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(&configured_dir)
+            })
+    };
+
+    std::fs::create_dir_all(&database_dir).map_err(|err| err.to_string())?;
+    let database_path = database_dir.join(&config.behavior_analyzer.sqlite.file_name);
+
+    if !database_path.exists() {
+        migrate_legacy_behavior_database(
+            &configured_dir,
+            &config.behavior_analyzer.sqlite.file_name,
+            &database_path,
+        )?;
+    }
+
+    Ok(database_path)
+}
+
+/// 函数名称：migrate_legacy_behavior_database
+/// 函数作用：当 APPDATA 目标数据库不存在时，从旧版仓库内相对路径复制一次 SQLite 数据库，保留隔离区记录。
+/// Function name: migrate_legacy_behavior_database
+/// Purpose: Copies the legacy repository-relative SQLite database once when the APPDATA target database is missing, preserving quarantine records.
+/// 调用方：resolve_behavior_database_path。
+/// Called by: resolve_behavior_database_path.
+/// 被调用方：std::env::current_dir，PathBuf::join，std::fs::copy。
+/// Calls: std::env::current_dir, PathBuf::join, std::fs::copy.
+/// 参数说明：configured_dir 为旧配置目录；file_name 为数据库文件名；target_path 为 APPDATA 目标文件。
+/// Parameters: configured_dir is the old configured directory; file_name is the database file; target_path is the APPDATA target file.
+/// 返回值说明：成功或无旧文件返回 Ok；复制失败返回 String。
+/// Returns: Ok when copied or no legacy file exists; copy failures return String.
+/// 内部关键变量：candidate_roots 覆盖从项目根和 src-tauri 运行时的旧路径。
+/// Internal variables: candidate_roots cover legacy paths when running from project root or src-tauri.
+/// 接入方式：仅作为启动期兼容迁移，不用于常规写入。
+/// Integration: startup compatibility migration only, not a regular write path.
+/// 错误处理：读取当前目录失败时使用空候选；复制失败带路径上下文返回。
+/// Error handling: missing current directory yields no candidates; copy failures include path context.
+/// 副作用：可能向 APPDATA 复制 SQLite 数据库文件；不删除旧文件。
+/// Side effects: may copy the SQLite database to APPDATA; does not delete the legacy file.
+/// 事务边界：无 Unit of Work；仅在 SQLite pool 打开前执行文件复制。
+/// Transaction boundary: no Unit of Work; file copy runs before opening the SQLite pool.
+/// 并发与幂等：目标文件存在时不复制；重复启动不会覆盖 APPDATA 数据库。
+/// Concurrency and idempotency: does not copy when target exists; repeated startup does not overwrite APPDATA data.
+/// 中文关键词：旧数据库，兼容迁移，APPDATA，SQLite，隔离记录，行为记录，仓库路径，启动迁移，文件复制，幂等
+/// English keywords: legacy database, compatibility migration, APPDATA, SQLite, quarantine records, behavior records, repository path, startup migration, file copy, idempotent
+fn migrate_legacy_behavior_database(
+    configured_dir: &PathBuf,
+    file_name: &str,
+    target_path: &PathBuf,
+) -> Result<(), String> {
+    if configured_dir.is_absolute() {
+        return Ok(());
+    }
+
+    let Ok(current_dir) = std::env::current_dir() else {
+        return Ok(());
+    };
+
+    let mut candidate_roots = vec![current_dir.clone()];
+    if let Some(parent) = current_dir.parent() {
+        candidate_roots.push(parent.to_path_buf());
+    }
+
+    for root in candidate_roots {
+        let legacy_path = root.join(configured_dir).join(file_name);
+        if legacy_path.exists() && legacy_path != *target_path {
+            std::fs::copy(&legacy_path, target_path).map_err(|err| {
+                format!(
+                    "Failed to migrate legacy behavior database from {} to {}: {}",
+                    legacy_path.display(),
+                    target_path.display(),
+                    err
+                )
+            })?;
+            break;
+        }
+    }
+
+    Ok(())
+}
 
 fn main() {
     tauri::Builder::default()
@@ -75,15 +196,12 @@ fn main() {
             let engine_service = Arc::new(EngineService::new(native_engine));
             app.manage(engine_service.clone());
 
+            // 初始化扫描结果缓存服务：进程、模块和启动扫描共享同一份 DPAPI runtime 缓存。
+            let scan_result_cache = Arc::new(ScanResultCacheService::new());
+            app.manage(scan_result_cache.clone());
+
             // 初始化 SQLite 数据库池
-            let mut db_root = std::env::current_dir()
-                .map_err(|e| format!("Failed to get current directory: {}", e))?;
-            let db_dir = std::path::Path::new(&config.behavior_analyzer.sqlite.directory);
-            for comp in db_dir.components() {
-                db_root.push(comp);
-            }
-            std::fs::create_dir_all(&db_root).map_err(|e| e.to_string())?;
-            db_root.push(&config.behavior_analyzer.sqlite.file_name);
+            let db_root = resolve_behavior_database_path(&config)?;
             eprintln!("[main] DB path: {}", db_root.display());
 
             let rt = tokio::runtime::Runtime::new()
@@ -157,7 +275,13 @@ fn main() {
             // 初始化进程扫描服务（新进程恶意代码检测）
             let process_scanner = ProcessScannerService::new();
             if config.process_monitoring.enabled {
-                process_scanner.start(engine_service.clone(), 2000);
+                process_scanner.start(
+                    engine_service.clone(),
+                    scan_result_cache.clone(),
+                    interception_service.clone(),
+                    app.handle().clone(),
+                    2000,
+                );
                 eprintln!("[main] Process scanner started");
             } else {
                 eprintln!("[main] Process scanner disabled by config");
@@ -197,12 +321,30 @@ fn main() {
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
                 if let Some(trust) = app_handle_snapshot.try_state::<TrustService>() {
                     if let Some(snapshot) = app_handle_snapshot.try_state::<SnapshotService>() {
-                        match snapshot.take_startup_snapshot(&trust, &app_handle_snapshot) {
+                        let Some(engine) = app_handle_snapshot.try_state::<Arc<EngineService>>() else {
+                            eprintln!("[StartupSnapshot] Failed: EngineService not managed");
+                            return;
+                        };
+                        let Some(cache) = app_handle_snapshot.try_state::<Arc<ScanResultCacheService>>() else {
+                            eprintln!("[StartupSnapshot] Failed: ScanResultCacheService not managed");
+                            return;
+                        };
+                        match snapshot
+                            .take_startup_snapshot(
+                                &trust,
+                                engine.inner().clone(),
+                                cache.inner().clone(),
+                                &app_handle_snapshot,
+                            )
+                            .await
+                        {
                             Ok(result) => {
                                 eprintln!(
-                                    "[StartupSnapshot] Done: {} processes, {} signed, {} unsigned, {} paused ({}ms)",
+                                    "[StartupSnapshot] Done: {} processes, {} signed, {} unsigned, {} paused, {} modules, {} malicious processes, {} malicious modules, {} cache hits ({}ms)",
                                     result.total_processes, result.signed_processes,
                                     result.unsigned_processes, result.paused_processes,
+                                    result.scanned_modules, result.malicious_processes,
+                                    result.malicious_modules, result.cache_hits,
                                     result.duration_ms
                                 );
                             }
@@ -322,7 +464,8 @@ async fn start_etw_monitoring(app_handle: tauri::AppHandle) -> Result<(), String
     use crate::services::etw_service::EtwService;
 
     let app_handle_clone = app_handle.clone();
-    let etw_state = app_handle.try_state::<Arc<Mutex<EtwService>>>()
+    let etw_state = app_handle
+        .try_state::<Arc<Mutex<EtwService>>>()
         .ok_or("EtwService not managed")?;
 
     let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
@@ -379,7 +522,8 @@ fn resolve_engine_dll_path(app: &tauri::App) -> Result<(PathBuf, PathBuf), Strin
             let abs_str = normalized.to_string_lossy().to_string();
             let clean_path = abs_str.strip_prefix(r"\\?\").unwrap_or(&abs_str);
             let dll_path = PathBuf::from(clean_path);
-            let engine_root = dll_path.parent()
+            let engine_root = dll_path
+                .parent()
                 .ok_or_else(|| format!("Cannot get parent of {:?}", clean_path))?
                 .to_path_buf();
             eprintln!("[main] Engine DLL resolved: {:?}", dll_path);

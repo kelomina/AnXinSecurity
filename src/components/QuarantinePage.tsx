@@ -165,7 +165,7 @@ const QuarantinePage: React.FC = () => {
       )}
 
       {/* 数据表格 */}
-      <div className="threat-list card">
+      <div className="threat-list quarantine-list card">
         <h3>隔离文件列表</h3>
 
         {loading ? (
@@ -201,18 +201,19 @@ const QuarantinePage: React.FC = () => {
                       }}
                     />
                   </th>
-                  <th>文件名</th>
-                  <th>原始路径</th>
-                  <th>威胁类型</th>
-                  <th>文件大小</th>
-                  <th>隔离日期</th>
-                  <th>状态</th>
-                  <th>操作</th>
+                  <th className="quarantine-file-col">文件名</th>
+                  <th className="quarantine-path-col">原始路径</th>
+                  <th className="quarantine-threat-col">威胁类型</th>
+                  <th className="quarantine-size-col">文件大小</th>
+                  <th className="quarantine-date-col">隔离日期</th>
+                  <th className="quarantine-status-col">状态</th>
+                  <th className="quarantine-actions-col">操作</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredItems.map((item) => {
-                  const fileName = item.originalPath.split(/[\\/]/).pop() || item.originalPath
+                  const originalPath = item.originalPath || '未知路径'
+                  const fileName = originalPath.split(/[\\/]/).pop() || originalPath
                   return (
                     <tr key={item.id}>
                       <td className="select-col">
@@ -222,13 +223,13 @@ const QuarantinePage: React.FC = () => {
                           onChange={() => toggleSelection(item.id)}
                         />
                       </td>
-                      <td>
+                      <td className="quarantine-file-cell" title={fileName}>
                         <strong>{fileName}</strong>
                       </td>
-                      <td className="path-cell" title={item.originalPath}>
-                        {item.originalPath}
+                      <td className="path-cell" title={originalPath}>
+                        {originalPath}
                       </td>
-                      <td>
+                      <td className="quarantine-threat-cell">
                         {item.threatType ? (
                           <span className="severity-badge severity-medium">
                             {item.threatType}
@@ -237,11 +238,11 @@ const QuarantinePage: React.FC = () => {
                           <span className="text-muted">-</span>
                         )}
                       </td>
-                      <td>{formatFileSize(item.fileSize)}</td>
-                      <td>{formatDate(item.isolatedAt)}</td>
-                      <td>{getStatusBadge(item.status)}</td>
-                      <td>
-                        <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <td className="quarantine-size-cell">{formatFileSize(item.fileSize)}</td>
+                      <td className="quarantine-date-cell">{formatDate(item.isolatedAt)}</td>
+                      <td className="quarantine-status-cell">{getStatusBadge(item.status)}</td>
+                      <td className="quarantine-actions-cell">
+                        <div className="quarantine-actions">
                           {item.status === 'quarantined' && (
                             <button
                               onClick={() => setConfirmDialog({
@@ -282,7 +283,7 @@ const QuarantinePage: React.FC = () => {
       {/* 确认对话框 */}
       {confirmDialog && (
         <div className="modal-overlay" onClick={() => setConfirmDialog(null)}>
-          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-surface quarantine-confirm-modal" onClick={(e) => e.stopPropagation()}>
             <h3>
               {confirmDialog.type === 'restore' ? '确认恢复' : '确认删除'}
             </h3>

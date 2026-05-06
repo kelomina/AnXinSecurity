@@ -34,9 +34,8 @@ impl EngineService {
     /// English keywords: engine health, heartbeat, status check
     pub async fn health_check(&self) -> Result<serde_json::Value, String> {
         let native = self.native.clone();
-        tokio::task::spawn_blocking(move || {
-            native.health_check()
-        }).await
+        tokio::task::spawn_blocking(move || native.health_check())
+            .await
             .map_err(|e| format!("Health check task failed: {}", e))?
     }
 
@@ -53,62 +52,59 @@ impl EngineService {
         file_path: &str,
         options: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let native = self.native.clone();
-        let fp = file_path.to_string();
-        let fp_for_closure = fp.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            native.scan_file(&fp_for_closure, options)
-        }).await
-            .map_err(|e| format!("Scan file task failed: {}", e))?
-            .map_err(|e| format!("Scan file failed: {}", e))?;
-        eprintln!("[EngineService] scan_file raw result: {}", result);
-        Ok(Self::convert_scan_result(result, &fp))
+        let result = self.scan_file_raw_with_options(file_path, options).await?;
+        Ok(Self::convert_scan_result(result, file_path))
     }
 
-    /// 函数名称：scan_batch
-    /// 函数作用：批量扫描多个文件，依次在 blocking 线程中执行，所有结果统一转换为前端 ScanResult 格式。
-    /// Purpose: Scans multiple files in batch, executes sequentially in blocking thread,
-    ///          and converts all results to frontend ScanResult format.
-    /// 调用方：commands::scanner::scan_batch
-    /// Called by: commands::scanner::scan_batch
-    /// 中文关键词：批量扫描，多文件扫描，批量检测，结果转换
-    /// English keywords: batch scan, multi-file scan, batch detection, result conversion
-    pub async fn scan_batch(
+    /// 函数名称：scan_file_raw
+    /// 函数作用：扫描单个文件并返回原始 Axon 引擎 JSON，不转换为前端 ScanResult。
+    /// Function name: scan_file_raw
+    /// Purpose: Scans a single file and returns raw Axon engine JSON without converting it to frontend ScanResult.
+    /// 调用方：scan_result_cache_service::scan_or_get_cached。
+    /// Called by: scan_result_cache_service::scan_or_get_cached.
+    /// 被调用方：scan_file_raw_with_options、NativeEngineService::scan_file。
+    /// Calls: scan_file_raw_with_options, NativeEngineService::scan_file.
+    /// 参数说明：file_path 为待扫描文件路径；不能为空；应先由调用方完成排除项/允许列表判断。
+    /// Parameters: file_path is the file to scan; must not be empty; callers should apply exclusions/allowlist first.
+    /// 返回值说明：返回原始 JSON，包含 is_malware、confidence、malware_family 等引擎字段。
+    /// Returns: Raw JSON containing engine fields such as is_malware, confidence, and malware_family.
+    /// 错误处理：blocking 任务失败或 DLL 扫描失败时返回 String 错误。
+    /// Error handling: Returns String on blocking task or DLL scan failure.
+    /// 副作用：调用原生扫描引擎；不写文件、不写数据库、不修改缓存。
+    /// Side effects: Calls the native scan engine; does not write files, databases, or cache.
+    /// 事务边界：无 Unit of Work；无数据库事务。
+    /// Transaction boundary: No Unit of Work and no database transaction.
+    /// 并发与幂等：同一文件内容和引擎模型不变时结果应稳定；并发由原生引擎句柄锁控制。
+    /// Concurrency and idempotency: Stable for unchanged file content and engine model; native handle locking controls concurrency.
+    /// 中文关键词：原始扫描结果，进程扫描，模块扫描，缓存扫描，引擎JSON，Axon，引擎调试，SHA缓存，进程模块，安全扫描
+    /// English keywords: raw scan result, process scan, module scan, cached scan, engine JSON, Axon, engine debug, SHA cache, process module, security scan
+    pub async fn scan_file_raw(&self, file_path: &str) -> Result<serde_json::Value, String> {
+        self.scan_file_raw_with_options(file_path, serde_json::json!({}))
+            .await
+    }
+
+    /// 函数名称：scan_file_raw_with_options
+    /// 函数作用：使用指定扫描选项调用原生引擎并返回原始 JSON。
+    /// Purpose: Calls the native engine with scan options and returns raw JSON.
+    /// 调用方：scan_file、scan_file_raw。
+    /// Called by: scan_file, scan_file_raw.
+    /// 被调用方：NativeEngineService::scan_file。
+    /// Calls: NativeEngineService::scan_file.
+    async fn scan_file_raw_with_options(
         &self,
-        file_paths: &[String],
+        file_path: &str,
         options: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
         let native = self.native.clone();
-        let paths = file_paths.to_vec();
-        tokio::task::spawn_blocking(move || {
-            let mut results: Vec<serde_json::Value> = Vec::new();
-            for path in &paths {
-                let raw = match native.scan_file(path, options.clone()) {
-                    Ok(result) => {
-                        eprintln!("[EngineService] scan_batch raw result for {}: {}", path, result);
-                        result
-                    },
-                    Err(e) => {
-                        eprintln!("[EngineService] scan_batch error for {}: {}", path, e);
-                        serde_json::json!({
-                            "is_malware": false,
-                            "confidence": 0.0,
-                            "error": e,
-                        })
-                    },
-                };
-                results.push(Self::convert_scan_result(raw, path));
-            }
-            let threats_found = results.iter()
-                .filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("malware"))
-                .count();
-            Ok(serde_json::json!({
-                "results": results,
-                "totalFiles": paths.len(),
-                "threatsFound": threats_found,
-            }))
-        }).await
-            .map_err(|e| format!("Batch scan task failed: {}", e))?
+        let fp = file_path.to_string();
+        let fp_for_closure = fp.clone();
+        let result =
+            tokio::task::spawn_blocking(move || native.scan_file(&fp_for_closure, options))
+                .await
+                .map_err(|e| format!("Scan file task failed: {}", e))?
+                .map_err(|e| format!("Scan file failed: {}", e))?;
+        eprintln!("[EngineService] scan_file raw result: {}", result);
+        Ok(result)
     }
 
     /// 函数名称：convert_scan_result
@@ -126,13 +122,20 @@ impl EngineService {
     /// 中文关键词：结果转换，格式映射，ScanResult转换，威胁类型提取，嵌套字段，多字段回退
     /// English keywords: result conversion, format mapping, ScanResult conversion, threat type extraction, nested field, multi-field fallback
     fn convert_scan_result(raw: serde_json::Value, file_path: &str) -> serde_json::Value {
-        let is_malware = raw.get("is_malware").and_then(|v| v.as_bool()).unwrap_or(false);
-        let confidence = raw.get("confidence").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let is_malware = raw
+            .get("is_malware")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let confidence = raw
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0);
         let has_err = raw.get("error").and_then(|v| v.as_str()).is_some();
 
         // 诊断：枚举原始结果中的所有字段
         // Diagnostics: enumerate all keys in the raw result
-        let keys: Vec<String> = raw.as_object()
+        let keys: Vec<String> = raw
+            .as_object()
             .map(|obj| obj.keys().cloned().collect())
             .unwrap_or_default();
         eprintln!("[EngineService] convert_scan_result keys: {:?}", keys);
@@ -143,22 +146,56 @@ impl EngineService {
         // Extract threat type from multiple fields (by priority):
         //   1. family_name — malware family name from engine (preferred)
         //   2. threat_type / threatType / label — other fields that may contain threat type
-        let family_name_val = raw.get("family_name").and_then(|v| v.as_str()).unwrap_or("<missing>");
-        let threat_type_val = raw.get("threat_type").and_then(|v| v.as_str()).unwrap_or("<missing>");
-        let threattype_camel_val = raw.get("threatType").and_then(|v| v.as_str()).unwrap_or("<missing>");
-        let label_val = raw.get("label").and_then(|v| v.as_str()).unwrap_or("<missing>");
-        let error_val = raw.get("error").and_then(|v| v.as_str()).unwrap_or("<missing>");
+        let family_name_val = raw
+            .get("family_name")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
+        let threat_type_val = raw
+            .get("threat_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
+        let threattype_camel_val = raw
+            .get("threatType")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
+        let label_val = raw
+            .get("label")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
+        let error_val = raw
+            .get("error")
+            .and_then(|v| v.as_str())
+            .unwrap_or("<missing>");
         // 嵌套字段：malware_family.family_name
-        let nested_family = raw.get("malware_family")
+        let nested_family = raw
+            .get("malware_family")
             .and_then(|v| v.get("family_name"))
             .and_then(|v| v.as_str())
             .unwrap_or("<missing>");
-        eprintln!("[EngineService]   field family_name (flat)      = {:?}", family_name_val);
-        eprintln!("[EngineService]   field malware_family.family_name (nested) = {:?}", nested_family);
-        eprintln!("[EngineService]   field threat_type             = {:?}", threat_type_val);
-        eprintln!("[EngineService]   field threatType              = {:?}", threattype_camel_val);
-        eprintln!("[EngineService]   field label                   = {:?}", label_val);
-        eprintln!("[EngineService]   field error                   = {:?}", error_val);
+        eprintln!(
+            "[EngineService]   field family_name (flat)      = {:?}",
+            family_name_val
+        );
+        eprintln!(
+            "[EngineService]   field malware_family.family_name (nested) = {:?}",
+            nested_family
+        );
+        eprintln!(
+            "[EngineService]   field threat_type             = {:?}",
+            threat_type_val
+        );
+        eprintln!(
+            "[EngineService]   field threatType              = {:?}",
+            threattype_camel_val
+        );
+        eprintln!(
+            "[EngineService]   field label                   = {:?}",
+            label_val
+        );
+        eprintln!(
+            "[EngineService]   field error                   = {:?}",
+            error_val
+        );
 
         // 威胁类型字段读取优先级：
         //   1. malware_family.family_name（引擎实际嵌套格式）
@@ -168,7 +205,8 @@ impl EngineService {
         //   1. malware_family.family_name (actual engine nested format)
         //   2. family_name (flat format)
         //   3. threat_type / threatType / label (other possible fields)
-        let mut threat_type = raw.get("malware_family")
+        let mut threat_type = raw
+            .get("malware_family")
             .and_then(|v| v.as_object())
             .and_then(|obj| obj.get("family_name"))
             .and_then(|v| v.as_str())
@@ -182,23 +220,31 @@ impl EngineService {
                     .map(|s| s.to_string())
             })
             .unwrap_or_default();
-        eprintln!("[EngineService]   extracted threat_type = {:?}", threat_type);
+        eprintln!(
+            "[EngineService]   extracted threat_type = {:?}",
+            threat_type
+        );
 
         // 引擎返回 pe_features_failed 时视为安全文件
         // pe_features_failed 出现在原始引擎的 threat_type、threatType、label 或 error 字段中
         // Treat as clean when engine reports pe_features_failed
-        let raw_threat_type = raw.get("threat_type")
+        let raw_threat_type = raw
+            .get("threat_type")
             .or_else(|| raw.get("threatType"))
             .or_else(|| raw.get("label"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
         let is_pe_failed = raw_threat_type == "pe_features_failed"
-            || raw.get("error")
+            || raw
+                .get("error")
                 .and_then(|v| v.as_str())
                 .map(|s| s == "pe_features_failed")
                 .unwrap_or(false);
-        eprintln!("[EngineService]   raw_threat_type = {:?}, is_pe_failed = {}", raw_threat_type, is_pe_failed);
+        eprintln!(
+            "[EngineService]   raw_threat_type = {:?}, is_pe_failed = {}",
+            raw_threat_type, is_pe_failed
+        );
 
         if is_pe_failed || threat_type == "pe_features_failed" {
             eprintln!("[EngineService]   clearing threat_type due to pe_features_failed");
@@ -216,9 +262,13 @@ impl EngineService {
         } else {
             ("clean", 0)
         };
-        eprintln!("[EngineService]   is_malware={}, confidence={}, has_err={}, verdict={}", is_malware, confidence, has_err, verdict);
+        eprintln!(
+            "[EngineService]   is_malware={}, confidence={}, has_err={}, verdict={}",
+            is_malware, confidence, has_err, verdict
+        );
 
-        let description = raw.get("description")
+        let description = raw
+            .get("description")
             .or_else(|| raw.get("error"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -256,9 +306,8 @@ impl EngineService {
     pub async fn is_malware(&self, file_path: &str) -> Result<(bool, f64), String> {
         let native = self.native.clone();
         let file_path = file_path.to_string();
-        tokio::task::spawn_blocking(move || {
-            native.is_malware(&file_path)
-        }).await
+        tokio::task::spawn_blocking(move || native.is_malware(&file_path))
+            .await
             .map_err(|e| format!("Malware check task failed: {}", e))?
     }
 }

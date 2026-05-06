@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::broadcast;
 
 use crate::services::engine_service::EngineService;
+use crate::services::path_policy_service::should_skip_security_scan;
 
 // `tokio::spawn` 在 setup 阶段不可用，改用 Tauri 的 async_runtime
 // tokio::spawn is unavailable during setup, use tauri's async_runtime instead
@@ -38,8 +39,9 @@ impl FileMonitorService {
     }
 
     /// 函数名称：start
-    /// 函数作用：启动文件监控后台任务。
-    /// Purpose: Starts the file monitoring background task.
+    /// 函数作用：启动文件监控后台任务；文件事件扫描前实时读取排除项和允许列表，命中时跳过扫描。
+    /// Function name: start
+    /// Purpose: Starts the file monitoring background task; reads exclusions and allowlist before file-event scans and skips matching paths.
     ///
     /// 订阅 ETW 广播频道，过滤文件创建/写入/重命名事件，
     /// 对事件中的文件路径调用 Axon 引擎进行恶意代码检测。
@@ -56,13 +58,9 @@ impl FileMonitorService {
     /// 副作用：
     ///   启动后台 Tokio 任务，持续监听 ETW 事件并调用引擎扫描文件
     ///
-    /// 中文关键词：启动监控，文件事件，ETW事件，引擎扫描，文件检测
-    /// English keywords: start monitoring, file events, ETW events, engine scan, file detection
-    pub fn start(
-        &self,
-        engine: Arc<EngineService>,
-        etw_rx: broadcast::Receiver<String>,
-    ) {
+    /// 中文关键词：启动监控，文件事件，ETW事件，引擎扫描，文件检测，排除项生效，允许列表生效，跳过扫描，运行时列表，实时保护
+    /// English keywords: start monitoring, file events, ETW events, engine scan, file detection, exclusion effective, allowlist effective, skip scan, runtime list, realtime protection
+    pub fn start(&self, engine: Arc<EngineService>, etw_rx: broadcast::Receiver<String>) {
         if self.running.load(Ordering::SeqCst) {
             eprintln!("[FileMonitor] Already running");
             return;
@@ -85,6 +83,23 @@ impl FileMonitorService {
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                             if let Some(file_path) = extract_file_path(&val) {
                                 eprintln!("[FileMonitor] File event: {}", file_path);
+
+                                match should_skip_security_scan(&file_path) {
+                                    Ok(true) => {
+                                        eprintln!(
+                                            "[FileMonitor] Skipped by exclusions or allowlist: {}",
+                                            file_path
+                                        );
+                                        continue;
+                                    }
+                                    Ok(false) => {}
+                                    Err(e) => {
+                                        eprintln!(
+                                            "[FileMonitor] Failed to load path policy for {}: {}",
+                                            file_path, e
+                                        );
+                                    }
+                                }
 
                                 match engine.is_malware(&file_path).await {
                                     Ok((is_malware, confidence)) => {
@@ -153,14 +168,13 @@ impl FileMonitorService {
 /// 中文关键词：文件路径提取，ETW事件解析，文件操作过滤
 /// English keywords: file path extraction, ETW event parsing, file operation filter
 fn extract_file_path(val: &serde_json::Value) -> Option<String> {
-    let provider = val.get("provider")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let provider = val.get("provider").and_then(|v| v.as_str()).unwrap_or("");
     if !provider.eq_ignore_ascii_case("File") {
         return None;
     }
 
-    let operation = val.get("operation")
+    let operation = val
+        .get("operation")
         .or_else(|| val.get("type"))
         .and_then(|v| v.as_str())
         .unwrap_or("");

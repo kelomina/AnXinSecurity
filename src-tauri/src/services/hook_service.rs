@@ -1,11 +1,14 @@
 // 文件钩子服务 — 管理命名管道服务端，接收注入进程的实时文件操作事件
 // File hook service — manages named pipe server, receives real-time file operation events from injected processes
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use libloading::{Library, Symbol};
+use serde::{Deserialize, Serialize};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use serde::{Deserialize, Serialize};
-use libloading::{Library, Symbol};
 
 /// 文件钩子事件 / File hook event
 /// Received from injected file_hook_detours.dll via named pipe
@@ -59,7 +62,10 @@ impl HookService {
         self.running.store(true, Ordering::SeqCst);
 
         thread::spawn(move || {
-            eprintln!("[HookService] Starting named pipe server: {}", full_pipe_name);
+            eprintln!(
+                "[HookService] Starting named pipe server: {}",
+                full_pipe_name
+            );
             while running.load(Ordering::SeqCst) {
                 match serve_pipe_connection(&full_pipe_name) {
                     Ok(_) => {}
@@ -84,23 +90,26 @@ impl HookService {
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
-
 }
 
 /// 内部函数：通过 libloading 动态调用 kernel32.dll 的命名管道 API 处理单个连接
 /// Internal: handle a single named pipe connection via libloading dynamic calls to kernel32.dll
 fn serve_pipe_connection(pipe_name: &str) -> Result<Vec<FileHookEvent>, String> {
     // 动态加载 kernel32.dll / Dynamically load kernel32.dll
-    let kernel32 = unsafe { 
-        Library::new("kernel32.dll")
-            .map_err(|e| format!("Failed to load kernel32.dll: {}", e))?
+    let kernel32 = unsafe {
+        Library::new("kernel32.dll").map_err(|e| format!("Failed to load kernel32.dll: {}", e))?
     };
 
     // CreateNamedPipeA
     type CreateNamedPipeFn = unsafe extern "system" fn(
-        name: *const u8, open_mode: u32, pipe_mode: u32,
-        max_instances: u32, out_buf_size: u32, in_buf_size: u32,
-        default_timeout: u32, security_attrs: *const u8,
+        name: *const u8,
+        open_mode: u32,
+        pipe_mode: u32,
+        max_instances: u32,
+        out_buf_size: u32,
+        in_buf_size: u32,
+        default_timeout: u32,
+        security_attrs: *const u8,
     ) -> isize;
     let create_pipe: Symbol<CreateNamedPipeFn> = unsafe { kernel32.get(b"CreateNamedPipeA") }
         .map_err(|e| format!("Failed to get CreateNamedPipeA: {}", e))?;
@@ -112,8 +121,11 @@ fn serve_pipe_connection(pipe_name: &str) -> Result<Vec<FileHookEvent>, String> 
 
     // ReadFile
     type ReadFileFn = unsafe extern "system" fn(
-        file: isize, buffer: *mut u8, bytes_to_read: u32,
-        bytes_read: *mut u32, overlapped: *const u8,
+        file: isize,
+        buffer: *mut u8,
+        bytes_to_read: u32,
+        bytes_read: *mut u32,
+        overlapped: *const u8,
     ) -> i32;
     let read_file: Symbol<ReadFileFn> = unsafe { kernel32.get(b"ReadFile") }
         .map_err(|e| format!("Failed to get ReadFile: {}", e))?;
@@ -131,19 +143,18 @@ fn serve_pipe_connection(pipe_name: &str) -> Result<Vec<FileHookEvent>, String> 
     const INVALID_HANDLE_VALUE: isize = -1;
 
     use std::ffi::CString;
-    let pipe_name_c = CString::new(pipe_name)
-        .map_err(|_| "Invalid pipe name".to_string())?;
+    let pipe_name_c = CString::new(pipe_name).map_err(|_| "Invalid pipe name".to_string())?;
 
     let pipe_handle = unsafe {
         create_pipe(
             pipe_name_c.as_ptr() as *const u8,
             PIPE_ACCESS_DUPLEX,
             PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT,
-            1,      // max instances
-            65536,  // out buffer
-            65536,  // in buffer
-            0,      // default timeout
-            std::ptr::null(),  // default security
+            1,                // max instances
+            65536,            // out buffer
+            65536,            // in buffer
+            0,                // default timeout
+            std::ptr::null(), // default security
         )
     };
 
@@ -154,7 +165,9 @@ fn serve_pipe_connection(pipe_name: &str) -> Result<Vec<FileHookEvent>, String> 
     // 等待客户端连接 / Wait for client connection
     let connected = unsafe { connect_pipe(pipe_handle, std::ptr::null()) };
     if connected == 0 {
-        unsafe { close_handle(pipe_handle); }
+        unsafe {
+            close_handle(pipe_handle);
+        }
         return Ok(Vec::new());
     }
 
@@ -192,6 +205,8 @@ fn serve_pipe_connection(pipe_name: &str) -> Result<Vec<FileHookEvent>, String> 
         }
     }
 
-    unsafe { close_handle(pipe_handle); }
+    unsafe {
+        close_handle(pipe_handle);
+    }
     Ok(events)
 }

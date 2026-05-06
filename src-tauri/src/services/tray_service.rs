@@ -13,13 +13,12 @@ impl TrayService {
     pub fn create_tray(app: &AppHandle) -> Result<(), String> {
         let show_main = MenuItem::with_id(app, "show_main", "显示主窗口", true, None::<&str>)
             .map_err(|e| e.to_string())?;
-        let separator = MenuItem::new(app, "", false, None::<&str>)
-            .map_err(|e| e.to_string())?;
+        let separator = MenuItem::new(app, "", false, None::<&str>).map_err(|e| e.to_string())?;
         let exit = MenuItem::with_id(app, "exit", "退出", true, None::<&str>)
             .map_err(|e| e.to_string())?;
 
-        let menu = Menu::with_items(app, &[&show_main, &separator, &exit])
-            .map_err(|e| e.to_string())?;
+        let menu =
+            Menu::with_items(app, &[&show_main, &separator, &exit]).map_err(|e| e.to_string())?;
 
         // 在编译时嵌入托盘图标
         let icon = Image::from_bytes(include_bytes!("../../icons/icon.ico"))

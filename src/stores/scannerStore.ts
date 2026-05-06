@@ -34,6 +34,7 @@ interface ScannerState {
   startScan: () => Promise<void>
   cancelScan: () => Promise<void>
   clearResults: () => void
+  removeScanResultsByPath: (paths: string[]) => void
   clearError: () => void
   appendPendingFiles: (files: string[]) => void
   setWalkComplete: () => void
@@ -245,6 +246,58 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
    * English keywords: clear results, reset scan, clear detection
    */
   clearResults: () => set({ scanResults: [], lastScanStats: undefined }),
+
+  /**
+   * 函数名称：removeScanResultsByPath
+   * 函数作用：从当前扫描结果中移除指定文件路径对应的结果，并同步刷新最近一次扫描统计。
+   * English purpose: Removes scan results for the given file paths and refreshes the latest scan stats.
+   * 调用方：ScanPage handleClearThreats（威胁隔离成功后）。
+   * Called by: ScanPage handleClearThreats after successful quarantine.
+   * 被调用方：Zustand set。
+   * Calls: Zustand set.
+   * 参数说明：paths 为已处理文件路径列表；空数组表示不改变状态。
+   * Parameters: paths is the list of handled file paths; an empty array keeps state unchanged.
+   * 返回值说明：无返回值；通过 store 状态更新扫描结果。
+   * Returns: No return value; updates scan results through store state.
+   * 内部关键变量：pathSet 用于 O(1) 判断结果是否应移除；remainingResults 为保留结果。
+   * Internal variables: pathSet enables O(1) removal checks; remainingResults keeps results not removed.
+   * 接入方式：仅由扫描页 UI 层在确认文件已处理后调用。
+   * Integration: Called only by the scan UI layer after files are confirmed handled.
+   * 错误处理：不抛异常；空路径会被过滤。
+   * Error handling: Does not throw; empty paths are filtered.
+   * 副作用：只修改前端 store；不写文件、不写数据库、不调用后端。
+   * Side effects: Only mutates frontend store; no file, database, or backend calls.
+   * 事务边界：无 Unit of Work；后端隔离事务已在调用前完成。
+   * Transaction boundary: No Unit of Work; backend quarantine transaction has already completed before this call.
+   * 并发与幂等：对同一路径重复调用结果一致。
+   * Concurrency and idempotency: Repeated calls for the same path produce the same state.
+   * 中文关键词：扫描结果，移除结果，清除威胁，隔离成功，统计刷新，前端状态，路径匹配，威胁列表，幂等，Zustand
+   * English keywords: scan result, remove result, clear threat, quarantine success, stats refresh, frontend state, path matching, threat list, idempotent, Zustand
+   */
+  removeScanResultsByPath: (paths: string[]) => {
+    const pathSet = new Set(paths.filter(Boolean))
+    if (pathSet.size === 0) return
+
+    set((state) => {
+      const remainingResults = state.scanResults.filter((result) =>
+        !pathSet.has(result.fileId) && !(result.description && pathSet.has(result.description))
+      )
+      const threatsFound = remainingResults.filter(result => result.verdict && result.verdict !== 'clean').length
+      const cleanFiles = remainingResults.length - threatsFound
+
+      return {
+        scanResults: remainingResults,
+        lastScanStats: state.lastScanStats
+          ? {
+              ...state.lastScanStats,
+              totalFiles: remainingResults.length,
+              threatsFound,
+              cleanFiles,
+            }
+          : undefined,
+      }
+    })
+  },
 
   /**
    * 函数名称：clearError

@@ -36,18 +36,17 @@ pub fn get_system_info() -> Result<serde_json::Value, String> {
 /// English keywords: process list, running processes, task manager
 #[tauri::command]
 pub fn get_running_processes() -> Result<Vec<serde_json::Value>, String> {
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW,
-        PROCESSENTRY32W, TH32CS_SNAPPROCESS,
-    };
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+        TH32CS_SNAPPROCESS,
+    };
 
     let mut processes = Vec::new();
     let current_pid = std::process::id();
 
-    let snapshot = unsafe {
-        CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    }.map_err(|e| format!("创建进程快照失败: {}", e))?;
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+        .map_err(|e| format!("创建进程快照失败: {}", e))?;
 
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -60,9 +59,11 @@ pub fn get_running_processes() -> Result<Vec<serde_json::Value>, String> {
                 let pid = entry.th32ProcessID;
                 if pid > 0 && pid != current_pid {
                     let exe_name = String::from_utf16_lossy(
-                        &entry.szExeFile[..entry.szExeFile.iter()
+                        &entry.szExeFile[..entry
+                            .szExeFile
+                            .iter()
                             .position(|&c| c == 0)
-                            .unwrap_or(entry.szExeFile.len())]
+                            .unwrap_or(entry.szExeFile.len())],
                     );
                     processes.push(serde_json::json!({
                         "pid": pid,

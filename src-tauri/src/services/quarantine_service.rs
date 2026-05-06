@@ -1,13 +1,13 @@
 // 隔离区服务 - 处理文件隔离、恢复和删除
+use crate::utils::crypto::{decrypt_data, encrypt_data};
+use chrono::Utc;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
-use chrono::Utc;
-use crate::utils::crypto::{encrypt_data, decrypt_data};
-use sha2::{Sha256, Digest};
-use rand::Rng;
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct QuarantineItem {
@@ -48,7 +48,7 @@ impl QuarantineService {
                 restored_at TEXT,
                 description TEXT
             )
-            "#
+            "#,
         )
         .execute(pool)
         .await
@@ -57,7 +57,7 @@ impl QuarantineService {
         sqlx::query(
             r#"
             CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine_items(status)
-            "#
+            "#,
         )
         .execute(pool)
         .await
@@ -78,20 +78,21 @@ impl QuarantineService {
     /// 获取隔离目录路径
     fn get_quarantine_directory() -> PathBuf {
         // 使用应用数据目录下的 quarantine 文件夹
-        let app_data = std::env::var("APPDATA")
-            .unwrap_or_else(|_| ".".to_string());
-        PathBuf::from(app_data).join("AnXinSecurity").join("quarantine")
+        let app_data = std::env::var("APPDATA").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(app_data)
+            .join("AnXinSecurity")
+            .join("quarantine")
     }
 
     /// 计算文件 SHA-256 哈希
     fn calculate_file_hash(file_path: &PathBuf) -> Result<String, String> {
-        let data = fs::read(file_path)
-            .map_err(|e| format!("Failed to read file for hashing: {}", e))?;
-        
+        let data =
+            fs::read(file_path).map_err(|e| format!("Failed to read file for hashing: {}", e))?;
+
         let mut hasher = Sha256::new();
         hasher.update(&data);
         let result = hasher.finalize();
-        
+
         Ok(format!("{:x}", result))
     }
 
@@ -116,7 +117,7 @@ impl QuarantineService {
                     (0..16)
                         .map(|i| u8::from_str_radix(&hex_key[i * 2..i * 2 + 2], 16))
                         .collect::<Result<Vec<_>, _>>()
-                        .unwrap_or_default()
+                        .unwrap_or_default(),
                 ) {
                     return key;
                 }
@@ -137,54 +138,54 @@ impl QuarantineService {
         threat_type: Option<&str>,
     ) -> Result<QuarantineItem, String> {
         let original_path = PathBuf::from(file_path);
-        
+
         // 验证文件存在
         if !original_path.exists() {
             return Err(format!("File not found: {}", file_path));
         }
-        
+
         // 检查文件大小（限制 500MB）
         let metadata = fs::metadata(&original_path)
             .map_err(|e| format!("Failed to get file metadata: {}", e))?;
         let file_size = metadata.len() as i64;
-        
+
         if file_size > 500 * 1024 * 1024 {
             return Err("File size exceeds 500MB limit".to_string());
         }
-        
+
         // 计算文件哈希
         let file_hash = Self::calculate_file_hash(&original_path)?;
-        
+
         // 读取文件内容
-        let file_data = fs::read(&original_path)
-            .map_err(|e| format!("Failed to read file: {}", e))?;
-        
+        let file_data =
+            fs::read(&original_path).map_err(|e| format!("Failed to read file: {}", e))?;
+
         // 加密文件
         let encryption_key = Self::get_encryption_key();
         let encrypted_data = encrypt_data(&file_data, &encryption_key)?;
-        
+
         // 生成唯一的隔离文件名
         let id = Uuid::new_v4().to_string();
         let isolated_filename = format!("{}.enc", id);
-        
+
         // 确保隔离目录存在
         let quarantine_dir = Self::get_quarantine_directory();
         fs::create_dir_all(&quarantine_dir)
             .map_err(|e| format!("Failed to create quarantine directory: {}", e))?;
-        
+
         // 写入加密文件到隔离区
         let isolated_path = quarantine_dir.join(&isolated_filename);
         fs::write(&isolated_path, &encrypted_data)
             .map_err(|e| format!("Failed to write encrypted file: {}", e))?;
-        
+
         // 安全删除原文件（简单删除，生产环境应多次覆写）
         fs::remove_file(&original_path)
             .map_err(|e| format!("Failed to remove original file: {}", e))?;
-        
+
         // 记录到数据库
         let now = Utc::now().to_rfc3339();
         let isolated_path_str = isolated_path.to_string_lossy().to_string();
-        
+
         sqlx::query(
             r#"
             INSERT INTO quarantine_items 
@@ -202,7 +203,7 @@ impl QuarantineService {
         .execute(pool)
         .await
         .map_err(|e| format!("Failed to save quarantine record: {}", e))?;
-        
+
         Ok(QuarantineItem {
             id,
             original_path: file_path.to_string(),
@@ -226,40 +227,40 @@ impl QuarantineService {
             SELECT id, original_path, isolated_path, file_size, status
             FROM quarantine_items
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("Failed to query quarantine record: {}", e))?;
-        
-        let (record_id, original_path, isolated_path, _file_size, status) = 
+
+        let (record_id, original_path, isolated_path, _file_size, status) =
             record.ok_or_else(|| format!("Quarantine record not found: {}", id))?;
-        
+
         // 检查状态
         if status != "quarantined" {
             return Err(format!("File is not in quarantined state: {}", status));
         }
-        
+
         // 读取加密文件
         let encrypted_data = fs::read(&isolated_path)
             .map_err(|e| format!("Failed to read encrypted file: {}", e))?;
-        
+
         // 解密文件
         let encryption_key = Self::get_encryption_key();
         let decrypted_data = decrypt_data(&encrypted_data, &encryption_key)?;
-        
+
         // 确保原文件的父目录存在
         let original_path_buf = PathBuf::from(&original_path);
         if let Some(parent) = original_path_buf.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| format!("Failed to create parent directory: {}", e))?;
         }
-        
+
         // 写入解密后的文件到原位置
         fs::write(&original_path_buf, &decrypted_data)
             .map_err(|e| format!("Failed to write restored file: {}", e))?;
-        
+
         // 更新数据库状态
         let now = Utc::now().to_rfc3339();
         sqlx::query(
@@ -267,17 +268,17 @@ impl QuarantineService {
             UPDATE quarantine_items
             SET status = 'restored', restored_at = ?
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&now)
         .bind(&record_id)
         .execute(pool)
         .await
         .map_err(|e| format!("Failed to update quarantine status: {}", e))?;
-        
+
         // 可选：删除隔离区的加密文件（保留以便审计）
         // fs::remove_file(&isolated_path).ok();
-        
+
         Ok(true)
     }
 
@@ -300,16 +301,16 @@ impl QuarantineService {
             SELECT id, isolated_path
             FROM quarantine_items
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(id)
         .fetch_optional(pool)
         .await
         .map_err(|e| format!("Failed to query quarantine record: {}", e))?;
-        
-        let (record_id, isolated_path) = 
+
+        let (record_id, isolated_path) =
             record.ok_or_else(|| format!("Quarantine record not found: {}", id))?;
-        
+
         // 三次覆写：随机数据、0x00、0xFF
         if PathBuf::from(&isolated_path).exists() {
             let file_size = fs::metadata(&isolated_path)
@@ -331,29 +332,32 @@ impl QuarantineService {
             let ff_data = vec![0xFFu8; file_size];
             fs::write(&isolated_path, &ff_data)
                 .map_err(|e| format!("Failed to overwrite file with 0xFF: {}", e))?;
-            
+
             // 删除文件
             fs::remove_file(&isolated_path)
                 .map_err(|e| format!("Failed to delete quarantined file: {}", e))?;
         }
-        
+
         // 从数据库中删除记录
         sqlx::query(
             r#"
             DELETE FROM quarantine_items
             WHERE id = ?
-            "#
+            "#,
         )
         .bind(&record_id)
         .execute(pool)
         .await
         .map_err(|e| format!("Failed to delete quarantine record: {}", e))?;
-        
+
         Ok(true)
     }
 
     /// 列出所有隔离项目
-    pub async fn list_quarantine_items(&self, pool: &SqlitePool) -> Result<Vec<QuarantineItem>, String> {
+    pub async fn list_quarantine_items(
+        &self,
+        pool: &SqlitePool,
+    ) -> Result<Vec<QuarantineItem>, String> {
         let items: Vec<QuarantineItem> = sqlx::query_as(
             r#"
             SELECT id, original_path, isolated_path, file_hash, file_size,
@@ -361,12 +365,12 @@ impl QuarantineService {
             FROM quarantine_items
             ORDER BY isolated_at DESC
             LIMIT 1000
-            "#
+            "#,
         )
         .fetch_all(pool)
         .await
         .map_err(|e| format!("Failed to query quarantine items: {}", e))?;
-        
+
         Ok(items)
     }
 }

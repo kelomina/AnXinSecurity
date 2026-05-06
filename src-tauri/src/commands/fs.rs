@@ -1,7 +1,10 @@
 // 文件系统命令 — 后台目录遍历（流式推送事件）
 // File system commands — background directory walk (streaming events)
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use tauri::Emitter;
 
 /// 遍历任务状态 / Walk task status
@@ -10,9 +13,8 @@ struct WalkTask {
 }
 
 /// 当前遍历任务 / Current walk task
-static WALK_TASK: once_cell::sync::Lazy<Arc<Mutex<Option<WalkTask>>>> = once_cell::sync::Lazy::new(|| {
-    Arc::new(Mutex::new(None))
-});
+static WALK_TASK: once_cell::sync::Lazy<Arc<Mutex<Option<WalkTask>>>> =
+    once_cell::sync::Lazy::new(|| Arc::new(Mutex::new(None)));
 
 /// 函数名称：start_background_walk
 /// 函数作用：启动后台目录遍历，通过 Tauri Events 流式推送文件路径。
@@ -115,9 +117,12 @@ pub async fn start_background_walk(
         }
 
         // 通知遍历完成 / Notify walk completion
-        let _ = app_clone.emit("walk-complete", serde_json::json!({
-            "path": path_for_closure,
-        }));
+        let _ = app_clone.emit(
+            "walk-complete",
+            serde_json::json!({
+                "path": path_for_closure,
+            }),
+        );
 
         // 清理任务 / Clean up task
         if let Ok(mut task) = WALK_TASK.lock() {
@@ -195,7 +200,15 @@ fn walk_recursive(
                     continue; // 已访问过该目录 / Already visited this directory
                 }
             }
-            walk_recursive(&path, exclusions, extensions, cancel, depth + 1, visited, on_file);
+            walk_recursive(
+                &path,
+                exclusions,
+                extensions,
+                cancel,
+                depth + 1,
+                visited,
+                on_file,
+            );
         } else if path.is_file() {
             // 扩展名过滤 / Extension filter
             if let Some(ref ext_set) = extensions {

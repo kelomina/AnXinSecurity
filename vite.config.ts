@@ -9,7 +9,15 @@ export default defineConfig({
     port: 1421,
     strictPort: false,
     watch: {
-      ignored: ['**/src-tauri/**'],
+      ignored: [
+        '**/src-tauri/**',
+        '**/data/**',
+        '**/logs/**',
+        '**/config/scan_cache.json',
+        '**/config/quarantine_index.json',
+        '**/config/startup_allowlist.enc',
+        '**/data/runtime/**',
+      ],
     },
   },
   build: {

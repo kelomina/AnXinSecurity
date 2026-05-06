@@ -1,270 +1,52 @@
 {
+  "behaviorAnalyzer": {
+    "enabled": true,
+    "flushIntervalMs": 500,
+    "sqlite": {
+      "directory": "data/behavior",
+      "fileName": "anxin_etw_behavior.db",
+      "mode": "file"
+    }
+  },
+  "behaviorMonitoring": {
+    "enabled": false
+  },
   "brand": "AnXin Security",
-  "themeColor": "#4CA2FF",
   "defaultPage": "overview",
+  "fileMonitoring": {
+    "enabled": true
+  },
   "minimizeToTray": true,
-  "locale": "zh-CN",
+  "processMonitoring": {
+    "enabled": true
+  },
+  "scan": {
+    "commonExtensionsOnly": false
+  },
+  "scanner": {
+    "healthPollIntervalMs": 30000,
+    "ipc": {
+      "connectTimeoutMs": 500,
+      "enabled": false,
+      "host": "127.0.0.1",
+      "port": 8765,
+      "prefer": false,
+      "timeoutMs": 10000
+    },
+    "maxFileSizeMB": 500,
+    "timeoutMs": 10000
+  },
+  "themeColor": "#4CA2FF",
   "tray": {
-    "exitKeepScannerServicePrompt": true,
-    "exitKeepScannerServiceDefault": true
+    "exitKeepScannerServiceDefault": true,
+    "exitKeepScannerServicePrompt": true
   },
   "ui": {
     "animations": true,
     "themeMode": "system",
     "window": {
-      "minWidth": 800,
-      "minHeight": 600
+      "minHeight": 600,
+      "minWidth": 800
     }
-  },
-  "scanner": {
-    "timeoutMs": 5000,
-    "healthPollIntervalMs": 3000,
-    "tuningEnabled": true,
-    "maxFileSizeMB": 300,
-    "signatureDbPath": "data/anxin_signature_db.bin",
-    "nativeDll": {
-      "enabled": true,
-      "prefer": true
-    },
-    "tuning": {
-      "fastLatencyMs": 700,
-      "slowLatencyMs": 2000,
-      "minPoolSize": 8,
-      "maxPoolSize": 256,
-      "minRatePerSecond": 8,
-      "maxRatePerSecond": 256,
-      "adjustStep": 8
-    },
-    "maxTokens": 16,
-    "ipc": {
-      "enabled": false,
-      "prefer": false,
-      "host": "127.0.0.1",
-      "port": 8765,
-      "connectTimeoutMs": 500,
-      "timeoutMs": 5000
-    }
-  },
-  "scan": {
-    "rulesFile": "config/scan_rules.json",
-    "traversalTimeoutMs": 2000,
-    "walkerBatchSize": 256,
-    "cachePersistIntervalMs": 1000,
-    "commonExtensionsOnly": true
-  },
-  "behaviorUi": {
-    "pageSize": 0,
-    "autoRefreshMs": 0,
-    "processListLimit": 0,
-    "resolveProcessName": true
-  },
-  "behaviorMonitoring": {
-    "enabled": false
-  },
-  "processMonitoring": {
-    "enabled": true
-  },
-  "fileMonitoring": {
-    "enabled": true
-  },
-  "etw": {
-    "enabled": true,
-    "sessionName": "AnXinSecuritySession",
-    "userDataMaxBytes": 52428800,
-    "stopTimeoutMs": 2500,
-    "startRetries": 2,
-    "retryDelayMs": 150,
-    "emitRegistryRawHex": false,
-    "providers": {
-      "Process": {
-        "anyKeyword": "0x0",
-        "allKeyword": "0x0"
-      },
-      "File": {
-        "anyKeyword": "0xFFFFFFFFFFFFFFFF",
-        "allKeyword": "0x0"
-      },
-      "Registry": {
-        "anyKeyword": "0x0",
-        "allKeyword": "0x0"
-      },
-      "Network": {
-        "anyKeyword": "0x0",
-        "allKeyword": "0x0"
-      }
-    },
-    "logToConsole": true,
-    "logParsedToConsole": true,
-    "resolveProcessName": true,
-    "processNameCacheMax": 2048,
-    "processNameCacheTtlMs": 300000,
-    "processNameResolveMaxPerSecond": 20,
-    "consoleMaxPerSecond": 200,
-    "pidSnapshot": {
-      "enabled": true,
-      "maxPids": 8192
-    },
-    "filters": {
-      "trustedPid": {
-        "enabled": true,
-        "applyToSnapshot": true,
-        "applyToNewProcesses": true,
-        "maxVerifyPids": 0,
-        "skipProviders": [
-          "Registry",
-          "Network"
-        ],
-        "userTrustedPaths": [],
-        "baseTrustedPids": [
-          0,
-          4
-        ],
-        "extraTrustedPids": []
-      },
-      "Registry": {
-        "skipOps": [
-          "OpenKey",
-          "CloseKey",
-          "QueryKey"
-        ]
-      },
-      "Process": {
-        "skipOps": []
-      },
-      "File": {
-        "skipOps": []
-      },
-      "Network": {
-        "skipOps": []
-      }
-    },
-    "network": {
-      "enabled": true,
-      "filterPrivateIps": true,
-      "skipLoopback": true
-    },
-    "matching": {
-      "rulesFile": "config/etw_match_rules.json",
-      "contextPerPid": 100,
-      "includeChildren": true
-    },
-    "interception": {
-      "enabled": true,
-      "snapshotVerifyOnEtwStart": true,
-      "snapshotTrustThreshold": 3,
-      "snapshotMaxPids": 8192,
-      "modulesBufferBytes": 65536,
-      "skipSystemDll": true,
-      "maxUnsignedDllsPerProcess": 16
-    }
-  },
-  "behaviorAnalyzer": {
-    "enabled": true,
-    "flushIntervalMs": 100,
-    "sqlite": {
-      "mode": "file",
-      "directory": "data/behavior",
-      "fileName": "anxin_etw_behavior.db"
-    }
-  },
-  "behaviorMitre": {
-    "enabled": true,
-    "tactics": [
-      "Initial Access",
-      "Execution",
-      "Persistence",
-      "Privilege Escalation",
-      "Defense Evasion",
-      "Credential Access",
-      "Discovery",
-      "Lateral Movement",
-      "Collection",
-      "Command and Control",
-      "Exfiltration",
-      "Impact"
-    ],
-    "rules": [
-      {
-        "provider": "Process",
-        "op": "Start",
-        "tactic": "Execution",
-        "techniqueId": "T1106",
-        "techniqueName": "Native API"
-      },
-      {
-        "provider": "Process",
-        "op": "Stop",
-        "tactic": "Impact",
-        "techniqueId": "T1485",
-        "techniqueName": "Data Destruction"
-      },
-      {
-        "provider": "File",
-        "op": "Create",
-        "tactic": "Collection",
-        "techniqueId": "T1005",
-        "techniqueName": "Data from Local System"
-      },
-      {
-        "provider": "File",
-        "op": "Delete",
-        "tactic": "Defense Evasion",
-        "techniqueId": "T1070",
-        "techniqueName": "Indicator Removal"
-      },
-      {
-        "provider": "File",
-        "op": "Rename",
-        "tactic": "Defense Evasion",
-        "techniqueId": "T1070",
-        "techniqueName": "Indicator Removal"
-      },
-      {
-        "provider": "Registry",
-        "op": "SetValue",
-        "tactic": "Persistence",
-        "techniqueId": "T1112",
-        "techniqueName": "Modify Registry"
-      },
-      {
-        "provider": "Registry",
-        "op": "CreateKey",
-        "tactic": "Persistence",
-        "techniqueId": "T1112",
-        "techniqueName": "Modify Registry"
-      },
-      {
-        "provider": "Registry",
-        "op": "DeleteValue",
-        "tactic": "Defense Evasion",
-        "techniqueId": "T1112",
-        "techniqueName": "Modify Registry"
-      },
-      {
-        "provider": "Network",
-        "op": "Connect",
-        "tactic": "Command and Control",
-        "techniqueId": "T1071",
-        "techniqueName": "Application Layer Protocol"
-      }
-    ]
-  },
-  "devSettings": {
-    "salt": "dfa638d5c80864e9f2e2c04006b6d31b",
-    "payload": {
-      "iv": "64002624d44aa3e31dede9d1",
-      "authTag": "2e9638ac081c886bf63a81a6dc286da6",
-      "data": "aWZ8ZlajViojzNdVpw9QbpVIsTScg4xOBYezVRlE+ztzweKoezZ5DvnkeKI3IkVJ+23RpQ5NzDjj/yWgaHKp0icIa0aJB13tCkJHmi1rHKU/CCFW+9OgK248Gw8Yh2hizI9RUfn22tsNwNqjk+08Rj9nAv5r3alXSaR/I1tSUpB5IE6SHvFt/qZfCujmtfLzGjedT326mzosNNRVqod4F2F1wOKNRiHPm91RRlzvKKX2ekyK9YcJAYX6AwiFtw=="
-    },
-    "updatedAt": 1771730030271
-  },
-  "quarantine": {
-    "salt": "8f0d7349a7edbb7a28292fd93d4c98bf"
-  },
-  "exclusions": {
-    "salt": "868b46aaad89d606136f1adaef705fe8"
-  },
-  "startup_allowlist": {
-    "salt": "606944f594eba3d70a1f4ab217c3fce9"
   }
 }

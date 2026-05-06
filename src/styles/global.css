@@ -611,6 +611,71 @@ html[data-theme="light"] .card {
   font-size: 16px;
 }
 
+.threat-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 12px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-medium);
+}
+
+.threat-toolbar-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--app-fg);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.threat-toolbar-summary svg {
+  flex-shrink: 0;
+  color: var(--color-danger);
+}
+
+.threat-toolbar-count {
+  padding: 4px 8px;
+  border-radius: var(--radius-circular);
+  background: var(--color-info-bg);
+  color: var(--theme-color);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.threat-toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.threat-command {
+  min-height: 32px;
+  padding: 8px 12px;
+  border-radius: var(--radius-medium);
+}
+
+@media (max-width: 768px) {
+  .threat-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .threat-toolbar-actions {
+    justify-content: stretch;
+  }
+
+  .threat-command {
+    flex: 1 1 160px;
+  }
+}
+
 .skeleton-table {
   display: flex;
   flex-direction: column;
@@ -663,6 +728,7 @@ html[data-theme="light"] .card {
 .threat-scroll table {
   width: 100%;
   border-collapse: collapse;
+  table-layout: auto;
 }
 
 .threat-scroll thead {
@@ -698,10 +764,14 @@ html[data-theme="light"] .card {
 }
 
 .severity-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   padding: 4px 8px;
   border-radius: var(--radius-small);
   font-size: 12px;
   font-weight: 600;
+  line-height: 1.35;
 }
 
 .severity-high {
@@ -717,6 +787,90 @@ html[data-theme="light"] .card {
 .severity-low {
   background: var(--color-info-bg);
   color: var(--color-info);
+}
+
+.quarantine-list .threat-scroll {
+  overflow-x: auto;
+  max-height: 520px;
+}
+
+.quarantine-list table {
+  min-width: 1120px;
+}
+
+.quarantine-file-col {
+  width: 220px;
+}
+
+.quarantine-path-col {
+  width: 300px;
+}
+
+.quarantine-threat-col {
+  width: 190px;
+}
+
+.quarantine-size-col {
+  width: 90px;
+}
+
+.quarantine-date-col {
+  width: 140px;
+}
+
+.quarantine-status-col {
+  width: 96px;
+}
+
+.quarantine-actions-col {
+  width: 180px;
+}
+
+.quarantine-file-cell {
+  max-width: 220px;
+}
+
+.quarantine-file-cell strong {
+  display: -webkit-box;
+  overflow: hidden;
+  line-clamp: 2;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.quarantine-threat-cell .severity-badge {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quarantine-size-cell,
+.quarantine-date-cell,
+.quarantine-status-cell,
+.quarantine-actions-cell {
+  white-space: nowrap;
+}
+
+.quarantine-status-cell .severity-badge {
+  white-space: nowrap;
+  min-width: 72px;
+  justify-content: center;
+}
+
+.quarantine-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+
+.quarantine-actions .btn-sm {
+  min-width: 76px;
+  white-space: nowrap;
 }
 
 /* ========== 行为分析页面样式 ========== */
@@ -1014,6 +1168,25 @@ html[data-theme="light"] .modal-overlay {
 
 html[data-theme="light"] .modal-surface {
   background: var(--acrylic-light);
+}
+
+.quarantine-confirm-modal {
+  position: relative;
+  z-index: 1;
+  width: min(520px, calc(100vw - 48px));
+}
+
+.quarantine-confirm-modal h3 {
+  margin-bottom: 12px;
+}
+
+.quarantine-confirm-modal p {
+  color: var(--app-fg);
+  line-height: 1.6;
+}
+
+.quarantine-confirm-modal strong {
+  font-weight: 700;
 }
 
 .modal-header {

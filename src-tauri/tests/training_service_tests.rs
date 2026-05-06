@@ -11,7 +11,9 @@
 // English keywords: training service, state machine, integration test, data structure, lifecycle,
 // serialization, deserialization, boundary testing
 
-use anxin_security::services::training_service::{TrainingService, TrainingStatus, TrainingProgress};
+use anxin_security::services::training_service::{
+    TrainingProgress, TrainingService, TrainingStatus,
+};
 
 mod common;
 
@@ -49,19 +51,24 @@ fn test_training_status_serialization() {
     let parsed: TrainingStatus = serde_json::from_str(&idle_json).expect("反序列化 Idle 应成功");
     assert_eq!(parsed, TrainingStatus::Idle);
 
-    let training_json = serde_json::to_string(&TrainingStatus::Training).expect("序列化 Training 应成功");
+    let training_json =
+        serde_json::to_string(&TrainingStatus::Training).expect("序列化 Training 应成功");
     assert_eq!(training_json, "\"training\"");
-    let parsed: TrainingStatus = serde_json::from_str(&training_json).expect("反序列化 Training 应成功");
+    let parsed: TrainingStatus =
+        serde_json::from_str(&training_json).expect("反序列化 Training 应成功");
     assert_eq!(parsed, TrainingStatus::Training);
 
-    let completed_json = serde_json::to_string(&TrainingStatus::Completed).expect("序列化 Completed 应成功");
+    let completed_json =
+        serde_json::to_string(&TrainingStatus::Completed).expect("序列化 Completed 应成功");
     assert_eq!(completed_json, "\"completed\"");
-    let parsed: TrainingStatus = serde_json::from_str(&completed_json).expect("反序列化 Completed 应成功");
+    let parsed: TrainingStatus =
+        serde_json::from_str(&completed_json).expect("反序列化 Completed 应成功");
     assert_eq!(parsed, TrainingStatus::Completed);
 
     let failed_json = serde_json::to_string(&TrainingStatus::Failed).expect("序列化 Failed 应成功");
     assert_eq!(failed_json, "\"failed\"");
-    let parsed: TrainingStatus = serde_json::from_str(&failed_json).expect("反序列化 Failed 应成功");
+    let parsed: TrainingStatus =
+        serde_json::from_str(&failed_json).expect("反序列化 Failed 应成功");
     assert_eq!(parsed, TrainingStatus::Failed);
 }
 
@@ -90,7 +97,10 @@ fn test_training_progress_fields_accessible() {
 
     assert_eq!(progress.current, 50);
     assert_eq!(progress.total, 100);
-    assert_eq!(progress.current_path.as_deref(), Some("C:\\test\\sample.exe"));
+    assert_eq!(
+        progress.current_path.as_deref(),
+        Some("C:\\test\\sample.exe")
+    );
     assert!((progress.percentage - 50.0).abs() < f32::EPSILON);
     assert_eq!(progress.status, TrainingStatus::Training);
 }
@@ -139,7 +149,8 @@ fn test_training_progress_serialization_roundtrip() {
     };
 
     let json_str = serde_json::to_string(&progress).expect("序列化 TrainingProgress 应成功");
-    let parsed: TrainingProgress = serde_json::from_str(&json_str).expect("反序列化 TrainingProgress 应成功");
+    let parsed: TrainingProgress =
+        serde_json::from_str(&json_str).expect("反序列化 TrainingProgress 应成功");
 
     assert_eq!(parsed.current, progress.current);
     assert_eq!(parsed.total, progress.total);
@@ -161,7 +172,10 @@ fn test_training_progress_serialization_skips_none_path() {
 
     let json_str = serde_json::to_string(&progress).expect("序列化应成功");
     // 确认未出现 currentPath 字段 / Confirm currentPath field is absent
-    assert!(!json_str.contains("currentPath"), "None current_path 应被 skip_serializing_if 跳过");
+    assert!(
+        !json_str.contains("currentPath"),
+        "None current_path 应被 skip_serializing_if 跳过"
+    );
 }
 
 // ================================================================
@@ -172,8 +186,11 @@ fn test_training_progress_serialization_skips_none_path() {
 fn test_new_service_starts_idle() {
     // 验证新建服务的初始状态为空闲 / Verify new service starts in idle state
     let svc = TrainingService::new();
-    assert_eq!(svc.get_status(), TrainingStatus::Idle,
-        "新建训练服务应为 Idle 状态");
+    assert_eq!(
+        svc.get_status(),
+        TrainingStatus::Idle,
+        "新建训练服务应为 Idle 状态"
+    );
 }
 
 #[test]
@@ -192,8 +209,11 @@ fn test_reset_from_idle_stays_idle() {
     let svc = TrainingService::new();
     assert_eq!(svc.get_status(), TrainingStatus::Idle);
     svc.reset();
-    assert_eq!(svc.get_status(), TrainingStatus::Idle,
-        "Idle 状态下 reset 应仍为 Idle");
+    assert_eq!(
+        svc.get_status(),
+        TrainingStatus::Idle,
+        "Idle 状态下 reset 应仍为 Idle"
+    );
 }
 
 #[test]
@@ -215,8 +235,11 @@ fn test_get_status_returns_clone_not_reference() {
     // 丢弃返回的副本，不修改 / Discard returned clone, don't modify
 
     // 内部状态不应受影响 / Internal state should not be affected
-    assert_eq!(svc.get_status(), TrainingStatus::Idle,
-        "get_status 返回的是独立副本");
+    assert_eq!(
+        svc.get_status(),
+        TrainingStatus::Idle,
+        "get_status 返回的是独立副本"
+    );
 }
 
 #[test]
@@ -226,8 +249,11 @@ fn test_reset_idempotent() {
     svc.reset();
     svc.reset();
     svc.reset();
-    assert_eq!(svc.get_status(), TrainingStatus::Idle,
-        "多次 reset 不改变状态且不 panic");
+    assert_eq!(
+        svc.get_status(),
+        TrainingStatus::Idle,
+        "多次 reset 不改变状态且不 panic"
+    );
 }
 
 #[test]
@@ -271,8 +297,12 @@ fn test_status_serialization_in_context() {
     assert_eq!(response_json, "\"idle\"");
 
     // 验证所有状态均可序列化 / Verify all statuses are serializable
-    for status in &[TrainingStatus::Idle, TrainingStatus::Training,
-                     TrainingStatus::Completed, TrainingStatus::Failed] {
+    for status in &[
+        TrainingStatus::Idle,
+        TrainingStatus::Training,
+        TrainingStatus::Completed,
+        TrainingStatus::Failed,
+    ] {
         let json = serde_json::to_string(status).expect("状态序列化应成功");
         let parsed: TrainingStatus = serde_json::from_str(&json).expect("反序列化应成功");
         assert_eq!(*status, parsed, "序列化往返应保持一致性");

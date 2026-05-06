@@ -8,10 +8,10 @@
 // 中文关键词：事件分发，威胁识别，ETW事件，matched字段，事件流向
 // English keywords: event dispatch, threat identification, ETW event, matched field, event flow
 
-use std::sync::Arc;
-use serde_json::json;
+use anxin_security::services::interception_service::{InterceptionEntry, InterceptionService};
 use anxin_security::services::risk_service::RiskService;
-use anxin_security::services::interception_service::{InterceptionService, InterceptionEntry};
+use serde_json::json;
+use std::sync::Arc;
 
 mod common;
 
@@ -88,9 +88,18 @@ fn test_event_data_maps_to_interception_entry_correctly() {
         pid,
         process_name: process_name.to_string(),
         file_path: threat_json["path"].as_str().unwrap_or("").to_string(),
-        risk_level: match severity { 0..=25 => "low", 26..=60 => "medium", _ => "high" }.to_string(),
+        risk_level: match severity {
+            0..=25 => "low",
+            26..=60 => "medium",
+            _ => "high",
+        }
+        .to_string(),
         threat_type: Some(threat_type.to_string()),
-        reason: format!("规则 RULE_{} 匹配: {}", threat_type, threat_json["description"].as_str().unwrap_or("")),
+        reason: format!(
+            "规则 RULE_{} 匹配: {}",
+            threat_type,
+            threat_json["description"].as_str().unwrap_or("")
+        ),
         payload: Some(threat_json.to_string()),
         timestamp: 1000000,
     };
@@ -116,11 +125,21 @@ fn test_many_threat_events_all_identified_correctly() {
 
 #[test]
 fn test_mixed_events_threats_separated_from_normals() {
-    let threats: Vec<_> = (0..5).map(|i| common::make_threat_event(7000 + i, &format!("threat_{}", i), 50, "malware")).collect();
-    let normals: Vec<_> = (0..3).map(|i| common::make_normal_event(8000 + i, &format!("normal_{}", i), "Process", "Start")).collect();
+    let threats: Vec<_> = (0..5)
+        .map(|i| common::make_threat_event(7000 + i, &format!("threat_{}", i), 50, "malware"))
+        .collect();
+    let normals: Vec<_> = (0..3)
+        .map(|i| common::make_normal_event(8000 + i, &format!("normal_{}", i), "Process", "Start"))
+        .collect();
 
-    let threat_count = threats.iter().filter(|e| common::is_threat_event(e)).count();
-    let normal_count = normals.iter().filter(|e| !common::is_threat_event(e)).count();
+    let threat_count = threats
+        .iter()
+        .filter(|e| common::is_threat_event(e))
+        .count();
+    let normal_count = normals
+        .iter()
+        .filter(|e| !common::is_threat_event(e))
+        .count();
 
     assert_eq!(threat_count, 5);
     assert_eq!(normal_count, 3);
@@ -157,7 +176,11 @@ fn test_services_wired_enqueue_flow_works() {
     inter.enqueue(entry);
     assert_eq!(inter.get_queue_size(), 1);
     assert_eq!(inter.get_paused_pids(), vec![9001]);
-    assert_eq!(risk.get_event_count(), 0, "仅直接入队不影响 RiskService 计数");
+    assert_eq!(
+        risk.get_event_count(),
+        0,
+        "仅直接入队不影响 RiskService 计数"
+    );
 }
 
 #[test]
@@ -165,9 +188,15 @@ fn test_reverse_risk_level_from_severity_consistent() {
     // 验证从 ETW 事件的 severity 字段推导 risk_level 的一致性
     // Verifies consistency of risk_level derivation from ETW event severity field
     let test_cases = vec![
-        (0, "low"), (15, "low"), (25, "low"),
-        (26, "medium"), (45, "medium"), (60, "medium"),
-        (61, "high"), (80, "high"), (100, "high"),
+        (0, "low"),
+        (15, "low"),
+        (25, "low"),
+        (26, "medium"),
+        (45, "medium"),
+        (60, "medium"),
+        (61, "high"),
+        (80, "high"),
+        (100, "high"),
     ];
 
     for (severity, expected_level) in test_cases {

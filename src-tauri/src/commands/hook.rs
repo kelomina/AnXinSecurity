@@ -29,9 +29,7 @@ pub fn start_hook_service(
 /// 中文关键词：停止钩子，关闭管道
 /// English keywords: stop hook, close pipe
 #[tauri::command]
-pub fn stop_hook_service(
-    hook: tauri::State<'_, Arc<HookService>>,
-) -> Result<bool, String> {
+pub fn stop_hook_service(hook: tauri::State<'_, Arc<HookService>>) -> Result<bool, String> {
     hook.stop()?;
     Ok(true)
 }
@@ -44,8 +42,6 @@ pub fn stop_hook_service(
 /// 中文关键词：钩子状态，运行状态
 /// English keywords: hook status, running state
 #[tauri::command]
-pub fn get_hook_status(
-    hook: tauri::State<'_, Arc<HookService>>,
-) -> Result<bool, String> {
+pub fn get_hook_status(hook: tauri::State<'_, Arc<HookService>>) -> Result<bool, String> {
     Ok(hook.is_running())
 }

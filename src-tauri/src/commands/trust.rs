@@ -1,6 +1,6 @@
-use tauri::State;
-use serde::{Deserialize, Serialize};
 use crate::services::trust_service::TrustService;
+use serde::{Deserialize, Serialize};
+use tauri::State;
 
 #[derive(Serialize)]
 pub struct VerifyFileResponse {

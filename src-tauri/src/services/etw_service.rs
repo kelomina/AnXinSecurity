@@ -1,8 +1,8 @@
 /// ETW 监控服务 — 控制 ETW 会话生命周期，轮询事件并分发到行为数据库、风险分析和前端
 /// ETW monitoring service — controls ETW session lifecycle, polls events and dispatches to behavior DB, risk analysis, and frontend
 use std::sync::{Arc, Mutex};
-use tokio::sync::broadcast;
 use tauri::{AppHandle, Emitter, Manager};
+use tokio::sync::broadcast;
 
 use super::etw::session::EtwSession;
 use crate::commands::logs;
@@ -44,11 +44,8 @@ impl EtwService {
         // If session_handle is 0 (no admin), skip enabling providers and polling
         if session.session_handle != 0 {
             session.start(
-                0x00000000, 0x00000001,
-                0x00000000, 0x00000010,
-                0x00000000, 0x00000100,
-                0x00000000, 0x00001000,
-                1, 0, 0, 65536,
+                0x00000000, 0x00000001, 0x00000000, 0x00000010, 0x00000000, 0x00000100, 0x00000000,
+                0x00001000, 1, 0, 0, 65536,
             )?;
         } else {
             eprintln!("[EtwService] ETW skipped (no admin)");
@@ -59,7 +56,8 @@ impl EtwService {
         let session_arc = self.session.clone();
 
         *self.session.lock().map_err(|e| e.to_string())? = Some(session);
-        self.running.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let app_handle_clone = app_handle.clone();
         tokio::spawn(async move {
@@ -87,28 +85,75 @@ impl EtwService {
                         // Risk analysis — for matched threat events
                         // 风险分析管线会自动写入行为数据库+推送拦截队列
                         // Risk analysis pipeline auto-writes behavior DB + pushes interception queue
-                        if val.get("matched").and_then(|v| v.as_bool()).unwrap_or(false)
+                        if val
+                            .get("matched")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
                             || val.get("threatType").is_some()
                         {
                             let val_risk = val.clone();
                             let app_handle_risk = app_handle_clone.clone();
                             tokio::spawn(async move {
                                 if let (Some(risk_state), Some(trust_state)) = (
-                                    app_handle_risk.try_state::<crate::services::risk_service::RiskService>(),
-                                    app_handle_risk.try_state::<crate::services::trust_service::TrustService>(),
+                                    app_handle_risk
+                                        .try_state::<crate::services::risk_service::RiskService>(),
+                                    app_handle_risk
+                                        .try_state::<crate::services::trust_service::TrustService>(
+                                        ),
                                 ) {
                                     let risk_event = crate::services::risk_service::RiskEvent {
-                                        pid: val_risk.get("pid").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
-                                        process_name: val_risk.get("processName").and_then(|v| v.as_str()).unwrap_or("Unknown").to_string(),
-                                        file_path: val_risk.get("path").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                                        threat_type: val_risk.get("threatType").and_then(|v| v.as_str()).unwrap_or("unknown").to_string(),
-                                        threat_name: val_risk.get("threatName").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                                        severity: val_risk.get("severity").and_then(|v| v.as_u64()).unwrap_or(30) as u32,
-                                        rule_id: val_risk.get("ruleId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-                                        description: val_risk.get("description").and_then(|v| v.as_str()).unwrap_or("ETW rule matched").to_string(),
-                                        timestamp: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64,
+                                        pid: val_risk
+                                            .get("pid")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(0)
+                                            as u32,
+                                        process_name: val_risk
+                                            .get("processName")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("Unknown")
+                                            .to_string(),
+                                        file_path: val_risk
+                                            .get("path")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        threat_type: val_risk
+                                            .get("threatType")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown")
+                                            .to_string(),
+                                        threat_name: val_risk
+                                            .get("threatName")
+                                            .and_then(|v| v.as_str())
+                                            .map(|s| s.to_string()),
+                                        severity: val_risk
+                                            .get("severity")
+                                            .and_then(|v| v.as_u64())
+                                            .unwrap_or(30)
+                                            as u32,
+                                        rule_id: val_risk
+                                            .get("ruleId")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("")
+                                            .to_string(),
+                                        description: val_risk
+                                            .get("description")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("ETW rule matched")
+                                            .to_string(),
+                                        timestamp: std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_millis()
+                                            as u64,
                                     };
-                                    let _ = risk_state.analyze_event(risk_event, Some(&trust_state), None, &app_handle_risk).await;
+                                    let _ = risk_state
+                                        .analyze_event(
+                                            risk_event,
+                                            Some(&trust_state),
+                                            None,
+                                            &app_handle_risk,
+                                        )
+                                        .await;
                                 }
                             });
                         }
@@ -145,7 +190,8 @@ impl EtwService {
             session.stop(2500)?;
         }
         *guard = None;
-        self.running.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.running
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -158,5 +204,4 @@ impl EtwService {
     pub fn resume(&self, app_handle: AppHandle) -> Result<(), String> {
         self.start(app_handle)
     }
-
 }

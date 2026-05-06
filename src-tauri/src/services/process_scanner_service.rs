@@ -9,10 +9,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tauri::AppHandle;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::time;
 
 use crate::services::engine_service::EngineService;
+use crate::services::interception_service::{InterceptionEntry, InterceptionService};
+use crate::services::path_policy_service::should_skip_security_scan;
+use crate::services::scan_result_cache_service::{CachedScanResult, ScanResultCacheService};
 
 // `tokio::spawn` 在 setup 阶段不可用，改用 Tauri 的 async_runtime
 // tokio::spawn is unavailable during setup, use tauri's async_runtime instead
@@ -44,8 +48,9 @@ impl ProcessScannerService {
     }
 
     /// 函数名称：start
-    /// 函数作用：启动进程扫描后台任务。
-    /// Purpose: Starts the process scanning background task.
+    /// 函数作用：启动进程扫描后台任务；扫描前实时读取排除项和允许列表，命中时跳过引擎检测。
+    /// Function name: start
+    /// Purpose: Starts the process scanning background task; reads exclusions and allowlist before scanning and skips matching paths.
     ///
     /// 每隔 interval_ms 轮询一次系统进程列表，对比已记录的 PID 发现新进程，
     /// 对新进程的可执行文件路径调用 Axon 引擎扫描。
@@ -62,9 +67,16 @@ impl ProcessScannerService {
     /// 副作用：
     ///   启动后台 Tokio 任务，持续轮询系统进程并调用引擎扫描
     ///
-    /// 中文关键词：启动扫描，进程轮询，新进程检测，引擎扫描
-    /// English keywords: start scanning, process polling, new process detection, engine scan
-    pub fn start(&self, engine: Arc<EngineService>, interval_ms: u64) {
+    /// 中文关键词：启动扫描，进程轮询，新进程检测，引擎扫描，排除项生效，允许列表生效，跳过扫描，运行时列表，路径策略，实时监控
+    /// English keywords: start scanning, process polling, new process detection, engine scan, exclusion effective, allowlist effective, skip scan, runtime list, path policy, realtime monitor
+    pub fn start(
+        &self,
+        engine: Arc<EngineService>,
+        cache: Arc<ScanResultCacheService>,
+        interception: Arc<InterceptionService>,
+        app_handle: AppHandle,
+        interval_ms: u64,
+    ) {
         if self.running.load(Ordering::SeqCst) {
             eprintln!("[ProcessScanner] Already running");
             return;
@@ -123,22 +135,57 @@ impl ProcessScannerService {
                         _ => continue,
                     };
 
-                    eprintln!("[ProcessScanner] New process PID={}, path={}", pid, path);
-
-                    match engine.is_malware(&path).await {
-                        Ok((is_malware, confidence)) => {
-                            if is_malware {
+                    let modules = enumerate_process_modules(pid);
+                    match &modules {
+                        Ok(items) => {
+                            eprintln!(
+                                "[ProcessScanner] New process PID={}, path={}, loadedModules={}",
+                                pid,
+                                path,
+                                items.len()
+                            );
+                            for module_path in items {
                                 eprintln!(
-                                    "[ProcessScanner] MALWARE DETECTED PID={}, path={}, confidence={}",
-                                    pid, path, confidence
+                                    "[ProcessScanner]   module PID={}, path={}",
+                                    pid, module_path
                                 );
                             }
                         }
-                        Err(e) => {
+                        Err(err) => {
                             eprintln!(
-                                "[ProcessScanner] Scan failed for PID={}, path={}: {}",
-                                pid, path, e
+                                "[ProcessScanner] New process PID={}, path={}, module enumeration failed: {}",
+                                pid,
+                                path,
+                                err
                             );
+                        }
+                    }
+
+                    scan_target_and_intercept(
+                        &engine,
+                        &cache,
+                        &interception,
+                        &app_handle,
+                        pid,
+                        "process",
+                        &path,
+                        None,
+                    )
+                    .await;
+
+                    if let Ok(module_paths) = modules {
+                        for module_path in module_paths {
+                            scan_target_and_intercept(
+                                &engine,
+                                &cache,
+                                &interception,
+                                &app_handle,
+                                pid,
+                                "module",
+                                &module_path,
+                                Some(&path),
+                            )
+                            .await;
                         }
                     }
                 }
@@ -173,9 +220,231 @@ impl ProcessScannerService {
 /// 函数名称：collect_current_pids
 /// 函数作用：通过 CreateToolhelp32Snapshot 收集系统当前所有进程 PID。
 /// Purpose: Collects all current process PIDs via CreateToolhelp32Snapshot.
+/// 函数名称：scan_target_and_intercept
+/// 函数作用：扫描进程本体或加载模块，优先使用持久化缓存，并在恶意结果时推入拦截队列。
+/// Function name: scan_target_and_intercept
+/// Purpose: Scans a process image or loaded module, prefers persistent cache, and enqueues interception on malware.
+/// 调用方：ProcessScannerService::start 后台任务。
+/// Called by: ProcessScannerService::start background task.
+/// 被调用方：should_skip_security_scan、ScanResultCacheService::scan_or_get_cached、InterceptionService::enqueue、InterceptionService::try_show_next。
+/// Calls: should_skip_security_scan, ScanResultCacheService::scan_or_get_cached, InterceptionService::enqueue, InterceptionService::try_show_next.
+/// 副作用：可能调用扫描引擎、写入扫描缓存、推送 process-intercepted 前端事件。
+/// Side effects: May call scan engine, write scan cache, and emit process-intercepted frontend events.
+async fn scan_target_and_intercept(
+    engine: &Arc<EngineService>,
+    cache: &Arc<ScanResultCacheService>,
+    interception: &Arc<InterceptionService>,
+    app_handle: &AppHandle,
+    pid: u32,
+    target_type: &str,
+    target_path: &str,
+    process_path: Option<&str>,
+) {
+    match should_skip_security_scan(target_path) {
+        Ok(true) => {
+            eprintln!(
+                "[ProcessScanner] Skipped {} by exclusions or allowlist: {}",
+                target_type, target_path
+            );
+            return;
+        }
+        Ok(false) => {}
+        Err(err) => {
+            eprintln!(
+                "[ProcessScanner] Failed to load path policy for {} {}: {}",
+                target_type, target_path, err
+            );
+        }
+    }
+
+    match cache.scan_or_get_cached(engine, target_path).await {
+        Ok(scan_result) => {
+            log_cached_scan_result(
+                "ProcessScanner",
+                pid,
+                target_type,
+                target_path,
+                &scan_result,
+            );
+            if scan_result_is_malware(&scan_result.raw_result) {
+                let confidence = scan_confidence(&scan_result.raw_result);
+                eprintln!(
+                    "[ProcessScanner] MALWARE DETECTED targetType={}, PID={}, path={}, confidence={}, cacheHit={}",
+                    target_type,
+                    pid,
+                    target_path,
+                    confidence,
+                    scan_result.cache_hit
+                );
+                enqueue_scan_interception(
+                    interception,
+                    app_handle,
+                    pid,
+                    target_type,
+                    target_path,
+                    process_path,
+                    &scan_result,
+                );
+            }
+        }
+        Err(err) => {
+            eprintln!(
+                "[ProcessScanner] Scan failed for targetType={}, PID={}, path={}: {}",
+                target_type, pid, target_path, err
+            );
+        }
+    }
+}
+
+pub(crate) fn log_cached_scan_result(
+    source: &str,
+    pid: u32,
+    target_type: &str,
+    target_path: &str,
+    scan_result: &CachedScanResult,
+) {
+    eprintln!(
+        "[{}] Scan result targetType={}, PID={}, path={}, sha256={}, cacheHit={}, raw={}",
+        source,
+        target_type,
+        pid,
+        target_path,
+        scan_result.hash_hex,
+        scan_result.cache_hit,
+        scan_result.raw_result
+    );
+}
+
+pub(crate) fn scan_result_is_malware(raw: &serde_json::Value) -> bool {
+    raw.get("is_malware")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false)
+}
+
+pub(crate) fn scan_confidence(raw: &serde_json::Value) -> f64 {
+    raw.get("confidence")
+        .and_then(|value| value.as_f64())
+        .unwrap_or(0.0)
+}
+
+pub(crate) fn scan_threat_type(raw: &serde_json::Value) -> Option<String> {
+    raw.get("malware_family")
+        .and_then(|value| value.get("family_name"))
+        .and_then(|value| value.as_str())
+        .or_else(|| raw.get("family_name").and_then(|value| value.as_str()))
+        .or_else(|| raw.get("threat_type").and_then(|value| value.as_str()))
+        .or_else(|| raw.get("threatType").and_then(|value| value.as_str()))
+        .or_else(|| raw.get("label").and_then(|value| value.as_str()))
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+}
+
+fn enqueue_scan_interception(
+    interception: &Arc<InterceptionService>,
+    app_handle: &AppHandle,
+    pid: u32,
+    target_type: &str,
+    target_path: &str,
+    process_path: Option<&str>,
+    scan_result: &CachedScanResult,
+) {
+    let process_name = process_path
+        .or(Some(target_path))
+        .and_then(file_name_from_path)
+        .unwrap_or_else(|| format!("PID {}", pid));
+    let threat_type = scan_threat_type(&scan_result.raw_result)
+        .or_else(|| Some(format!("malware_{}", target_type)));
+    let payload = serde_json::json!({
+        "source": "process_scanner",
+        "targetType": target_type,
+        "targetPath": target_path,
+        "processPath": process_path,
+        "sha256": scan_result.hash_hex,
+        "cacheHit": scan_result.cache_hit,
+        "rawResult": scan_result.raw_result,
+    });
+
+    let entry = InterceptionEntry {
+        pid,
+        process_name,
+        file_path: target_path.to_string(),
+        risk_level: "high".to_string(),
+        threat_type,
+        reason: format!(
+            "引擎扫描发现{}存在恶意特征：{}",
+            if target_type == "module" {
+                "进程加载模块"
+            } else {
+                "进程文件"
+            },
+            target_path
+        ),
+        payload: Some(payload.to_string()),
+        timestamp: chrono::Utc::now().timestamp_millis() as u64,
+    };
+    interception.enqueue(entry);
+    interception.try_show_next(app_handle);
+}
+
+pub(crate) fn file_name_from_path(path: &str) -> Option<String> {
+    path.rsplit(['\\', '/'])
+        .next()
+        .filter(|name| !name.is_empty())
+        .map(|name| name.to_string())
+}
+
+/// 函数名称：enumerate_process_modules
+/// 函数作用：通过 ToolHelp 模块快照枚举指定 PID 已加载模块路径。
+/// Function name: enumerate_process_modules
+/// Purpose: Enumerates loaded module paths for a PID through a ToolHelp module snapshot.
+/// 调用方：ProcessScannerService::start、SnapshotService 启动扫描。
+/// Called by: ProcessScannerService::start, SnapshotService startup scan.
+/// 错误处理：无法创建模块快照或读取模块时返回错误，由调用方记录调试输出并继续扫描。
+/// Error handling: Snapshot or enumeration failures return errors; callers log and continue scanning.
+pub(crate) fn enumerate_process_modules(pid: u32) -> Result<Vec<String>, String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Module32FirstW, Module32NextW, MODULEENTRY32W, TH32CS_SNAPMODULE,
+        TH32CS_SNAPMODULE32,
+    };
+
+    let snapshot =
+        unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid) }
+            .map_err(|err| format!("创建模块快照失败: {}", err))?;
+
+    let mut modules = Vec::new();
+    let mut entry = MODULEENTRY32W {
+        dwSize: std::mem::size_of::<MODULEENTRY32W>() as u32,
+        ..Default::default()
+    };
+
+    unsafe {
+        if Module32FirstW(snapshot, &mut entry).is_ok() {
+            loop {
+                let path = String::from_utf16_lossy(
+                    &entry.szExePath[..entry
+                        .szExePath
+                        .iter()
+                        .position(|ch| *ch == 0)
+                        .unwrap_or(entry.szExePath.len())],
+                );
+                if !path.is_empty() {
+                    modules.push(path);
+                }
+                if !Module32NextW(snapshot, &mut entry).is_ok() {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot).ok();
+    }
+
+    Ok(modules)
+}
+
 fn collect_current_pids() -> HashSet<u32> {
-    use windows::Win32::System::Diagnostics::ToolHelp::*;
     use windows::Win32::Foundation::*;
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
 
     let mut pids = HashSet::new();
     unsafe {
@@ -200,9 +469,9 @@ fn collect_current_pids() -> HashSet<u32> {
 /// 函数作用：通过 OpenProcess + QueryFullProcessImageNameW 获取指定 PID 的可执行文件路径。
 /// Purpose: Gets executable path for a PID via OpenProcess + QueryFullProcessImageNameW.
 fn query_process_image_path(pid: u32) -> Option<String> {
-    use windows::Win32::System::Threading::*;
-    use windows::Win32::Foundation::*;
     use windows::core::PWSTR;
+    use windows::Win32::Foundation::*;
+    use windows::Win32::System::Threading::*;
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;

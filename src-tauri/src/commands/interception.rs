@@ -1,6 +1,6 @@
 // 拦截命令 — 拦截弹窗操作和队列管理
 // Interception commands — interception modal operations and queue management
-use crate::services::interception_service::{InterceptionService, InterceptionDecision};
+use crate::services::interception_service::{InterceptionDecision, InterceptionService};
 use crate::services::trust_service::TrustService;
 
 /// 函数名称：handle_interception
@@ -22,7 +22,12 @@ pub async fn handle_interception(
     let decision = match action.as_str() {
         "allow" => InterceptionDecision::Allow,
         "block" => InterceptionDecision::Block,
-        _ => return Err(format!("无效的操作类型: {}，有效值为 allow 和 block", action)),
+        _ => {
+            return Err(format!(
+                "无效的操作类型: {}，有效值为 allow 和 block",
+                action
+            ))
+        }
     };
 
     // 记录决策 / Record decision

@@ -1,8 +1,8 @@
 // 拦截队列管理器 — 管理被暂停进程的拦截队列和用户决策
 // Interception queue manager — manages the interception queue for paused processes and user decisions
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
 /// 拦截队列中的条目 / Interception queue entry
@@ -92,7 +92,10 @@ impl InterceptionService {
         let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
         // 防止重复 / Prevent duplicates
         if queue.iter().any(|e| e.pid == entry.pid) {
-            eprintln!("[InterceptionService] PID {} already in queue, skipping", entry.pid);
+            eprintln!(
+                "[InterceptionService] PID {} already in queue, skipping",
+                entry.pid
+            );
             return;
         }
         eprintln!(
@@ -153,10 +156,7 @@ impl InterceptionService {
     pub fn mark_decision(&self, pid: u32, decision: InterceptionDecision) {
         let mut decisions = self.decisions.lock().unwrap_or_else(|e| e.into_inner());
         decisions.insert(pid, decision);
-        eprintln!(
-            "[InterceptionService] PID {} decision: {:?}",
-            pid, decision
-        );
+        eprintln!("[InterceptionService] PID {} decision: {:?}", pid, decision);
 
         // 清除当前弹窗状态 / Clear current showing state
         let mut showing = self.showing.lock().unwrap_or_else(|e| e.into_inner());
@@ -186,7 +186,10 @@ impl InterceptionService {
     /// English keywords: clear queue, reset interception
     pub fn clear_all(&self) {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
-        self.decisions.lock().unwrap_or_else(|e| e.into_inner()).clear();
+        self.decisions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
         *self.showing.lock().unwrap_or_else(|e| e.into_inner()) = false;
     }
 
@@ -199,5 +202,4 @@ impl InterceptionService {
     pub fn get_queue_size(&self) -> usize {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
-
 }

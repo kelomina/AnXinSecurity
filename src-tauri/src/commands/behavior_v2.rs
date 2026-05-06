@@ -1,6 +1,6 @@
-use tauri::State;
-use std::sync::{Arc, Mutex};
 use crate::services::behavior_service::BehaviorService;
+use std::sync::{Arc, Mutex};
+use tauri::State;
 
 #[tauri::command]
 pub async fn list_behavior_events(
@@ -9,7 +9,10 @@ pub async fn list_behavior_events(
 ) -> Result<Vec<serde_json::Value>, String> {
     let query_val = query.unwrap_or_default();
     let pid = query_val.get("pid").and_then(|v| v.as_u64());
-    let limit = query_val.get("limit").and_then(|v| v.as_u64()).unwrap_or(100);
+    let limit = query_val
+        .get("limit")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(100);
 
     // Clone 内部 Arc 避免持有 MutexGuard 跨越 await 边界
     // Clone inner Arc to avoid holding MutexGuard across await boundary

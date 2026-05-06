@@ -37,7 +37,12 @@ pub fn parse_event_record(
     } else if same_guid(provider_guid, &NETWORK_GUID) {
         parse_network_event(opcode, user_data)
     } else {
-        (ProviderKind::Unknown, String::new(), String::new(), String::new())
+        (
+            ProviderKind::Unknown,
+            String::new(),
+            String::new(),
+            String::new(),
+        )
     };
 
     ParsedEvent {
@@ -55,10 +60,18 @@ pub fn parse_event_record(
 }
 
 // Kernel provider GUIDs
-pub const PROCESS_GUID: [u8; 16] = [0xD6, 0x2C, 0xFB, 0x22, 0x7B, 0x0E, 0x2B, 0x42, 0xA0, 0xC7, 0x2F, 0xAD, 0x1F, 0xD0, 0xE7, 0x16];
-pub const FILE_GUID: [u8; 16] = [0x27, 0x89, 0xD0, 0xED, 0xC4, 0x9C, 0x65, 0x4E, 0xB9, 0x70, 0xC2, 0x56, 0x0F, 0xB5, 0xC2, 0x89];
-pub const REGISTRY_GUID: [u8; 16] = [0x03, 0x4F, 0xEB, 0x70, 0xDE, 0xC1, 0x73, 0x4F, 0xA0, 0x51, 0x33, 0xD1, 0x3D, 0x54, 0x13, 0xBD];
-pub const NETWORK_GUID: [u8; 16] = [0x49, 0x2A, 0xD4, 0x7D, 0x29, 0x53, 0x32, 0x48, 0x8D, 0xFD, 0x43, 0xD9, 0x79, 0x15, 0x3A, 0x88];
+pub const PROCESS_GUID: [u8; 16] = [
+    0xD6, 0x2C, 0xFB, 0x22, 0x7B, 0x0E, 0x2B, 0x42, 0xA0, 0xC7, 0x2F, 0xAD, 0x1F, 0xD0, 0xE7, 0x16,
+];
+pub const FILE_GUID: [u8; 16] = [
+    0x27, 0x89, 0xD0, 0xED, 0xC4, 0x9C, 0x65, 0x4E, 0xB9, 0x70, 0xC2, 0x56, 0x0F, 0xB5, 0xC2, 0x89,
+];
+pub const REGISTRY_GUID: [u8; 16] = [
+    0x03, 0x4F, 0xEB, 0x70, 0xDE, 0xC1, 0x73, 0x4F, 0xA0, 0x51, 0x33, 0xD1, 0x3D, 0x54, 0x13, 0xBD,
+];
+pub const NETWORK_GUID: [u8; 16] = [
+    0x49, 0x2A, 0xD4, 0x7D, 0x29, 0x53, 0x32, 0x48, 0x8D, 0xFD, 0x43, 0xD9, 0x79, 0x15, 0x3A, 0x88,
+];
 
 fn same_guid(a: &[u8; 16], b: &[u8; 16]) -> bool {
     a == b
@@ -79,7 +92,12 @@ fn parse_process_event(opcode: u16, data: &[u8]) -> (ProviderKind, String, Strin
             process_name = extract_wide_string(&data[offset..]);
         }
     }
-    (ProviderKind::Process, op.to_string(), process_name.clone(), String::new())
+    (
+        ProviderKind::Process,
+        op.to_string(),
+        process_name.clone(),
+        String::new(),
+    )
 }
 
 fn parse_file_event(id: u16, data: &[u8]) -> (ProviderKind, String, String, String) {
@@ -143,7 +161,14 @@ fn parse_network_event(opcode: u16, data: &[u8]) -> (ProviderKind, String, Strin
             let is_loopback = a0 == 127;
             let reserved = a0 >= 224;
 
-            if !is_private && !is_loopback && !reserved && a0 > 0 && a1 < 256 && a2 < 256 && a3 < 256 {
+            if !is_private
+                && !is_loopback
+                && !reserved
+                && a0 > 0
+                && a1 < 256
+                && a2 < 256
+                && a3 < 256
+            {
                 if p1 > 0 && p1 < 65535 {
                     addr = format!("{}.{}.{}.{}", a0, a1, a2, a3);
                     port = p1;
@@ -181,7 +206,8 @@ fn map_file_op(id: u16) -> String {
         75 => "write",
         76 => "close",
         _ => return format!("file_{}", id),
-    }.to_string()
+    }
+    .to_string()
 }
 
 fn map_registry_op(opcode: u16) -> String {
@@ -203,18 +229,27 @@ fn map_registry_op(opcode: u16) -> String {
         15 => "delete_key_ex",
         16 => "rename_key",
         _ => return format!("reg_{}", opcode),
-    }.to_string()
+    }
+    .to_string()
 }
 
 fn is_private_ipv4(a0: u32, a1: u32, _a2: u32, _a3: u32) -> bool {
     // 10.x.x.x
-    if a0 == 10 { return true; }
+    if a0 == 10 {
+        return true;
+    }
     // 172.16-31.x.x
-    if a0 == 172 && a1 >= 16 && a1 <= 31 { return true; }
+    if a0 == 172 && a1 >= 16 && a1 <= 31 {
+        return true;
+    }
     // 192.168.x.x
-    if a0 == 192 && a1 == 168 { return true; }
+    if a0 == 192 && a1 == 168 {
+        return true;
+    }
     // 169.254.x.x (link-local)
-    if a0 == 169 && a1 == 254 { return true; }
+    if a0 == 169 && a1 == 254 {
+        return true;
+    }
     false
 }
 
@@ -265,7 +300,9 @@ fn pick_best_path(raw: &str) -> String {
 
     for c in &candidates {
         let s = c.trim();
-        if s.is_empty() { continue; }
+        if s.is_empty() {
+            continue;
+        }
 
         let mut score = 0i32;
         // Prefer paths with drive letters

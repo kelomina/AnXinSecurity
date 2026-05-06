@@ -8,9 +8,9 @@
 // 中文关键词：行为数据库，事件写入，事件查询，进程查询，内存数据库，SQLite测试
 // English keywords: behavior database, event ingest, event query, process query, in-memory DB, SQLite test
 
+use anxin_security::services::behavior_service::BehaviorService;
 use serde_json::json;
 use sqlx::SqlitePool;
-use anxin_security::services::behavior_service::BehaviorService;
 
 mod common;
 
@@ -32,7 +32,7 @@ async fn setup_behavior_service() -> BehaviorService {
             path TEXT,
             timestamp TEXT,
             details TEXT
-        )"
+        )",
     )
     .execute(&pool)
     .await
@@ -43,7 +43,13 @@ async fn setup_behavior_service() -> BehaviorService {
 
 /// 构造一个模拟 analyze_event 生成的 behavior_event JSON
 /// Construct a JSON that simulates what analyze_event passes to ingest_event
-fn make_behavior_event(pid: u32, process_name: &str, threat_type: &str, path: Option<&str>, severity: u32) -> serde_json::Value {
+fn make_behavior_event(
+    pid: u32,
+    process_name: &str,
+    threat_type: &str,
+    path: Option<&str>,
+    severity: u32,
+) -> serde_json::Value {
     json!({
         "type": "risk_analysis",
         "pid": pid,
@@ -141,9 +147,15 @@ async fn test_ingest_preserves_all_analyze_event_fields() {
     assert_eq!(ev["processName"], json!("ransomware.exe"));
     assert_eq!(ev["operation"], json!("ransomware"));
     assert_eq!(ev["path"], json!("C:\\ransomware.exe"));
-    assert!(ev["timestamp"].as_str().unwrap_or("").contains("202"), "应包含时间戳");
+    assert!(
+        ev["timestamp"].as_str().unwrap_or("").contains("202"),
+        "应包含时间戳"
+    );
     // details 字段应包含完整的风险研判信息
-    assert!(ev["details"].as_str().unwrap_or("").contains("risk_level"), "应包含风险等级");
+    assert!(
+        ev["details"].as_str().unwrap_or("").contains("risk_level"),
+        "应包含风险等级"
+    );
 }
 
 #[tokio::test]
@@ -190,10 +202,14 @@ async fn test_list_processes_returns_distinct_pids() {
 
     // PID=500 有 3 条事件，PID=501 有 2 条事件
     for _ in 0..3 {
-        svc.ingest_event(make_behavior_event(500, "proc_a.exe", "malware", None, 60)).await.unwrap();
+        svc.ingest_event(make_behavior_event(500, "proc_a.exe", "malware", None, 60))
+            .await
+            .unwrap();
     }
     for _ in 0..2 {
-        svc.ingest_event(make_behavior_event(501, "proc_b.exe", "spyware", None, 40)).await.unwrap();
+        svc.ingest_event(make_behavior_event(501, "proc_b.exe", "spyware", None, 40))
+            .await
+            .unwrap();
     }
 
     let processes = svc.list_processes(50).await.expect("查询应成功");
@@ -207,7 +223,15 @@ async fn test_list_processes_respects_limit() {
     let svc = setup_behavior_service().await;
 
     for pid in 600..610u32 {
-        svc.ingest_event(make_behavior_event(pid, &format!("p{}.exe", pid), "test", None, 30)).await.unwrap();
+        svc.ingest_event(make_behavior_event(
+            pid,
+            &format!("p{}.exe", pid),
+            "test",
+            None,
+            30,
+        ))
+        .await
+        .unwrap();
     }
 
     let processes = svc.list_processes(5).await.expect("查询应成功");
@@ -223,10 +247,15 @@ async fn test_clear_all_removes_all_events() {
     let svc = setup_behavior_service().await;
 
     for pid in 700..705u32 {
-        svc.ingest_event(make_behavior_event(pid, "wipable.exe", "test", None, 20)).await.unwrap();
+        svc.ingest_event(make_behavior_event(pid, "wipable.exe", "test", None, 20))
+            .await
+            .unwrap();
     }
 
-    assert!(!svc.list_events(None, 100).await.unwrap().is_empty(), "清空前应有数据");
+    assert!(
+        !svc.list_events(None, 100).await.unwrap().is_empty(),
+        "清空前应有数据"
+    );
 
     let result = svc.clear_all().await;
     assert!(result.is_ok());
@@ -312,7 +341,10 @@ async fn test_simulate_analyze_event_db_writes_high_risk() {
     assert_eq!(events.len(), 1);
     let details = events[0]["details"].as_str().unwrap();
     assert!(details.contains("high"), "details 应包含风险等级");
-    assert!(details.contains("shouldIntercept"), "details 应包含拦截判断");
+    assert!(
+        details.contains("shouldIntercept"),
+        "details 应包含拦截判断"
+    );
     assert!(details.contains("ransomware"), "details 应包含威胁类型");
 }
 
@@ -357,7 +389,10 @@ async fn test_simulate_multiple_events_create_processes_list() {
         "timestamp": "2026-05-01T12:00:00Z",
     });
 
-    for (i, op) in ["file_create", "registry_write", "network_connect"].iter().enumerate() {
+    for (i, op) in ["file_create", "registry_write", "network_connect"]
+        .iter()
+        .enumerate()
+    {
         let risk_data = json!({
             "riskLevel": "medium",
             "shouldIntercept": true,

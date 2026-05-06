@@ -1,9 +1,9 @@
 // 隔离区管理命令 - 完整实现
 //  Quarantine management commands — full implementation
+use crate::services::quarantine_service::QuarantineService;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, State};
-use crate::services::quarantine_service::QuarantineService;
 
 /// 隔离区项目响应结构体
 /// Quarantine item response DTO — returned to the frontend
@@ -33,18 +33,21 @@ pub async fn list_quarantine(
 ) -> Result<Vec<QuarantineItemResponse>, String> {
     let service = QuarantineService::new();
     let items = service.list_quarantine_items(&pool).await?;
-    
-    Ok(items.into_iter().map(|item| QuarantineItemResponse {
-        id: item.id,
-        original_path: item.original_path,
-        file_hash: item.file_hash,
-        file_size: item.file_size,
-        threat_type: item.threat_type,
-        threat_family: item.threat_family,
-        status: item.status,
-        isolated_at: item.isolated_at,
-        restored_at: item.restored_at,
-    }).collect())
+
+    Ok(items
+        .into_iter()
+        .map(|item| QuarantineItemResponse {
+            id: item.id,
+            original_path: item.original_path,
+            file_hash: item.file_hash,
+            file_size: item.file_size,
+            threat_type: item.threat_type,
+            threat_family: item.threat_family,
+            status: item.status,
+            isolated_at: item.isolated_at,
+            restored_at: item.restored_at,
+        })
+        .collect())
 }
 
 /// 函数名称：isolate_file
@@ -64,11 +67,13 @@ pub async fn isolate_file(
     threat_type: Option<String>,
 ) -> Result<QuarantineItemResponse, String> {
     let service = QuarantineService::new();
-    let item = service.isolate_file(&pool, &file_path, threat_type.as_deref()).await?;
-    
+    let item = service
+        .isolate_file(&pool, &file_path, threat_type.as_deref())
+        .await?;
+
     // 通知前端隔离区已更新
     let _ = app_handle.emit("quarantine-updated", &item.id);
-    
+
     Ok(QuarantineItemResponse {
         id: item.id,
         original_path: item.original_path,
@@ -99,12 +104,12 @@ pub async fn restore_file(
 ) -> Result<bool, String> {
     let service = QuarantineService::new();
     let success = service.restore_file(&pool, &id).await?;
-    
+
     // 通知前端隔离区已更新
     if success {
         let _ = app_handle.emit("quarantine-updated", &id);
     }
-    
+
     Ok(success)
 }
 
@@ -125,11 +130,11 @@ pub async fn delete_quarantine(
 ) -> Result<bool, String> {
     let service = QuarantineService::new();
     let success = service.delete_quarantine(&pool, &id).await?;
-    
+
     // 通知前端隔离区已更新
     if success {
         let _ = app_handle.emit("quarantine-updated", &id);
     }
-    
+
     Ok(success)
 }

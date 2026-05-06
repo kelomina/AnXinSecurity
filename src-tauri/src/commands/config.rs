@@ -1,6 +1,6 @@
-use tauri::State;
-use std::sync::{Arc, Mutex};
 use crate::models::config::AppConfig;
+use std::sync::{Arc, Mutex};
+use tauri::State;
 
 /// 函数名称：get_config
 /// 函数作用：获取当前应用配置，返回完整 AppConfig 对象。
@@ -45,10 +45,7 @@ pub fn set_behavior_monitoring_enabled(
 /// 中文关键词：主题，主题模式，浅色模式，深色模式，跟随系统
 /// English keywords: theme, theme mode, light mode, dark mode, system
 #[tauri::command]
-pub fn set_theme_mode(
-    state: State<Arc<Mutex<AppConfig>>>,
-    mode: String,
-) -> Result<(), String> {
+pub fn set_theme_mode(state: State<Arc<Mutex<AppConfig>>>, mode: String) -> Result<(), String> {
     let mut config = state.lock().map_err(|e| e.to_string())?;
     config.ui.theme_mode = mode;
     config.save().map_err(|e| e.to_string())?;

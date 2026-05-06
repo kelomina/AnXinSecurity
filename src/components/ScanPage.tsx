@@ -14,9 +14,12 @@
 import React from 'react'
 import { useScannerStore } from '../stores/scannerStore'
 import { useI18nStore } from '../stores/i18nStore'
-import { Play, Pause, FolderOpen, FileSearch, AlertTriangle, Loader, X, Shield, CheckCircle } from 'lucide-react'
+import { useToastStore } from '../stores/toastStore'
+import { Play, Pause, FolderOpen, FileSearch, AlertTriangle, Loader, X, Shield, CheckCircle, Trash2, ShieldCheck } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 import { startBackgroundWalk, onWalkFileBatch, onWalkComplete } from '../api/fs'
+import { addToAllowlist } from '../api/allowlist'
+import { isolateFile } from '../api/quarantine'
 
 const ScanPage: React.FC = () => {
   const {
@@ -31,13 +34,17 @@ const ScanPage: React.FC = () => {
     clearSelection,
     startScan,
     cancelScan,
+    removeScanResultsByPath,
     clearError,
     appendPendingFiles,
     setWalkComplete,
   } = useScannerStore()
   const { t } = useI18nStore()
+  const addToast = useToastStore((state) => state.addToast)
 
   const [isWalking, setIsWalking] = React.useState(false)
+  const [selectedThreatPaths, setSelectedThreatPaths] = React.useState<string[]>([])
+  const [threatAction, setThreatAction] = React.useState<'clear' | 'trust' | null>(null)
 
   /**
    * 选择目录扫描 / Select directory to scan
@@ -199,7 +206,242 @@ const ScanPage: React.FC = () => {
     }
   }
 
-  const threats = scanResults.filter(r => r.verdict && r.verdict !== 'clean')
+  const threats = React.useMemo(
+    () => scanResults.filter(r => r.verdict && r.verdict !== 'clean'),
+    [scanResults]
+  )
+  const threatPaths = React.useMemo(
+    () => threats.map(threat => threat.fileId || threat.description || '').filter(Boolean),
+    [threats]
+  )
+  const selectedThreats = threats.filter(threat =>
+    selectedThreatPaths.includes(threat.fileId || threat.description || '')
+  )
+  const hasSelectedThreats = selectedThreats.length > 0
+
+  React.useEffect(() => {
+    setSelectedThreatPaths((currentPaths) =>
+      currentPaths.filter(path => threatPaths.includes(path))
+    )
+  }, [threatPaths])
+
+  /**
+   * 函数名称：getThreatFilePath
+   * 函数作用：从扫描威胁结果中提取可传递给隔离区或信任列表 API 的文件路径。
+   * English purpose: Extracts the file path from a threat result for quarantine or allowlist APIs.
+   * 调用方：ScanPage 威胁表格渲染、toggleThreatSelection、handleClearThreats、handleAddTrust。
+   * Called by: ScanPage threat table rendering, toggleThreatSelection, handleClearThreats, handleAddTrust.
+   * 被调用方：无外部服务；仅读取 ScanResult.fileId 与 ScanResult.description。
+   * Calls: No external service; reads ScanResult.fileId and ScanResult.description.
+   * 参数说明：threat 为 ScanResult，不能为空；优先使用后端统一映射的 fileId，description 仅作为兼容回退。
+   * Parameters: threat is a non-null ScanResult; fileId is preferred, description is a compatibility fallback.
+   * 返回值说明：返回文件路径字符串；空字符串表示当前结果缺少可操作路径。
+   * Returns: File path string; empty string means no actionable path is available.
+   * 内部关键变量：无持久变量；函数为纯映射。
+   * Internal variables: No persistent variable; this is a pure mapping.
+   * 接入方式：仅应在扫描结果 UI 层使用；不管理事务、不做权限校验。
+   * Integration: Use only in the scan-result UI layer; no transaction or permission handling.
+   * 错误处理：不抛异常；缺失路径时返回空字符串，由调用方跳过或禁用操作。
+   * Error handling: Does not throw; returns empty path for callers to skip or disable actions.
+   * 副作用：无数据库、文件、缓存、外部 API 副作用。
+   * Side effects: No database, file, cache, or external API side effects.
+   * 事务边界：无 Unit of Work；无 commit/rollback。
+   * Transaction boundary: No Unit of Work; no commit/rollback.
+   * 并发与幂等：纯函数，可重复调用，线程安全。
+   * Concurrency and idempotency: Pure, repeatable, thread-safe.
+   * 中文关键词：威胁路径，扫描结果，文件路径，隔离操作，信任操作，威胁选择，结果映射，路径回退，清除威胁，添加信任
+   * English keywords: threat path, scan result, file path, quarantine action, trust action, threat selection, result mapping, path fallback, clear threat, add trust
+   */
+  const getThreatFilePath = (threat: (typeof threats)[number]): string => (
+    threat.fileId || threat.description || ''
+  )
+
+  /**
+   * 函数名称：toggleThreatSelection
+   * 函数作用：切换单个威胁文件的选中状态，用于后续清除威胁或添加信任。
+   * English purpose: Toggles one threat file selection for clear-threat or add-trust actions.
+   * 调用方：ScanPage 威胁表格行 checkbox。
+   * Called by: ScanPage threat table row checkbox.
+   * 被调用方：setSelectedThreatPaths。
+   * Calls: setSelectedThreatPaths.
+   * 参数说明：path 为威胁文件路径，不能为空字符串；空路径会直接忽略。
+   * Parameters: path is a threat file path and must not be empty; empty paths are ignored.
+   * 返回值说明：无返回值；通过 React state 更新 UI。
+   * Returns: No return value; updates UI via React state.
+   * 内部关键变量：currentPaths 为当前已选路径集合，仅在 setState 回调内有效。
+   * Internal variables: currentPaths is the current selected path list, scoped to the state callback.
+   * 接入方式：仅由 UI 事件调用；不应从 store 或后端层调用。
+   * Integration: Called only by UI events; should not be called from store or backend layers.
+   * 错误处理：空路径直接返回原状态，不抛异常。
+   * Error handling: Empty path keeps state unchanged and does not throw.
+   * 副作用：仅修改组件本地状态。
+   * Side effects: Only mutates local component state.
+   * 事务边界：无 Unit of Work；无 commit/rollback。
+   * Transaction boundary: No Unit of Work; no commit/rollback.
+   * 并发与幂等：React 状态更新是幂等切换；重复点击会恢复原状态。
+   * Concurrency and idempotency: React state update toggles idempotently; repeated clicks restore previous state.
+   * 中文关键词：威胁选择，复选框，扫描结果，清除威胁，添加信任，选中文件，本地状态，文件路径，表格操作，批量操作
+   * English keywords: threat selection, checkbox, scan result, clear threat, add trust, selected file, local state, file path, table action, batch action
+   */
+  const toggleThreatSelection = (path: string) => {
+    if (!path) return
+
+    setSelectedThreatPaths((currentPaths) =>
+      currentPaths.includes(path)
+        ? currentPaths.filter(selectedPath => selectedPath !== path)
+        : [...currentPaths, path]
+    )
+  }
+
+  /**
+   * 函数名称：handleSelectAllThreats
+   * 函数作用：全选或取消全选当前检测到的可操作威胁文件。
+   * English purpose: Selects or clears all currently actionable threat files.
+   * 调用方：ScanPage 威胁表格表头 checkbox。
+   * Called by: ScanPage threat table header checkbox.
+   * 被调用方：setSelectedThreatPaths。
+   * Calls: setSelectedThreatPaths.
+   * 参数说明：checked 为 checkbox 目标状态。
+   * Parameters: checked is the target checkbox state.
+   * 返回值说明：无返回值；通过 React state 更新 UI。
+   * Returns: No return value; updates UI via React state.
+   * 内部关键变量：threatPaths 为当前威胁结果中的路径白名单。
+   * Internal variables: threatPaths is the current allowlist of threat result paths.
+   * 接入方式：仅由扫描页 UI 事件调用。
+   * Integration: Called only from ScanPage UI events.
+   * 错误处理：无可操作路径时写入空数组，不抛异常。
+   * Error handling: Writes an empty array when no actionable path exists; does not throw.
+   * 副作用：仅修改组件本地状态。
+   * Side effects: Only mutates local component state.
+   * 事务边界：无 Unit of Work；无 commit/rollback。
+   * Transaction boundary: No Unit of Work; no commit/rollback.
+   * 并发与幂等：同一 checked 状态重复调用结果一致。
+   * Concurrency and idempotency: Repeated calls with the same checked state produce the same result.
+   * 中文关键词：全选威胁，取消全选，扫描结果，复选框，威胁路径，批量清除，批量信任，文件选择，本地状态，表格表头
+   * English keywords: select all threats, clear selection, scan result, checkbox, threat path, batch clear, batch trust, file selection, local state, table header
+   */
+  const handleSelectAllThreats = (checked: boolean) => {
+    setSelectedThreatPaths(checked ? threatPaths : [])
+  }
+
+  /**
+   * 函数名称：handleClearThreats
+   * 函数作用：将已选威胁文件逐个隔离，实现“清除威胁”操作。
+   * English purpose: Quarantines selected threat files one by one for the clear-threat action.
+   * 调用方：ScanPage “清除威胁”按钮。
+   * Called by: ScanPage "Clear threats" button.
+   * 被调用方：api/quarantine.isolateFile、toastStore.addToast、setSelectedThreatPaths、setThreatAction。
+   * Calls: api/quarantine.isolateFile, toastStore.addToast, setSelectedThreatPaths, setThreatAction.
+   * 参数说明：无参数；使用当前 selectedThreatPaths 对应的 selectedThreats。
+   * Parameters: No parameters; uses selectedThreats derived from selectedThreatPaths.
+   * 返回值说明：Promise<void>；成功和失败通过 Toast 呈现。
+   * Returns: Promise<void>; success and failure are reported through Toast.
+   * 内部关键变量：failedCount 记录隔离失败数量；threatPath 为当前处理文件路径。
+   * Internal variables: failedCount tracks quarantine failures; threatPath is the current file path.
+   * 接入方式：仅由接口层 UI 调用；隔离事务由后端 QuarantineService 管理。
+   * Integration: Called only from the UI layer; quarantine transaction is managed by backend QuarantineService.
+   * 错误处理：单个文件失败会记录 console.error 并继续处理，其后汇总提示。
+   * Error handling: Per-file failures are logged with console.error and processing continues, then summarized.
+   * 副作用：调用后端隔离文件，会加密写入隔离区、删除原文件、写数据库并触发后端事件。
+   * Side effects: Calls backend quarantine, which encrypts to quarantine, removes original file, writes DB, and emits backend events.
+   * 事务边界：前端不管理 Unit of Work；后端 isolate_file 管理一致性边界。
+   * Transaction boundary: Frontend does not manage Unit of Work; backend isolate_file owns consistency.
+   * 并发与幂等：串行执行；重复点击通过 threatAction 禁用避免并发；已隔离文件再次处理可能由后端返回失败。
+   * Concurrency and idempotency: Serial execution; threatAction disables concurrent clicks; already quarantined files may fail in backend.
+   * 中文关键词：清除威胁，隔离文件，威胁处理，批量操作，扫描结果，恶意文件，文件路径，隔离区，错误汇总，Fluent按钮
+   * English keywords: clear threat, isolate file, threat handling, batch action, scan result, malware file, file path, quarantine, error summary, Fluent button
+   */
+  const handleClearThreats = async () => {
+    if (!hasSelectedThreats) return
+
+    setThreatAction('clear')
+    let failedCount = 0
+    const clearedThreatPaths: string[] = []
+
+    for (const threat of selectedThreats) {
+      const threatPath = getThreatFilePath(threat)
+      if (!threatPath) {
+        failedCount++
+        continue
+      }
+
+      try {
+        await isolateFile(threatPath, threat.threatType || threat.verdict)
+        clearedThreatPaths.push(threatPath)
+      } catch (err) {
+        failedCount++
+        console.error(`[ScanPage] Clear threat failed: ${threatPath}`, err)
+      }
+    }
+
+    setThreatAction(null)
+    setSelectedThreatPaths([])
+    removeScanResultsByPath(clearedThreatPaths)
+
+    if (failedCount > 0) {
+      addToast('error', `清除威胁完成，${failedCount} 个文件处理失败`)
+    } else {
+      addToast('success', `已清除 ${selectedThreats.length} 个威胁`)
+    }
+  }
+
+  /**
+   * 函数名称：handleAddTrust
+   * 函数作用：将已选威胁文件逐个加入启动信任列表。
+   * English purpose: Adds selected threat files to the startup allowlist one by one.
+   * 调用方：ScanPage “添加信任”按钮。
+   * Called by: ScanPage "Add trust" button.
+   * 被调用方：api/allowlist.addToAllowlist、toastStore.addToast、setSelectedThreatPaths、setThreatAction。
+   * Calls: api/allowlist.addToAllowlist, toastStore.addToast, setSelectedThreatPaths, setThreatAction.
+   * 参数说明：无参数；使用当前 selectedThreatPaths 对应的 selectedThreats。
+   * Parameters: No parameters; uses selectedThreats derived from selectedThreatPaths.
+   * 返回值说明：Promise<void>；成功和失败通过 Toast 呈现。
+   * Returns: Promise<void>; success and failure are reported through Toast.
+   * 内部关键变量：failedCount 记录加入信任失败数量；threatPath 为当前处理文件路径。
+   * Internal variables: failedCount tracks allowlist failures; threatPath is the current file path.
+   * 接入方式：仅由接口层 UI 调用；配置保存由后端 allowlist command 管理。
+   * Integration: Called only from the UI layer; config persistence is managed by backend allowlist command.
+   * 错误处理：单个文件失败会记录 console.error 并继续处理，其后汇总提示。
+   * Error handling: Per-file failures are logged with console.error and processing continues, then summarized.
+   * 副作用：调用后端写入启动信任列表配置，可能计算文件 hash。
+   * Side effects: Calls backend to persist startup allowlist config and may compute file hash.
+   * 事务边界：无前端 Unit of Work；后端配置保存负责持久化一致性。
+   * Transaction boundary: No frontend Unit of Work; backend config save owns persistence consistency.
+   * 并发与幂等：串行执行；重复添加已存在项可能由后端返回失败并汇总。
+   * Concurrency and idempotency: Serial execution; duplicate entries may fail in backend and are summarized.
+   * 中文关键词：添加信任，允许列表，启动信任，威胁文件，批量操作，扫描结果，文件路径，配置保存，错误汇总，Fluent按钮
+   * English keywords: add trust, allowlist, startup trust, threat file, batch action, scan result, file path, config save, error summary, Fluent button
+   */
+  const handleAddTrust = async () => {
+    if (!hasSelectedThreats) return
+
+    setThreatAction('trust')
+    let failedCount = 0
+
+    for (const threat of selectedThreats) {
+      const threatPath = getThreatFilePath(threat)
+      if (!threatPath) {
+        failedCount++
+        continue
+      }
+
+      try {
+        await addToAllowlist(threatPath, 'Added from scan threat result')
+      } catch (err) {
+        failedCount++
+        console.error(`[ScanPage] Add trust failed: ${threatPath}`, err)
+      }
+    }
+
+    setThreatAction(null)
+    setSelectedThreatPaths([])
+
+    if (failedCount > 0) {
+      addToast('error', `添加信任完成，${failedCount} 个文件处理失败`)
+    } else {
+      addToast('success', `已添加 ${selectedThreats.length} 个文件到信任列表`)
+    }
+  }
 
   return (
     <section id="page-scan" className="page">
@@ -337,12 +579,47 @@ const ScanPage: React.FC = () => {
             <p>未检测到威胁，所有文件都是安全的</p>
           </div>
         ) : threats.length > 0 ? (
+          <>
+          <div className="threat-toolbar" role="region" aria-label="威胁处理操作">
+            <div className="threat-toolbar-summary">
+              <AlertTriangle size={18} />
+              <span>已检测到 {threats.length} 个威胁</span>
+              <span className="threat-toolbar-count">已选择 {selectedThreatPaths.length}</span>
+            </div>
+            <div className="threat-toolbar-actions">
+              <button
+                type="button"
+                className="btn btn-danger threat-command"
+                onClick={handleClearThreats}
+                disabled={!hasSelectedThreats || threatAction !== null}
+                title="将选中的威胁文件隔离到隔离区"
+              >
+                {threatAction === 'clear' ? <Loader size={16} className="spinning" /> : <Trash2 size={16} />}
+                <span>清除威胁</span>
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline-primary threat-command"
+                onClick={handleAddTrust}
+                disabled={!hasSelectedThreats || threatAction !== null}
+                title="将选中的威胁文件加入启动信任列表"
+              >
+                {threatAction === 'trust' ? <Loader size={16} className="spinning" /> : <ShieldCheck size={16} />}
+                <span>添加信任</span>
+              </button>
+            </div>
+          </div>
           <div className="threat-scroll">
             <table>
               <thead>
                 <tr>
                   <th className="select-col">
-                    <input type="checkbox" />
+                    <input
+                      type="checkbox"
+                      checked={threatPaths.length > 0 && selectedThreatPaths.length === threatPaths.length}
+                      onChange={(event) => handleSelectAllThreats(event.target.checked)}
+                      aria-label="选择全部威胁"
+                    />
                   </th>
                   <th>文件路径</th>
                   <th>检测结果</th>
@@ -351,13 +628,22 @@ const ScanPage: React.FC = () => {
                 </tr>
               </thead>
               <tbody>
-                {threats.map((threat, index) => (
-                  <tr key={index}>
+                {threats.map((threat, index) => {
+                  const threatPath = getThreatFilePath(threat)
+
+                  return (
+                  <tr key={`${threatPath}-${index}`}>
                     <td className="select-col">
-                      <input type="checkbox" />
+                      <input
+                        type="checkbox"
+                        checked={selectedThreatPaths.includes(threatPath)}
+                        disabled={!threatPath}
+                        onChange={() => toggleThreatSelection(threatPath)}
+                        aria-label={`选择威胁文件 ${threatPath || index + 1}`}
+                      />
                     </td>
-                    <td className="path-cell">
-                      {threat.description || threat.fileId || '未知文件'}
+                    <td className="path-cell" title={threatPath || undefined}>
+                      {threatPath || '未知文件'}
                     </td>
                     <td>
                       <strong style={{ color: threat.verdict === 'malware' ? 'var(--color-danger)' : 'var(--color-warning)' }}>
@@ -369,10 +655,12 @@ const ScanPage: React.FC = () => {
                       {getSeverityBadge(threat.verdict)}
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
+          </>
         ) : null}
       </div>
     </section>

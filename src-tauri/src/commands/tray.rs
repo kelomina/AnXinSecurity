@@ -51,10 +51,7 @@ pub async fn request_exit_confirmation(
 /// 中文关键词：退出，清理，停止监控，停止引擎，保存状态，优雅退出
 /// English keywords: exit, cleanup, stop monitoring, stop engine, save state, graceful exit
 #[tauri::command]
-pub async fn execute_exit(
-    app_handle: AppHandle,
-    keep_service: bool,
-) -> Result<(), String> {
+pub async fn execute_exit(app_handle: AppHandle, keep_service: bool) -> Result<(), String> {
     // 通知前端即将退出
     let _ = app_handle.emit("app-exiting", ());
 

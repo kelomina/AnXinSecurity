@@ -1,8 +1,8 @@
 // 训练命令 — ML 模型训练操作
 // Training commands — ML model training operations
-use std::sync::Arc;
-use crate::services::training_service::TrainingService;
 use crate::services::engine_service::EngineService;
+use crate::services::training_service::TrainingService;
+use std::sync::Arc;
 
 /// 函数名称：train_from_path
 /// 函数作用：从指定目录加载训练样本并提交训练任务。
@@ -24,7 +24,9 @@ pub async fn train_from_path(
     app_handle: tauri::AppHandle,
 ) -> Result<bool, String> {
     let eng = engine.clone();
-    training.train_from_path(&path, eng.as_ref(), &app_handle).await?;
+    training
+        .train_from_path(&path, eng.as_ref(), &app_handle)
+        .await?;
     Ok(true)
 }
 
@@ -51,9 +53,7 @@ pub async fn get_training_status(
 /// 中文关键词：取消训练，重置训练状态
 /// English keywords: cancel training, reset training status
 #[tauri::command]
-pub async fn cancel_training(
-    training: tauri::State<'_, TrainingService>,
-) -> Result<bool, String> {
+pub async fn cancel_training(training: tauri::State<'_, TrainingService>) -> Result<bool, String> {
     training.reset();
     Ok(true)
 }

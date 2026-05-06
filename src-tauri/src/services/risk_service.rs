@@ -1,12 +1,12 @@
 // ETW 风险分析服务 — 对 ETW 规则匹配事件进行风险评分和二次研判
 // ETW risk analysis service — performs risk scoring and secondary assessment on ETW rule-matched events
-use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
 
-use crate::services::interception_service::{InterceptionService, InterceptionEntry};
-use crate::services::trust_service::TrustService;
 use crate::services::behavior_service::BehaviorService;
+use crate::services::interception_service::{InterceptionEntry, InterceptionService};
+use crate::services::trust_service::TrustService;
 
 /// 风险事件 / Risk event
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,7 +177,10 @@ impl RiskService {
             {
                 let mut analyzed = self.analyzed_pids.lock().unwrap_or_else(|e| e.into_inner());
                 if analyzed.contains(&event.pid) {
-                    eprintln!("[RiskService] PID {} already analyzed, skipping interception", event.pid);
+                    eprintln!(
+                        "[RiskService] PID {} already analyzed, skipping interception",
+                        event.pid
+                    );
                 } else {
                     analyzed.insert(event.pid);
                     // 清理过期条目（简单策略：保留最近1000个）/ Clean expired (simple: keep last 1000)

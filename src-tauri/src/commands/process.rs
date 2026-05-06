@@ -1,10 +1,10 @@
 // 进程控制命令 — 使用 libloading 动态加载 ntdll Native API
 // Process control commands — uses libloading to dynamically load ntdll Native API
-use windows::Win32::Foundation::*;
-use windows::Win32::System::Threading::*;
-use windows::Win32::System::Diagnostics::ToolHelp::*;
-use libloading::{Library, Symbol};
 use crate::services::process_monitor_service::ProcessMonitorService;
+use libloading::{Library, Symbol};
+use windows::Win32::Foundation::*;
+use windows::Win32::System::Diagnostics::ToolHelp::*;
+use windows::Win32::System::Threading::*;
 
 /// 保护进程白名单 / Protected process whitelist
 const PROTECTED_PROCESSES: &[&str] = &[
@@ -17,9 +17,8 @@ const PROTECTED_PROCESSES: &[&str] = &[
 
 /// 检查进程是否为受保护的系统进程 / Check if process is a protected system process
 fn is_protected_process(pid: u32) -> Result<bool, String> {
-    let snapshot = unsafe {
-        CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-    }.map_err(|e| format!("Failed to create process snapshot: {}", e))?;
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+        .map_err(|e| format!("Failed to create process snapshot: {}", e))?;
 
     let mut entry = PROCESSENTRY32W {
         dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
@@ -31,12 +30,16 @@ fn is_protected_process(pid: u32) -> Result<bool, String> {
             loop {
                 if entry.th32ProcessID == pid {
                     let exe_name = String::from_utf16_lossy(
-                        &entry.szExeFile[..entry.szExeFile.iter()
+                        &entry.szExeFile[..entry
+                            .szExeFile
+                            .iter()
                             .position(|&c| c == 0)
-                            .unwrap_or(entry.szExeFile.len())]
-                    ).to_lowercase();
+                            .unwrap_or(entry.szExeFile.len())],
+                    )
+                    .to_lowercase();
 
-                    let is_protected = PROTECTED_PROCESSES.iter()
+                    let is_protected = PROTECTED_PROCESSES
+                        .iter()
                         .any(|&name| exe_name.contains(name));
 
                     CloseHandle(snapshot).ok();
@@ -69,11 +72,8 @@ pub async fn suspend_process(pid: u32) -> Result<bool, String> {
     }
 
     unsafe {
-        let handle = OpenProcess(
-            PROCESS_SUSPEND_RESUME,
-            FALSE,
-            pid
-        ).map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
+        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, pid)
+            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
 
         let result = call_nt_function("NtSuspendProcess", handle);
 
@@ -95,11 +95,8 @@ pub async fn resume_process(pid: u32) -> Result<bool, String> {
     }
 
     unsafe {
-        let handle = OpenProcess(
-            PROCESS_SUSPEND_RESUME,
-            FALSE,
-            pid
-        ).map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
+        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, pid)
+            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
 
         let result = call_nt_function("NtResumeProcess", handle);
 
@@ -124,11 +121,8 @@ pub async fn terminate_process(pid: u32) -> Result<bool, String> {
     }
 
     unsafe {
-        let handle = OpenProcess(
-            PROCESS_TERMINATE,
-            FALSE,
-            pid
-        ).map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
+        let handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid)
+            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
 
         let result = TerminateProcess(handle, 1);
 
@@ -145,8 +139,8 @@ pub async fn terminate_process(pid: u32) -> Result<bool, String> {
 /// 动态加载 ntdll.dll 并调用指定 NT 函数 / Dynamically load ntdll.dll and call named NT function
 /// 使用 libloading 避免 windows-core 版本冲突 / Uses libloading to avoid windows-core version conflicts
 unsafe fn call_nt_function(func_name: &str, handle: HANDLE) -> Result<bool, String> {
-    let ntdll = Library::new("ntdll.dll")
-        .map_err(|e| format!("Failed to load ntdll.dll: {}", e))?;
+    let ntdll =
+        Library::new("ntdll.dll").map_err(|e| format!("Failed to load ntdll.dll: {}", e))?;
 
     let func: Symbol<unsafe extern "system" fn(HANDLE) -> i32> = ntdll
         .get(func_name.as_bytes())
@@ -158,7 +152,10 @@ unsafe fn call_nt_function(func_name: &str, handle: HANDLE) -> Result<bool, Stri
     if status == 0 {
         Ok(true)
     } else {
-        Err(format!("{} failed with status: 0x{:X}", func_name, status as u32))
+        Err(format!(
+            "{} failed with status: 0x{:X}",
+            func_name, status as u32
+        ))
     }
 }
 
@@ -175,11 +172,8 @@ pub async fn terminate_process_internal(pid: u32) -> Result<bool, String> {
     }
 
     unsafe {
-        let handle = OpenProcess(
-            PROCESS_TERMINATE,
-            FALSE,
-            pid
-        ).map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
+        let handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid)
+            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
 
         let result = TerminateProcess(handle, 1);
 
@@ -211,7 +205,13 @@ pub async fn start_process_watcher(
 ) -> Result<bool, String> {
     // ProcessMonitorService 需要可变引用，但 Tauri state 是共享引用
     // 使用内部 Mutex 来获取可变性
-    watcher.start(&injector_x64, &injector_x86, &dll_x64, &dll_x86, interval_ms)
+    watcher.start(
+        &injector_x64,
+        &injector_x86,
+        &dll_x64,
+        &dll_x86,
+        interval_ms,
+    )
 }
 
 /// 函数名称：stop_process_watcher

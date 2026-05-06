@@ -1,11 +1,11 @@
 use std::collections::{HashMap, VecDeque};
+use std::fs::File;
 use std::io::Read;
 use std::sync::Mutex;
 use std::time::Instant;
-use std::fs::File;
 
-use sha2::{Sha256, Digest};
 use libloading::{Library, Symbol};
+use sha2::{Digest, Sha256};
 
 const DEFAULT_MAX_ENTRIES: usize = 4096;
 const DEFAULT_TTL_MS: u64 = 600_000;
@@ -87,28 +87,28 @@ pub struct WinTrustData {
 #[repr(C)]
 struct CertInfo {
     version: u32,
-    serial_number: [u8; 20], // CRYPT_INTEGER_BLOB
-    signature_algorithm: [u8; 16], // CRYPT_ALGORITHM_IDENTIFIER
-    issuer: [u8; 16], // CERT_NAME_BLOB
-    not_before: [u32; 2], // FILETIME
-    not_after: [u32; 2], // FILETIME
-    subject: [u8; 16], // CERT_NAME_BLOB
+    serial_number: [u8; 20],           // CRYPT_INTEGER_BLOB
+    signature_algorithm: [u8; 16],     // CRYPT_ALGORITHM_IDENTIFIER
+    issuer: [u8; 16],                  // CERT_NAME_BLOB
+    not_before: [u32; 2],              // FILETIME
+    not_after: [u32; 2],               // FILETIME
+    subject: [u8; 16],                 // CERT_NAME_BLOB
     subject_public_key_info: [u8; 24], // CERT_PUBLIC_KEY_INFO
 }
 
 #[repr(C)]
 struct CMSSignerInfo {
     version: u32,
-    issuer: [u8; 16], // CERT_NAME_BLOB
+    issuer: [u8; 16],        // CERT_NAME_BLOB
     serial_number: [u8; 20], // CRYPT_INTEGER_BLOB
 }
 
 #[repr(C)]
 struct Win32FileAttributeData {
     file_attributes: u32,
-    creation_time: [u32; 2], // FILETIME
+    creation_time: [u32; 2],    // FILETIME
     last_access_time: [u32; 2], // FILETIME
-    last_write_time: [u32; 2], // FILETIME
+    last_write_time: [u32; 2],  // FILETIME
     file_size_high: u32,
     file_size_low: u32,
 }
@@ -185,8 +185,16 @@ impl TrustService {
     /// English keywords: cache config, LRU cache, signature cache, TTL, cache capacity
     pub fn set_cache_config(&self, max_entries: u32, ttl_ms: u32) {
         let mut cache = self.cache.lock().unwrap();
-        cache.max_entries = if max_entries > 0 { max_entries as usize } else { DEFAULT_MAX_ENTRIES };
-        cache.ttl_ms = if ttl_ms > 0 { ttl_ms as u64 } else { DEFAULT_TTL_MS };
+        cache.max_entries = if max_entries > 0 {
+            max_entries as usize
+        } else {
+            DEFAULT_MAX_ENTRIES
+        };
+        cache.ttl_ms = if ttl_ms > 0 {
+            ttl_ms as u64
+        } else {
+            DEFAULT_TTL_MS
+        };
         cache.evict_if_needed();
     }
 
@@ -214,7 +222,7 @@ impl TrustService {
                     let trusted = entry.trusted;
                     let status = entry.status;
                     drop(cache); // 显式释放
-                    // 重新获取锁以更新 LRU
+                                 // 重新获取锁以更新 LRU
                     let mut cache2 = self.cache.lock().unwrap();
                     cache2.touch_lru(&norm);
                     return Ok(SignatureVerdict { trusted, status });
@@ -226,12 +234,15 @@ impl TrustService {
 
         {
             let mut cache = self.cache.lock().unwrap();
-            cache.upsert(norm, CacheEntry {
-                status: result.status,
-                trusted: result.trusted,
-                write_time,
-                cached_at_ms: now_ms,
-            });
+            cache.upsert(
+                norm,
+                CacheEntry {
+                    status: result.status,
+                    trusted: result.trusted,
+                    write_time,
+                    cached_at_ms: now_ms,
+                },
+            );
             cache.evict_if_needed();
         }
 
@@ -274,7 +285,9 @@ impl TrustService {
 
         let hash_hex = {
             let cache = self.scan_cache.lock().unwrap();
-            cache.path_to_hash.get(&key)
+            cache
+                .path_to_hash
+                .get(&key)
                 .filter(|e| e.write_time == wt && !e.hash_hex.is_empty())
                 .map(|e| e.hash_hex.clone())
                 .unwrap_or_default()
@@ -282,10 +295,13 @@ impl TrustService {
 
         let hash_hex = if hash_hex.is_empty() {
             let h = sha256_hex_of_file(file_path)?;
-            self.scan_cache.lock().unwrap().path_to_hash.insert(key, ScanHashEntry {
-                write_time: wt,
-                hash_hex: h.clone(),
-            });
+            self.scan_cache.lock().unwrap().path_to_hash.insert(
+                key,
+                ScanHashEntry {
+                    write_time: wt,
+                    hash_hex: h.clone(),
+                },
+            );
             h
         } else {
             hash_hex
@@ -293,8 +309,8 @@ impl TrustService {
 
         let mut cache = self.scan_cache.lock().unwrap();
         if let Some(entry) = cache.hash_to_verdict.get(&hash_hex) {
-            let fresh = now_ms >= entry.cached_at_ms
-                && (now_ms - entry.cached_at_ms) <= cache.ttl_ms;
+            let fresh =
+                now_ms >= entry.cached_at_ms && (now_ms - entry.cached_at_ms) <= cache.ttl_ms;
             if fresh {
                 return Ok(Some((entry.verdict, hash_hex)));
             } else {
@@ -317,10 +333,13 @@ impl TrustService {
         }
         let now_ms = monotonic_ms();
         let mut cache = self.scan_cache.lock().unwrap();
-        cache.hash_to_verdict.insert(hash_hex.to_string(), ScanVerdictEntry {
-            verdict,
-            cached_at_ms: now_ms,
-        });
+        cache.hash_to_verdict.insert(
+            hash_hex.to_string(),
+            ScanVerdictEntry {
+                verdict,
+                cached_at_ms: now_ms,
+            },
+        );
         Ok(())
     }
 }
@@ -363,11 +382,18 @@ impl InnerCache {
 /// 中文关键词：路径规范化，标准化路径，小写路径，路径前缀，缓存键
 /// English keywords: path normalization, canonical path, lowercase path, path prefix, cache key
 fn normalize_path(s: &str) -> String {
-    let mut out: String = s.chars().map(|c| {
-        if c == '/' { '\\' }
-        else if c.is_ascii_uppercase() { c.to_ascii_lowercase() }
-        else { c }
-    }).collect();
+    let mut out: String = s
+        .chars()
+        .map(|c| {
+            if c == '/' {
+                '\\'
+            } else if c.is_ascii_uppercase() {
+                c.to_ascii_lowercase()
+            } else {
+                c
+            }
+        })
+        .collect();
     if out.starts_with("\\\\?\\") {
         out = out[4..].to_string();
     }
@@ -397,8 +423,9 @@ fn file_write_time(file_path: &str) -> Option<i64> {
     let wide = to_wide(file_path);
     unsafe {
         let kernel32 = Library::new("kernel32.dll").ok()?;
-        let get_attrs: Symbol<unsafe extern "system" fn(*const u16, u32, *mut Win32FileAttributeData) -> i32> =
-            kernel32.get(b"GetFileAttributesExW").ok()?;
+        let get_attrs: Symbol<
+            unsafe extern "system" fn(*const u16, u32, *mut Win32FileAttributeData) -> i32,
+        > = kernel32.get(b"GetFileAttributesExW").ok()?;
 
         let mut fad: Win32FileAttributeData = std::mem::zeroed();
         let ok = get_attrs(wide.as_ptr(), GET_FILEEX_INFO_LEVELS_STANDARD, &mut fad);
@@ -406,7 +433,8 @@ fn file_write_time(file_path: &str) -> Option<i64> {
             return None;
         }
         // FILETIME is 2 u32s: low then high
-        let ft: i64 = (fad.last_write_time[1] as i64) << 32 | (fad.last_write_time[0] as i64 as u32 as i64);
+        let ft: i64 =
+            (fad.last_write_time[1] as i64) << 32 | (fad.last_write_time[0] as i64 as u32 as i64);
         Some(ft)
     }
 }
@@ -434,7 +462,12 @@ fn verify_file_no_cache(file_path: &str) -> SignatureVerdict {
     let wide = to_wide(file_path);
     let status = unsafe {
         match Library::new("wintrust.dll") {
-            Ok(wintrust) => match wintrust.get::<unsafe extern "system" fn(isize, *const Guid, *const WinTrustData) -> i32>(b"WinVerifyTrust") {
+            Ok(wintrust) => match wintrust.get::<unsafe extern "system" fn(
+                isize,
+                *const Guid,
+                *const WinTrustData,
+            ) -> i32>(b"WinVerifyTrust")
+            {
                 Ok(verify) => {
                     let file_info = WinTrustFileInfo {
                         cb_struct: std::mem::size_of::<WinTrustFileInfo>() as u32,
@@ -477,51 +510,81 @@ fn verify_file_no_cache(file_path: &str) -> SignatureVerdict {
 }
 
 unsafe fn get_signer_info_impl(file_path: &str) -> Result<SignerInfo, String> {
-    let crypt32 = Library::new("crypt32.dll")
-        .map_err(|e| format!("Failed to load crypt32.dll: {}", e))?;
+    let crypt32 =
+        Library::new("crypt32.dll").map_err(|e| format!("Failed to load crypt32.dll: {}", e))?;
 
     type CryptQueryObjectFn = unsafe extern "system" fn(
-        u32, *const u16, u32, u32, u32, u32, *mut u32, *mut u32, *mut u32,
-        *mut *mut std::ffi::c_void, *mut *mut std::ffi::c_void, *mut *mut std::ffi::c_void,
+        u32,
+        *const u16,
+        u32,
+        u32,
+        u32,
+        u32,
+        *mut u32,
+        *mut u32,
+        *mut u32,
+        *mut *mut std::ffi::c_void,
+        *mut *mut std::ffi::c_void,
+        *mut *mut std::ffi::c_void,
     ) -> i32;
-    let crypt_query: Symbol<CryptQueryObjectFn> = crypt32.get(b"CryptQueryObject")
+    let crypt_query: Symbol<CryptQueryObjectFn> = crypt32
+        .get(b"CryptQueryObject")
         .map_err(|e| format!("Failed to load CryptQueryObject: {}", e))?;
 
     type CryptMsgCloseFn = unsafe extern "system" fn(*mut std::ffi::c_void) -> i32;
-    let crypt_msg_close: Symbol<CryptMsgCloseFn> = crypt32.get(b"CryptMsgClose")
+    let crypt_msg_close: Symbol<CryptMsgCloseFn> = crypt32
+        .get(b"CryptMsgClose")
         .map_err(|e| format!("Failed to load CryptMsgClose: {}", e))?;
 
     type CertCloseStoreFn = unsafe extern "system" fn(*mut std::ffi::c_void, u32) -> i32;
-    let cert_close_store: Symbol<CertCloseStoreFn> = crypt32.get(b"CertCloseStore")
+    let cert_close_store: Symbol<CertCloseStoreFn> = crypt32
+        .get(b"CertCloseStore")
         .map_err(|e| format!("Failed to load CertCloseStore: {}", e))?;
 
     type CryptMsgGetParamFn = unsafe extern "system" fn(
-        *mut std::ffi::c_void, u32, u32, *mut std::ffi::c_void, *mut u32,
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+        *mut std::ffi::c_void,
+        *mut u32,
     ) -> i32;
-    let crypt_msg_get_param: Symbol<CryptMsgGetParamFn> = crypt32.get(b"CryptMsgGetParam")
+    let crypt_msg_get_param: Symbol<CryptMsgGetParamFn> = crypt32
+        .get(b"CryptMsgGetParam")
         .map_err(|e| format!("Failed to load CryptMsgGetParam: {}", e))?;
 
     type CertFindCertificateInStoreFn = unsafe extern "system" fn(
-        *mut std::ffi::c_void, u32, u32, u32, *const std::ffi::c_void,
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+        u32,
+        *const std::ffi::c_void,
         *const std::ffi::c_void,
     ) -> *mut std::ffi::c_void;
-    let cert_find: Symbol<CertFindCertificateInStoreFn> = crypt32.get(b"CertFindCertificateInStore")
+    let cert_find: Symbol<CertFindCertificateInStoreFn> = crypt32
+        .get(b"CertFindCertificateInStore")
         .map_err(|e| format!("Failed to load CertFindCertificateInStore: {}", e))?;
 
     type CertGetNameStringWFn = unsafe extern "system" fn(
-        *const std::ffi::c_void, u32, u32, *const std::ffi::c_void, *mut u16, u32,
+        *const std::ffi::c_void,
+        u32,
+        u32,
+        *const std::ffi::c_void,
+        *mut u16,
+        u32,
     ) -> u32;
-    let cert_get_name: Symbol<CertGetNameStringWFn> = crypt32.get(b"CertGetNameStringW")
+    let cert_get_name: Symbol<CertGetNameStringWFn> = crypt32
+        .get(b"CertGetNameStringW")
         .map_err(|e| format!("Failed to load CertGetNameStringW: {}", e))?;
 
     type CertFreeCertificateContextFn = unsafe extern "system" fn(*const std::ffi::c_void) -> i32;
-    let cert_free: Symbol<CertFreeCertificateContextFn> = crypt32.get(b"CertFreeCertificateContext")
+    let cert_free: Symbol<CertFreeCertificateContextFn> = crypt32
+        .get(b"CertFreeCertificateContext")
         .map_err(|e| format!("Failed to load CertFreeCertificateContext: {}", e))?;
 
-    type CertGetCertificateContextPropertyFn = unsafe extern "system" fn(
-        *const std::ffi::c_void, u32, *mut u8, *mut u32,
-    ) -> i32;
-    let cert_get_prop: Symbol<CertGetCertificateContextPropertyFn> = crypt32.get(b"CertGetCertificateContextProperty")
+    type CertGetCertificateContextPropertyFn =
+        unsafe extern "system" fn(*const std::ffi::c_void, u32, *mut u8, *mut u32) -> i32;
+    let cert_get_prop: Symbol<CertGetCertificateContextPropertyFn> = crypt32
+        .get(b"CertGetCertificateContextProperty")
         .map_err(|e| format!("Failed to load CertGetCertificateContextProperty: {}", e))?;
 
     let wide = to_wide(file_path);
@@ -547,22 +610,40 @@ unsafe fn get_signer_info_impl(file_path: &str) -> Result<SignerInfo, String> {
     );
 
     if ok == 0 || store.is_null() || msg.is_null() {
-        if !store.is_null() { cert_close_store(store, 0); }
-        if !msg.is_null() { crypt_msg_close(msg); }
+        if !store.is_null() {
+            cert_close_store(store, 0);
+        }
+        if !msg.is_null() {
+            crypt_msg_close(msg);
+        }
         return Err("File has no embedded signature".to_string());
     }
 
     let subject = cert_name_string_inner(
-        store, msg, false,
-        *crypt_msg_get_param, *cert_find, *cert_get_name, *cert_free,
+        store,
+        msg,
+        false,
+        *crypt_msg_get_param,
+        *cert_find,
+        *cert_get_name,
+        *cert_free,
     );
     let issuer = cert_name_string_inner(
-        store, msg, true,
-        *crypt_msg_get_param, *cert_find, *cert_get_name, *cert_free,
+        store,
+        msg,
+        true,
+        *crypt_msg_get_param,
+        *cert_find,
+        *cert_get_name,
+        *cert_free,
     );
     let thumbprint = cert_thumbprint_inner(
-        store, msg,
-        *crypt_msg_get_param, *cert_find, *cert_get_prop, *cert_free,
+        store,
+        msg,
+        *crypt_msg_get_param,
+        *cert_find,
+        *cert_get_prop,
+        *cert_free,
     );
 
     crypt_msg_close(msg);
@@ -579,19 +660,51 @@ unsafe fn cert_name_string_inner(
     store: *mut std::ffi::c_void,
     msg: *mut std::ffi::c_void,
     is_issuer: bool,
-    get_param: unsafe extern "system" fn(*mut std::ffi::c_void, u32, u32, *mut std::ffi::c_void, *mut u32) -> i32,
-    find_cert: unsafe extern "system" fn(*mut std::ffi::c_void, u32, u32, u32, *const std::ffi::c_void, *const std::ffi::c_void) -> *mut std::ffi::c_void,
-    get_name: unsafe extern "system" fn(*const std::ffi::c_void, u32, u32, *const std::ffi::c_void, *mut u16, u32) -> u32,
+    get_param: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+        *mut std::ffi::c_void,
+        *mut u32,
+    ) -> i32,
+    find_cert: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+        u32,
+        *const std::ffi::c_void,
+        *const std::ffi::c_void,
+    ) -> *mut std::ffi::c_void,
+    get_name: unsafe extern "system" fn(
+        *const std::ffi::c_void,
+        u32,
+        u32,
+        *const std::ffi::c_void,
+        *mut u16,
+        u32,
+    ) -> u32,
     free_cert: unsafe extern "system" fn(*const std::ffi::c_void) -> i32,
 ) -> Option<String> {
     let mut size: u32 = 0;
-    let ok = get_param(msg, CMSG_SIGNER_INFO_PARAM, 0, std::ptr::null_mut(), &mut size);
+    let ok = get_param(
+        msg,
+        CMSG_SIGNER_INFO_PARAM,
+        0,
+        std::ptr::null_mut(),
+        &mut size,
+    );
     if ok == 0 || size == 0 {
         return None;
     }
 
     let mut buf: Vec<u8> = vec![0u8; size as usize];
-    let ok = get_param(msg, CMSG_SIGNER_INFO_PARAM, 0, buf.as_mut_ptr() as _, &mut size);
+    let ok = get_param(
+        msg,
+        CMSG_SIGNER_INFO_PARAM,
+        0,
+        buf.as_mut_ptr() as _,
+        &mut size,
+    );
     if ok == 0 {
         return None;
     }
@@ -617,7 +730,14 @@ unsafe fn cert_name_string_inner(
 
     let flags = if is_issuer { CERT_NAME_ISSUER_FLAG } else { 0 };
     let mut name_buf: Vec<u16> = vec![0u16; 512];
-    let got = get_name(cert, CERT_NAME_SIMPLE_DISPLAY_TYPE, flags, std::ptr::null(), name_buf.as_mut_ptr(), 512);
+    let got = get_name(
+        cert,
+        CERT_NAME_SIMPLE_DISPLAY_TYPE,
+        flags,
+        std::ptr::null(),
+        name_buf.as_mut_ptr(),
+        512,
+    );
 
     free_cert(cert);
 
@@ -631,19 +751,44 @@ unsafe fn cert_name_string_inner(
 unsafe fn cert_thumbprint_inner(
     store: *mut std::ffi::c_void,
     msg: *mut std::ffi::c_void,
-    get_param: unsafe extern "system" fn(*mut std::ffi::c_void, u32, u32, *mut std::ffi::c_void, *mut u32) -> i32,
-    find_cert: unsafe extern "system" fn(*mut std::ffi::c_void, u32, u32, u32, *const std::ffi::c_void, *const std::ffi::c_void) -> *mut std::ffi::c_void,
+    get_param: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+        *mut std::ffi::c_void,
+        *mut u32,
+    ) -> i32,
+    find_cert: unsafe extern "system" fn(
+        *mut std::ffi::c_void,
+        u32,
+        u32,
+        u32,
+        *const std::ffi::c_void,
+        *const std::ffi::c_void,
+    ) -> *mut std::ffi::c_void,
     get_prop: unsafe extern "system" fn(*const std::ffi::c_void, u32, *mut u8, *mut u32) -> i32,
     free_cert: unsafe extern "system" fn(*const std::ffi::c_void) -> i32,
 ) -> Option<String> {
     let mut size: u32 = 0;
-    let ok = get_param(msg, CMSG_SIGNER_INFO_PARAM, 0, std::ptr::null_mut(), &mut size);
+    let ok = get_param(
+        msg,
+        CMSG_SIGNER_INFO_PARAM,
+        0,
+        std::ptr::null_mut(),
+        &mut size,
+    );
     if ok == 0 || size == 0 {
         return None;
     }
 
     let mut buf: Vec<u8> = vec![0u8; size as usize];
-    let ok = get_param(msg, CMSG_SIGNER_INFO_PARAM, 0, buf.as_mut_ptr() as _, &mut size);
+    let ok = get_param(
+        msg,
+        CMSG_SIGNER_INFO_PARAM,
+        0,
+        buf.as_mut_ptr() as _,
+        &mut size,
+    );
     if ok == 0 {
         return None;
     }
@@ -677,7 +822,8 @@ unsafe fn cert_thumbprint_inner(
         return None;
     }
 
-    let hex: String = hash[..hash_len as usize].iter()
+    let hex: String = hash[..hash_len as usize]
+        .iter()
         .map(|b| format!("{:02x}", b))
         .collect();
     Some(hex)
@@ -694,12 +840,13 @@ unsafe fn cert_thumbprint_inner(
 /// 中文关键词：SHA-256，文件哈希，哈希计算，sha2，十六进制
 /// English keywords: SHA-256, file hash, hash computation, sha2, hex
 fn sha256_hex_of_file(file_path: &str) -> Result<String, String> {
-    let mut file = File::open(file_path)
-        .map_err(|e| format!("Failed to open file for SHA-256: {}", e))?;
+    let mut file =
+        File::open(file_path).map_err(|e| format!("Failed to open file for SHA-256: {}", e))?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65536];
     loop {
-        let n = file.read(&mut buf)
+        let n = file
+            .read(&mut buf)
             .map_err(|e| format!("Failed to read file for SHA-256: {}", e))?;
         if n == 0 {
             break;

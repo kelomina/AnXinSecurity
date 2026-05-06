@@ -1,5 +1,5 @@
 use anxin_security::services::interception_service::{
-    InterceptionService, InterceptionEntry, InterceptionDecision,
+    InterceptionDecision, InterceptionEntry, InterceptionService,
 };
 
 mod common;

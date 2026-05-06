@@ -1,10 +1,14 @@
 use std::collections::{HashMap, HashSet};
 use std::os::windows::process::CommandExt;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 use std::thread;
 use std::time::Duration;
 
+use crate::services::path_policy_service::should_skip_security_scan;
 use libloading::{Library, Symbol};
 
 /// 进程架构
@@ -43,12 +47,13 @@ impl ProcessMonitorService {
     }
 
     /// 函数名称：start
-    /// 函数作用：启动进程监控后台线程，轮询新进程并注入未签名进程。
-    /// Purpose: Starts the process monitor background thread, polls new processes and injects unsigned ones.
+    /// 函数作用：启动进程监控后台线程；注入处置前实时读取排除项和允许列表，命中时跳过未签名进程注入。
+    /// Function name: start
+    /// Purpose: Starts the process monitor thread; reads exclusions and allowlist before injection handling and skips matching unsigned processes.
     /// 调用方：commands::process::start_process_watcher
     /// Called by: commands::process::start_process_watcher
-    /// 中文关键词：进程监控，启动监控，进程轮询，DLL注入
-    /// English keywords: process monitor, start monitoring, process polling, DLL injection
+    /// 中文关键词：进程监控，启动监控，进程轮询，DLL注入，排除项生效，允许列表生效，跳过注入，运行时列表，路径策略，实时保护
+    /// English keywords: process monitor, start monitoring, process polling, DLL injection, exclusion effective, allowlist effective, skip injection, runtime list, path policy, realtime protection
     pub fn start(
         &self,
         injector_x64: &str,
@@ -127,6 +132,23 @@ impl ProcessMonitorService {
                         continue;
                     }
 
+                    match should_skip_security_scan(&image_path) {
+                        Ok(true) => {
+                            eprintln!(
+                                "[ProcessMonitor] Skipped by exclusions or allowlist: {}",
+                                image_path
+                            );
+                            continue;
+                        }
+                        Ok(false) => {}
+                        Err(e) => {
+                            eprintln!(
+                                "[ProcessMonitor] Failed to load path policy for {}: {}",
+                                image_path, e
+                            );
+                        }
+                    }
+
                     // 检查签名缓存
                     let signed = {
                         let cache = monitor_sign_cache.lock().unwrap();
@@ -136,7 +158,10 @@ impl ProcessMonitorService {
                         s
                     } else {
                         let s = verify_file_signed(&image_path);
-                        monitor_sign_cache.lock().unwrap().insert(image_path.clone(), s);
+                        monitor_sign_cache
+                            .lock()
+                            .unwrap()
+                            .insert(image_path.clone(), s);
                         s
                     };
 
@@ -257,8 +282,8 @@ fn to_wide(s: &str) -> Vec<u16> {
 /// 中文关键词：进程枚举，当前进程，PID收集，ToolHelp，进程快照
 /// English keywords: process enumeration, current processes, PID collection, ToolHelp, process snapshot
 fn collect_current_pids() -> HashSet<u32> {
-    use windows::Win32::System::Diagnostics::ToolHelp::*;
     use windows::Win32::Foundation::*;
+    use windows::Win32::System::Diagnostics::ToolHelp::*;
 
     let mut pids = HashSet::new();
     unsafe {
@@ -287,9 +312,9 @@ fn collect_current_pids() -> HashSet<u32> {
 /// 中文关键词：进程路径，镜像路径，进程查询，OpenProcess
 /// English keywords: process path, image path, process query, OpenProcess
 fn query_process_image_path(pid: u32) -> Option<String> {
-    use windows::Win32::System::Threading::*;
-    use windows::Win32::Foundation::*;
     use windows::core::PWSTR;
+    use windows::Win32::Foundation::*;
+    use windows::Win32::System::Threading::*;
 
     unsafe {
         let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
@@ -331,14 +356,19 @@ fn verify_file_signed(file_path: &str) -> bool {
                 return false;
             }
         };
-        let verify: Symbol<unsafe extern "system" fn(isize, *const super::trust_service::Guid, *const super::trust_service::WinTrustData) -> i32> =
-            match lib.get(b"WinVerifyTrust") {
-                Ok(f) => f,
-                Err(e) => {
-                    eprintln!("verify_file_signed: failed to load WinVerifyTrust: {}", e);
-                    return false;
-                }
-            };
+        let verify: Symbol<
+            unsafe extern "system" fn(
+                isize,
+                *const super::trust_service::Guid,
+                *const super::trust_service::WinTrustData,
+            ) -> i32,
+        > = match lib.get(b"WinVerifyTrust") {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("verify_file_signed: failed to load WinVerifyTrust: {}", e);
+                return false;
+            }
+        };
 
         let file_info = super::trust_service::WinTrustFileInfo {
             cb_struct: std::mem::size_of::<super::trust_service::WinTrustFileInfo>() as u32,
@@ -348,9 +378,8 @@ fn verify_file_signed(file_path: &str) -> bool {
         };
 
         use super::trust_service::{
-            WinTrustData, WTD_UI_NONE, WTD_REVOKE_NONE, WTD_CHOICE_FILE,
-            WTD_STATEACTION_VERIFY, WTD_STATEACTION_CLOSE, WTD_CACHE_ONLY_URL_RETRIEVAL,
-            ACTION_VERIFY_V2,
+            WinTrustData, ACTION_VERIFY_V2, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE,
+            WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
         };
 
         let mut data = WinTrustData {
@@ -385,8 +414,8 @@ fn verify_file_signed(file_path: &str) -> bool {
 /// 中文关键词：进程架构，IsWow64Process2，x86，x64，WOW64
 /// English keywords: process arch, IsWow64Process2, x86, x64, WOW64
 fn detect_process_arch(pid: u32) -> ProcArch {
-    use windows::Win32::System::Threading::*;
     use windows::Win32::Foundation::*;
+    use windows::Win32::System::Threading::*;
 
     unsafe {
         let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
@@ -408,8 +437,13 @@ fn detect_process_arch(pid: u32) -> ProcArch {
             let mut native_machine: u16 = 0;
             if func(handle, &mut process_machine, &mut native_machine) != 0 {
                 CloseHandle(handle).ok();
-                if process_machine == 0 { // IMAGE_FILE_MACHINE_UNKNOWN
-                    return if native_machine == 0x8664 { ProcArch::X64 } else { ProcArch::X86 };
+                if process_machine == 0 {
+                    // IMAGE_FILE_MACHINE_UNKNOWN
+                    return if native_machine == 0x8664 {
+                        ProcArch::X64
+                    } else {
+                        ProcArch::X86
+                    };
                 }
                 return ProcArch::X86;
             }

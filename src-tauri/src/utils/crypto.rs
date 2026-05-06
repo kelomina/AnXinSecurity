@@ -1,6 +1,6 @@
 // 加密工具 - AES-128-GCM
-use aes_gcm::{Aes128Gcm, Key, Nonce};
 use aes_gcm::aead::{Aead, KeyInit};
+use aes_gcm::{Aes128Gcm, Key, Nonce};
 use rand::RngCore;
 
 pub fn encrypt_data(data: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
@@ -15,7 +15,8 @@ pub fn encrypt_data(data: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
     let nonce = Nonce::from_slice(&nonce_bytes);
 
-    let ciphertext = cipher.encrypt(nonce, data)
+    let ciphertext = cipher
+        .encrypt(nonce, data)
         .map_err(|e| format!("Encryption failed: {}", e))?;
 
     let mut result = Vec::new();
@@ -40,7 +41,8 @@ pub fn decrypt_data(encrypted: &[u8], key: &[u8]) -> Result<Vec<u8>, String> {
     let nonce = Nonce::from_slice(&encrypted[..12]);
     let ciphertext = &encrypted[12..];
 
-    let plaintext = cipher.decrypt(nonce, ciphertext)
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
         .map_err(|e| format!("Decryption failed: {}", e))?;
 
     Ok(plaintext)

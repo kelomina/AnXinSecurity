@@ -1,7 +1,10 @@
 // 进程快照命令 — 启动时进程快照扫描
 // Snapshot commands — startup process snapshot scanning
+use crate::services::engine_service::EngineService;
+use crate::services::scan_result_cache_service::ScanResultCacheService;
 use crate::services::snapshot_service::SnapshotService;
 use crate::services::trust_service::TrustService;
+use std::sync::Arc;
 
 /// 函数名称：take_startup_snapshot
 /// 函数作用：执行启动时进程快照扫描，枚举所有运行进程并验证签名。
@@ -15,9 +18,18 @@ use crate::services::trust_service::TrustService;
 pub async fn take_startup_snapshot(
     snapshot: tauri::State<'_, SnapshotService>,
     trust: tauri::State<'_, TrustService>,
+    engine: tauri::State<'_, Arc<EngineService>>,
+    cache: tauri::State<'_, Arc<ScanResultCacheService>>,
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    let result = snapshot.take_startup_snapshot(&trust, &app_handle)?;
+    let result = snapshot
+        .take_startup_snapshot(
+            &trust,
+            engine.inner().clone(),
+            cache.inner().clone(),
+            &app_handle,
+        )
+        .await?;
     Ok(serde_json::to_value(&result).unwrap_or_default())
 }
 
@@ -39,6 +51,10 @@ pub async fn get_snapshot_result(
             "signedProcesses": 0,
             "unsignedProcesses": 0,
             "pausedProcesses": 0,
+            "scannedModules": 0,
+            "maliciousProcesses": 0,
+            "maliciousModules": 0,
+            "cacheHits": 0,
             "durationMs": 0,
         })),
     }

@@ -156,6 +156,8 @@ helloagents/
 # Runtime data
 data/anxin_signature_db.bin
 data/behavior/
+data/runtime/
+src-tauri/data/
 
 # Tauri
 /src-tauri/target
