@@ -14,14 +14,12 @@ use crate::services::etw_service::EtwService;
 use crate::services::file_monitor_service::FileMonitorService;
 use crate::services::hook_service::HookService;
 use crate::services::interception_service::InterceptionService;
-use crate::services::native_engine_service::NativeEngineService;
 use crate::services::process_monitor_service::ProcessMonitorService;
 use crate::services::process_scanner_service::ProcessScannerService;
 use crate::services::quarantine_service::QuarantineService;
 use crate::services::risk_service::RiskService;
 use crate::services::scan_result_cache_service::ScanResultCacheService;
 use crate::services::snapshot_service::SnapshotService;
-use crate::services::training_service::TrainingService;
 use crate::services::tray_service::TrayService;
 use crate::services::trust_service::TrustService;
 use sqlx::SqlitePool;
@@ -178,22 +176,14 @@ fn main() {
                     return Err(format!("Failed to resolve engine DLL path: {}", e).into());
                 }
             };
-            let native_engine = match NativeEngineService::new(
-                &engine_dll_path.to_string_lossy(),
-                &engine_root_path.to_string_lossy()
-            ) {
-                Ok(engine) => {
-                    eprintln!("[main] Native Axon engine initialized successfully");
-                    Arc::new(engine)
-                }
-                Err(e) => {
-                    eprintln!("[main] Failed to initialize native Axon engine: {}", e);
-                    return Err(format!("Failed to initialize native engine: {}", e).into());
-                }
-            };
-
-            // 初始化引擎服务（包装原生引擎，使用 Arc 共享引用）
-            let engine_service = Arc::new(EngineService::new(native_engine));
+            // 初始化引擎服务（内部持有可启动/停止的原生引擎句柄）
+            let engine_service = Arc::new(
+                EngineService::new(
+                    engine_dll_path.to_string_lossy().to_string(),
+                    engine_root_path.to_string_lossy().to_string(),
+                )
+                .map_err(|e| format!("Failed to initialize native engine: {}", e))?,
+            );
             app.manage(engine_service.clone());
 
             // 初始化扫描结果缓存服务：进程、模块和启动扫描共享同一份 DPAPI runtime 缓存。
@@ -246,14 +236,6 @@ fn main() {
             let trust_service = TrustService::new();
             app.manage(trust_service);
 
-            // 初始化进程监控服务
-            let process_monitor_service = ProcessMonitorService::new();
-            app.manage(process_monitor_service);
-
-            // 初始化文件钩子服务 — 命名管道服务端
-            let hook_service = HookService::new();
-            app.manage(Arc::new(hook_service));
-
             // 初始化拦截队列管理器 — 核心安全组件
             let interception_service = Arc::new(InterceptionService::new());
             app.manage(interception_service.clone());
@@ -263,14 +245,24 @@ fn main() {
             risk_service.set_interception_service(interception_service.clone());
             app.manage(risk_service);
 
+            // 初始化进程监控服务
+            let process_monitor_service = ProcessMonitorService::new();
+            app.manage(process_monitor_service);
+
+            // 初始化文件钩子服务 — 命名管道服务端。
+            // Hook events may immediately enter logs, behavior DB, risk analysis, and interception,
+            // so this starts only after those dependent services have been managed.
+            let hook_service = HookService::new();
+            hook_service
+                .start("anxin_security_filehook", app.handle().clone())
+                .map_err(|e| format!("Failed to start file hook pipe service: {}", e))?;
+            eprintln!("[main] File hook pipe service started");
+            app.manage(Arc::new(hook_service));
+
             // 初始化进程快照服务 — 关联拦截服务
             let snapshot_service = SnapshotService::new();
             snapshot_service.set_interception_service(interception_service.clone());
             app.manage(snapshot_service);
-
-            // 初始化 ML 训练服务
-            let training_service = TrainingService::new();
-            app.manage(training_service);
 
             // 初始化进程扫描服务（新进程恶意代码检测）
             let process_scanner = ProcessScannerService::new();
@@ -424,10 +416,6 @@ fn main() {
             // 进程快照 (2) — 新增
             commands::snapshot::take_startup_snapshot,
             commands::snapshot::get_snapshot_result,
-            // ML训练 (3) — 新增
-            commands::training::train_from_path,
-            commands::training::get_training_status,
-            commands::training::cancel_training,
             // 开发者设置 (2) — 新增
             commands::dev_settings::dev_settings_unlock,
             commands::dev_settings::dev_settings_save,

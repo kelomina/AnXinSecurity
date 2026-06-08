@@ -7,17 +7,21 @@ use std::sync::Arc;
 /// 函数作用：启动文件钩子命名管道服务。
 /// Purpose: Starts the file hook named pipe service.
 /// 参数 pipe_name: 管道名称后缀，默认 "anxin_security_filehook"/ Pipe name suffix
+/// 参数 app_handle: Tauri 应用句柄，用于 HookService 分发事件 / Tauri app handle for event dispatch
 /// 调用方：前端 SettingsPage 或 main.rs 初始化
 /// Called by: Frontend SettingsPage or main.rs initialization
-/// 中文关键词：启动钩子，命名管道启动
-/// English keywords: start hook, named pipe start
+/// 被调用方：HookService::start。
+/// Calls: HookService::start.
+/// 中文关键词：启动钩子，命名管道启动，事件分发
+/// English keywords: start hook, named pipe start, event dispatch
 #[tauri::command]
 pub fn start_hook_service(
     hook: tauri::State<'_, Arc<HookService>>,
     pipe_name: Option<String>,
+    app_handle: tauri::AppHandle,
 ) -> Result<bool, String> {
     let name = pipe_name.unwrap_or_else(|| "anxin_security_filehook".to_string());
-    hook.start(&name)?;
+    hook.start(&name, app_handle)?;
     Ok(true)
 }
 

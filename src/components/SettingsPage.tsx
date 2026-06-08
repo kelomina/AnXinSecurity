@@ -2,40 +2,39 @@
  * 设置页面
  * Settings page
  *
- * 提供通用设置、信任项目、开发者设置、模型训练。
- * Provides general settings, unified trust item management, dev settings, training.
+ * 提供通用设置、信任项目和开发者设置。
+ * Provides general settings, unified trust item management, and dev settings.
  *
- * 中文关键词：设置，信任项目，排除项合并，允许项目合并，训练
- * English keywords: settings, trust items, merged exclusions, merged allowlist, training
+ * 中文关键词：设置，信任项目，排除项合并，允许项目合并
+ * English keywords: settings, trust items, merged exclusions, merged allowlist
  */
 import React, { useEffect, useState } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore, ThemeMode } from '../stores/themeStore'
-import { Moon, Sun, Monitor, Zap, FolderOpen, FilePlus, Trash2, Shield, Plus, Key, Brain, RefreshCw } from 'lucide-react'
+import { Moon, Sun, Monitor, Zap, FolderOpen, FilePlus, Trash2, Shield, Plus, Key } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
 
 import { devSettingsUnlock, devSettingsSave } from '../api/devSettings'
-import { trainFromPath, getTrainingStatus, cancelTraining } from '../api/training'
 
 /**
  * 函数名称：SettingsPage
- * 函数作用：渲染设置页；在单个“信任项目”入口下统一管理允许项目和扫描排除项，并保留通用、开发者和训练设置。
+ * 函数作用：渲染设置页；在单个“信任项目”入口下统一管理允许项目和扫描排除项，并保留通用和开发者设置。
  * Function name: SettingsPage
- * Purpose: Renders the settings page; manages allowed items and scan exclusions through one trust item workflow while keeping general, dev, and training settings.
+ * Purpose: Renders the settings page; manages allowed items and scan exclusions through one trust item workflow while keeping general and dev settings.
  * 调用方：应用路由/页面容器间接渲染本组件；当前仅确认 SettingsPage 作为默认导出被页面注册逻辑使用。
  * Called by: The app route/page container renders this component indirectly; currently confirmed as the default SettingsPage export.
- * 被调用方：useConfigStore 的 loadTrustItems/addTrustItem/removeTrustItem、useThemeStore、Tauri dialog open、devSettingsUnlock、devSettingsSave、trainFromPath、getTrainingStatus、cancelTraining。
- * Calls: useConfigStore loadTrustItems/addTrustItem/removeTrustItem, useThemeStore, Tauri dialog open, devSettingsUnlock, devSettingsSave, trainFromPath, getTrainingStatus, cancelTraining.
+ * 被调用方：useConfigStore 的 loadTrustItems/addTrustItem/removeTrustItem、useThemeStore、Tauri dialog open、devSettingsUnlock、devSettingsSave。
+ * Calls: useConfigStore loadTrustItems/addTrustItem/removeTrustItem, useThemeStore, Tauri dialog open, devSettingsUnlock, devSettingsSave.
  * 参数说明：无 React props。
  * Parameters: No React props.
  * 返回值说明：React.FC 渲染结果；空状态由各列表的 empty-state 分支表达。
  * Returns: React.FC render output; empty list states are rendered by the empty-state branches.
  * 错误处理：设置命令失败时以 alert 或页面消息反馈；不吞掉 Promise 异常。
  * Error handling: Command failures are shown through alerts or page messages; Promise errors are not silently swallowed.
- * 副作用：通过统一信任项目 store action 写入运行时允许项目/排除项、监控配置和训练命令；不直接写配置文件。
- * Side effects: Uses unified trust item store actions to persist runtime allowed items/exclusions, monitoring settings, and training commands; does not write config files directly.
- * 中文关键词：设置页，信任项目，功能合并，允许项目，排除项，扫描生效，监控生效，运行时列表，配置页，模型训练
- * English keywords: settings page, trust items, function merge, allowed items, exclusions, scan effective, monitor effective, runtime lists, config page, model training
+ * 副作用：通过统一信任项目 store action 写入运行时允许项目/排除项和监控配置；不直接写配置文件。
+ * Side effects: Uses unified trust item store actions to persist runtime allowed items/exclusions and monitoring settings; does not write config files directly.
+ * 中文关键词：设置页，信任项目，功能合并，允许项目，排除项，扫描生效，监控生效，运行时列表，配置页
+ * English keywords: settings page, trust items, function merge, allowed items, exclusions, scan effective, monitor effective, runtime lists, config page
  */
 const SettingsPage: React.FC = () => {
   const {
@@ -45,7 +44,7 @@ const SettingsPage: React.FC = () => {
   } = useConfigStore()
   const { themeMode, setThemeMode, animationsEnabled, toggleAnimations } = useThemeStore()
 
-  const [activeTab, setActiveTab] = useState<'general'|'trust'|'dev'|'training'>('general')
+  const [activeTab, setActiveTab] = useState<'general'|'trust'|'dev'>('general')
   const [confirmDeleteTrustIndex, setConfirmDeleteTrustIndex] = useState<number | null>(null)
 
   // 信任项目表单
@@ -58,10 +57,6 @@ const SettingsPage: React.FC = () => {
   const [devData, setDevData] = useState('')
   const [devUnlocked, setDevUnlocked] = useState(false)
   const [devMessage, setDevMessage] = useState('')
-  // 训练
-  const [trainPath, setTrainPath] = useState('')
-  const [trainStatus, setTrainStatus] = useState('idle')
-
   useEffect(() => { loadTrustItems() }, [loadTrustItems])
 
   const themeOptions: { value: ThemeMode; label: string; icon: React.ElementType }[] = [
@@ -119,37 +114,10 @@ const SettingsPage: React.FC = () => {
     catch (e) { setDevMessage(`保存失败: ${e}`) }
   }
 
-  // 训练操作
-  const handleStartTrain = async () => {
-    if (!trainPath.trim()) { alert('请输入训练样本目录路径'); return }
-    try {
-      await trainFromPath(trainPath)
-      setTrainStatus('training')
-      // 轮询训练状态
-      const poll = setInterval(async () => {
-        const status = await getTrainingStatus()
-        if (status === '"completed"' || status === '"failed"') {
-          setTrainStatus(status === '"completed"' ? 'completed' : 'failed')
-          clearInterval(poll)
-        }
-      }, 2000)
-    }
-    catch (e) { alert(`训练启动失败: ${e}`) }
-  }
-  const handleCancelTrain = async () => {
-    await cancelTraining()
-    setTrainStatus('idle')
-  }
-  const handleSelectTrainDir = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择训练样本目录' })
-    if (selected) setTrainPath(selected as string)
-  }
-
   const tabs = [
     { id: 'general' as const, label: '通用设置' },
     { id: 'trust' as const, label: `信任项目 (${trustItems.length})` },
     { id: 'dev' as const, label: '开发者' },
-    { id: 'training' as const, label: '模型训练' },
   ]
 
   return (
@@ -373,46 +341,6 @@ const SettingsPage: React.FC = () => {
                 <button className="btn btn-primary" onClick={handleDevSave}>保存</button>
               </div>
             </div>
-          )}
-        </div>
-      )}
-
-      {/* 模型训练 */}
-      {activeTab === 'training' && (
-        <div className="settings-section card">
-          <h3>ML 模型训练</h3>
-          <p style={{ color: 'var(--muted-fg)', fontSize: '14px', marginBottom: '16px' }}>选择包含恶意样本的目录，提交训练任务给扫描引擎。训练过程可能需要数分钟。</p>
-          <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-            <input type="text" value={trainPath} onChange={(e) => setTrainPath(e.target.value)} placeholder="训练样本目录路径"
-              style={{ flex: 1, padding: '10px 12px', borderRadius: 'var(--radius-medium)', border: '1px solid var(--panel-border)', background: 'var(--panel-bg)', color: 'var(--app-fg)' }} />
-            <button className="btn btn-outline-secondary" onClick={handleSelectTrainDir}><FolderOpen size={18} /></button>
-          </div>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {trainStatus === 'idle' ? (
-              <button className="btn btn-primary" onClick={handleStartTrain} disabled={!trainPath.trim()} style={{ flex: 1 }}>
-                <Brain size={16} />开始训练
-              </button>
-            ) : trainStatus === 'training' ? (
-              <button className="btn btn-warning" onClick={handleCancelTrain} style={{ flex: 1 }}>
-                取消训练
-              </button>
-            ) : (
-              <button className="btn btn-outline-secondary" onClick={() => setTrainStatus('idle')} style={{ flex: 1 }}>
-                <RefreshCw size={16} />重新训练
-              </button>
-            )}
-          </div>
-          {trainStatus === 'training' && (
-            <div style={{ marginTop: '12px', padding: '12px', background: 'var(--bg-tertiary)', borderRadius: '8px' }}>
-              <span style={{ fontSize: '14px', color: 'var(--text-secondary)' }}>训练进行中...请等待完成</span>
-              <div className="progress-bar" style={{ marginTop: '8px' }}><div className="progress-bar scan-indeterminate" /></div>
-            </div>
-          )}
-          {trainStatus === 'completed' && (
-            <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(82,196,26,0.1)', borderRadius: '8px', color: 'var(--success)' }}>训练完成！</div>
-          )}
-          {trainStatus === 'failed' && (
-            <div style={{ marginTop: '12px', padding: '12px', background: 'rgba(255,77,79,0.1)', borderRadius: '8px', color: 'var(--danger)' }}>训练失败，请检查样本和引擎状态。</div>
           )}
         </div>
       )}

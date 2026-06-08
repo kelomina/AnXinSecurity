@@ -132,7 +132,7 @@ export async function stopEngine(): Promise<boolean> {
 }
 
 /**
- * 函数名称：onTrainProgress
+ * 函数名称：onScanProgress
  * 函数作用：监听扫描进度事件。当后端逐文件扫描时通过 Tauri Events 推送进度。
  * Purpose: Listens for scan progress events emitted by the backend during batch scanning.
  * 调用方：scannerStore.startScan() (设置进度监听)
@@ -148,33 +148,6 @@ export function onScanProgress(
   let unlisten: UnlistenFn | null = null
 
   listen('scan-progress', (event) => {
-    callback(event.payload as ScanProgressEvent)
-  }).then((fn) => {
-    unlisten = fn
-  })
-
-  return () => {
-    if (unlisten) {
-      unlisten()
-    }
-  }
-}
-
-/**
- * 函数名称：onTrainProgress
- * 函数作用：监听引擎训练/模型更新进度事件。
- * Purpose: Listens for engine training/model update progress events.
- * 调用方：当前未发现明确调用方
- * Called by: No confirmed caller has been found.
- * 中文关键词：训练进度，模型更新，引擎训练
- * English keywords: training progress, model update, engine training
- */
-export function onTrainProgress(
-  callback: (progress: ScanProgressEvent) => void
-): () => void {
-  let unlisten: UnlistenFn | null = null
-
-  listen('train-progress', (event) => {
     callback(event.payload as ScanProgressEvent)
   }).then((fn) => {
     unlisten = fn

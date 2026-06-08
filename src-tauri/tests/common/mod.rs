@@ -1,6 +1,8 @@
 // 共享测试辅助函数 / Shared test helper functions
 // 用于构造测试数据，仿照 ETW 规则匹配产生的威胁事件格式
 // Used to construct test data, mimicking threat event format from ETW rule matching
+#![allow(dead_code)]
+
 use serde_json::json;
 
 /// 构造一个包含威胁识别字段的 ETW 事件 JSON

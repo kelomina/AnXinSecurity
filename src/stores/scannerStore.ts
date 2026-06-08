@@ -129,14 +129,18 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       })
     })
 
-    let allResults: ScanResult[] = []
+    const allResults: ScanResult[] = []
 
     try {
       // 循环扫描：处理当前批次 → 检查 pending → 继续或结束
       // Loop: process current batch → check pending → continue or finish
-      while (true) {
+      let shouldContinueScanning = true
+      while (shouldContinueScanning) {
         const currentBatch = get().selectedFiles
-        if (currentBatch.length === 0) break
+        if (currentBatch.length === 0) {
+          shouldContinueScanning = false
+          continue
+        }
 
         let batchResults: ScanResult[]
 
@@ -180,7 +184,7 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
         } else if (state.isWalkComplete) {
           // 遍历完成 + 无等待 → 全部扫描完成
           // Walk complete + no pending → all done
-          break
+          shouldContinueScanning = false
         } else {
           // 遍历未完成但无等待文件 → 等待轮询
           // Walk incomplete but no pending → poll and wait

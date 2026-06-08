@@ -174,6 +174,7 @@ impl ScanResultCacheService {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn cached_entry_count_for_test(&self) -> usize {
         self.state
             .lock()

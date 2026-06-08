@@ -46,7 +46,6 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 - **启动快照扫描** — 系统启动时自动扫描运行中进程，快速检测威胁
 - **行为生命周期追踪** — 查看单个进程的详细行为时间线
 - **风险分析引擎** — 基于多维度特征的风险分级评估
-- **ML 机器学习训练** — 集成 LightGBM 模型训练管道
 - **信任项目管理** — 在设置页统一管理启动允许与扫描/监控排除；DPAPI 加密存储运行时数据
 - **文件系统监控** — 实时监控文件创建和修改事件
 - **中英双语国际化** — 支持中文和英文界面切换，可扩展更多语言
@@ -103,7 +102,7 @@ AnXinSecurity/
 │   │   ├── 行为类    behavior.ts
 │   │   ├── 配置类    config.ts, exclusions.ts, allowlist.ts, devSettings.ts
 │   │   ├── 系统类    system.ts, fs.ts, i18n.ts, logs.ts
-│   │   └── 工具类    quarantine.ts, training.ts, errorTrace.ts
+│   │   └── 工具类    quarantine.ts, errorTrace.ts
 │   ├── stores/                   # Zustand 状态管理 — 6 个 Store
 │   │   ├── configStore.ts        # 全局配置 + 页面路由
 │   │   ├── scannerStore.ts       # 扫描状态
@@ -324,7 +323,7 @@ cargo build
 | **隔离/拦截/风险** | `quarantine_service`, `interception_service`, `risk_service` |
 | **监控** | `process_monitor_service`, `process_scanner_service`, `file_monitor_service`, `hook_service`, `snapshot_service` |
 | **信任/策略** | `trust_service`, `path_policy_service` |
-| **训练/配置** | `training_service`, `runtime_list_store` |
+| **运行时配置** | `runtime_list_store` |
 | **系统/工具** | `tray_service` |
 
 ### 前端 15 个 API 模块分组
@@ -336,11 +335,11 @@ cargo build
 | **行为** | `behavior.ts` |
 | **配置** | `config.ts`, `exclusions.ts`, `allowlist.ts`, `devSettings.ts` |
 | **系统** | `system.ts`, `fs.ts`, `i18n.ts`, `logs.ts` |
-| **工具** | `quarantine.ts`, `training.ts`, `errorTrace.ts` |
+| **工具** | `quarantine.ts`, `errorTrace.ts` |
 
 ### 安全注意事项 / Security Notes
 
-- **加密密钥**: 当前使用固定密钥用于开发/演示，**生产环境必须使用 Windows DPAPI** 或硬件安全模块管理密钥
+- **加密密钥**: 隔离区默认生成本机随机 AES 密钥，并使用 Windows DPAPI 加密保存到 APPDATA runtime；也可通过 `ANXIN_SECURITY_QUARANTINE_KEY` 显式指定 32 位 hex 密钥
 - **安全擦除**: 隔离文件删除执行三次覆写（随机数据 → 0x00 → 0xFF），符合 NIST SP 800-88 建议
 - **受保护进程**: 关键系统进程（csrss.exe、smss.exe、wininit.exe 等）禁止操作
 - **自身保护**: 拒绝操作自身进程

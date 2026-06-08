@@ -6,6 +6,7 @@ import test from 'node:test'
 const projectRoot = resolve(import.meta.dirname, '..')
 const scanPageSource = readFileSync(resolve(projectRoot, 'src/components/ScanPage.tsx'), 'utf8')
 const settingsPageSource = readFileSync(resolve(projectRoot, 'src/components/SettingsPage.tsx'), 'utf8')
+const overviewPageSource = readFileSync(resolve(projectRoot, 'src/components/OverviewPage.tsx'), 'utf8')
 const configStoreSource = readFileSync(resolve(projectRoot, 'src/stores/configStore.ts'), 'utf8')
 const scannerStoreSource = readFileSync(resolve(projectRoot, 'src/stores/scannerStore.ts'), 'utf8')
 const quarantineApiSource = readFileSync(resolve(projectRoot, 'src/api/quarantine.ts'), 'utf8')
@@ -21,6 +22,8 @@ const processMonitorServiceSource = readFileSync(resolve(projectRoot, 'src-tauri
 const snapshotServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/snapshot_service.rs'), 'utf8')
 const scanResultCacheServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/scan_result_cache_service.rs'), 'utf8')
 const readmeSource = readFileSync(resolve(projectRoot, 'README.md'), 'utf8')
+const zhI18nSource = readFileSync(resolve(projectRoot, 'config/i18n/zh-CN.json'), 'utf8')
+const enI18nSource = readFileSync(resolve(projectRoot, 'config/i18n/en-US.json'), 'utf8')
 const gitignoreSource = readFileSync(resolve(projectRoot, '.gitignore'), 'utf8')
 const tauriIgnoreSource = readFileSync(resolve(projectRoot, '.taurignore'), 'utf8')
 const srcTauriIgnoreSource = readFileSync(resolve(projectRoot, 'src-tauri/.taurignore'), 'utf8')
@@ -51,7 +54,7 @@ test('ScanPage wires threat actions to quarantine and allowlist APIs', () => {
 })
 
 test('Settings page merges exclusions and allowed items into one trust workflow', () => {
-  assert.match(settingsPageSource, /useState<'general'\|'trust'\|'dev'\|'training'>\('general'\)/)
+  assert.match(settingsPageSource, /useState<'general'\|'trust'\|'dev'>\('general'\)/)
   assert.match(settingsPageSource, /id: 'trust' as const, label: `信任项目/)
   assert.match(settingsPageSource, /activeTab === 'trust'/)
   assert.match(settingsPageSource, /<h3>信任项目<\/h3>/)
@@ -63,8 +66,33 @@ test('Settings page merges exclusions and allowed items into one trust workflow'
   assert.doesNotMatch(settingsPageSource, /<h3>扫描排除项<\/h3>/)
   assert.doesNotMatch(settingsPageSource, /id: 'exclusions' as const/)
   assert.doesNotMatch(settingsPageSource, /id: 'allowlist' as const/)
+  assert.doesNotMatch(settingsPageSource, /id: 'training' as const/)
+  assert.doesNotMatch(settingsPageSource, /ML 模型训练/)
   assert.doesNotMatch(settingsPageSource, /activeTab === 'exclusions'/)
   assert.doesNotMatch(settingsPageSource, /activeTab === 'allowlist'/)
+  assert.doesNotMatch(settingsPageSource, /activeTab === 'training'/)
+})
+
+test('Model training feature is removed from UI docs and language packs', () => {
+  assert.doesNotMatch(readmeSource, /ML 机器学习训练/)
+  assert.doesNotMatch(readmeSource, /training\.ts/)
+  assert.doesNotMatch(readmeSource, /training_service/)
+  assert.doesNotMatch(zhI18nSource, /settings_dev_train/)
+  assert.doesNotMatch(enI18nSource, /settings_dev_train/)
+  assert.doesNotMatch(zhI18nSource, /训练中/)
+  assert.doesNotMatch(enI18nSource, /Training/)
+})
+
+test('Overview page controls the real scan engine start and stop commands', () => {
+  assert.match(overviewPageSource, /import \{ scannerHealth, startEngine, stopEngine \} from '\.\.\/api\/scanner'/)
+  assert.match(overviewPageSource, /useState<'running' \| 'stopped' \| 'error' \| 'loading'>\('loading'\)/)
+  assert.match(overviewPageSource, /health\.status === 'running'/)
+  assert.match(overviewPageSource, /health\.status === 'stopped'/)
+  assert.match(overviewPageSource, /await stopEngine\(\)/)
+  assert.match(overviewPageSource, /await startEngine\(\)/)
+  assert.match(overviewPageSource, /引擎已停止/)
+  assert.match(overviewPageSource, /停止引擎/)
+  assert.match(overviewPageSource, /启动引擎/)
 })
 
 test('Config store exposes one trust workflow backed by allowlist and exclusions', () => {
@@ -96,8 +124,8 @@ test('Config save creates the target config directory before writing', () => {
 })
 
 test('README documents Fluent 2 threat action button rules', () => {
-  assert.match(readmeSource, /Fluent 2 界面规范/)
-  assert.match(readmeSource, /“清除威胁”和“添加信任”按钮仅在扫描结果中存在威胁时渲染/)
+  assert.match(readmeSource, /Fluent 2 设计系统/)
+  assert.match(readmeSource, /"清除威胁"和"添加信任"按钮仅在扫描结果中存在威胁时渲染/)
   assert.match(readmeSource, /未选择威胁时保持 disabled 状态/)
 })
 
@@ -217,6 +245,13 @@ test('Behavior SQLite database uses app data instead of repository runtime paths
   assert.match(tauriMainSource, /std::fs::copy\(&legacy_path, target_path\)/)
   assert.match(tauriMainSource, /let db_root = resolve_behavior_database_path\(&config\)\?/)
   assert.doesNotMatch(tauriMainSource, /let mut db_root = std::env::current_dir/)
+})
+
+test('File hook pipe service starts during app setup', () => {
+  assert.match(tauriMainSource, /let hook_service = HookService::new\(\)/)
+  assert.match(tauriMainSource, /\.start\("anxin_security_filehook", app\.handle\(\)\.clone\(\)\)/)
+  assert.match(tauriMainSource, /Failed to start file hook pipe service/)
+  assert.match(tauriMainSource, /app\.manage\(Arc::new\(hook_service\)\)/)
 })
 
 test('Quarantine table keeps status and action controls readable', () => {

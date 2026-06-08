@@ -17,7 +17,7 @@ fn make_entry(pid: u32, name: &str, risk_level: &str, severity: u32) -> Intercep
             26..=60 => "trojan",
             _ => "ransomware",
         }.to_string()),
-        reason: format!("\u98ce\u9669\u4e8b\u4ef6: {} (\u4e25\u91cd\u5ea6: {})", name, severity),
+        reason: format!("\u{98ce}\u{9669}\u{4e8b}\u{4ef6}: {} (\u{4e25}\u{91cd}\u{5ea6}: {})", name, severity),
         payload: Some(serde_json::json!({
             "severity": severity,
             "ruleId": format!("E2E_RULE_{}", severity),

@@ -11,7 +11,7 @@
  * 中文关键词：行为生命周期，进程时间线，MITRE ATT&CK，威胁映射
  * English keywords: behavior lifecycle, process timeline, MITRE ATT&CK, threat mapping
  */
-import React, { useEffect, useState, useMemo } from 'react'
+import React, { useEffect, useState, useMemo, useCallback } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { listEvents } from '../api/behavior'
 import { loadMitreRules, type MitreRule } from '../api/scanRules'
@@ -62,6 +62,40 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
   const [expandedEvent, setExpandedEvent] = useState<string | null>(null)
   const [mitreRules, setMitreRules] = useState<MitreRulesMap>(DEFAULT_MITRE_RULES)
 
+  /** 从配置文件加载 MITRE 规则 / Load MITRE rules from config */
+  const loadMitreConfig = useCallback(async () => {
+    try {
+      const rules = await loadMitreRules()
+      if (rules.length > 0) {
+        setMitreRules(buildMitreMap(rules))
+      }
+    } catch {
+      // API 不可用时使用默认规则 / Use default rules when API unavailable
+    }
+  }, [])
+
+  /**
+   * 函数名称：loadEvents
+   * 函数作用：按当前 PID 加载行为事件列表。
+   * Purpose: Loads behavior events for the current PID.
+   * 调用方：页面初始化 useEffect，错误重试按钮。
+   * Called by: page initialization useEffect, error retry button.
+   * 中文关键词：行为事件，进程详情，重试加载
+   * English keywords: behavior events, process detail, retry loading
+   */
+  const loadEvents = useCallback(async () => {
+    try {
+      setLoading(true)
+      setError(null)
+      const result = await listEvents({ pid, limit: 200 })
+      setEvents(result)
+    } catch (e) {
+      setError(`加载事件失败: ${e}`)
+    } finally {
+      setLoading(false)
+    }
+  }, [pid])
+
   useEffect(() => {
     loadEvents()
     loadMitreConfig()
@@ -77,40 +111,15 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
     return () => {
       unlisten.then((u) => u())
     }
-  }, [pid])
-
-  /** 从配置文件加载 MITRE 规则 / Load MITRE rules from config */
-  const loadMitreConfig = async () => {
-    try {
-      const rules = await loadMitreRules()
-      if (rules.length > 0) {
-        setMitreRules(buildMitreMap(rules))
-      }
-    } catch {
-      // API 不可用时使用默认规则 / Use default rules when API unavailable
-    }
-  }
-
-  const loadEvents = async () => {
-    try {
-      setLoading(true)
-      setError(null)
-      const result = await listEvents({ pid, limit: 200 })
-      setEvents(result)
-    } catch (e) {
-      setError(`加载事件失败: ${e}`)
-    } finally {
-      setLoading(false)
-    }
-  }
+  }, [loadEvents, loadMitreConfig, pid])
 
   /** 获取 MITRE 映射（优先使用配置文件，兜底默认规则）/ Get MITRE mapping (config first, fallback default) */
-  const getMitreMapping = (event: EtwEvent): MitreMapping | null => {
+  const getMitreMapping = useCallback((event: EtwEvent): MitreMapping | null => {
     const provider = event.provider || ''
     const operation = event.operation || event.type || ''
     const key = `${provider}:${operation}`
     return mitreRules[key] || null
-  }
+  }, [mitreRules])
 
   /** 按 MITRE 战术分组 / Group by MITRE tactic */
   const tacticGroups = useMemo(() => {
@@ -122,7 +131,7 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
       groups[tactic].push(event)
     })
     return groups
-  }, [events])
+  }, [events, getMitreMapping])
 
   /** 格式化时间 / Format timestamp */
   const formatTime = (ts: string) => {

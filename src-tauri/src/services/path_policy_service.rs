@@ -319,4 +319,283 @@ mod tests {
             Some("app.exe.bak")
         ));
     }
+
+    #[test]
+    fn normalize_path_converts_forward_slash_to_backslash() {
+        assert_eq!(normalize_path(r"C:/Windows/System32"), r"c:\windows\system32");
+    }
+
+    #[test]
+    fn normalize_path_lowercases_all_chars() {
+        assert_eq!(normalize_path(r"C:\PROGRAM FILES\APP"), r"c:\program files\app");
+    }
+
+    #[test]
+    fn normalize_path_strips_unc_prefix() {
+        assert_eq!(normalize_path(r"\\?\C:\Windows"), r"c:\windows");
+    }
+
+    #[test]
+    fn normalize_path_strips_kernel_prefix() {
+        assert_eq!(normalize_path(r"\??\C:\Windows"), r"c:\windows");
+    }
+
+    #[test]
+    fn normalize_path_trims_trailing_backslashes() {
+        assert_eq!(normalize_path(r"C:\Windows\"), r"c:\windows");
+        assert_eq!(normalize_path(r"C:\Windows\\"), r"c:\windows");
+    }
+
+    #[test]
+    fn normalize_path_preserves_drive_root() {
+        assert_eq!(normalize_path(r"C:\"), r"c:\");
+    }
+
+    #[test]
+    fn normalize_path_trims_whitespace() {
+        assert_eq!(normalize_path(r"  C:\Windows  "), r"c:\windows");
+    }
+
+    #[test]
+    fn file_name_lower_extracts_basename() {
+        assert_eq!(file_name_lower(r"C:\Windows\notepad.exe"), Some("notepad.exe".to_string()));
+    }
+
+    #[test]
+    fn file_name_lower_returns_none_for_root() {
+        assert_eq!(file_name_lower(r"C:\"), None);
+    }
+
+    #[test]
+    fn file_name_lower_is_case_insensitive() {
+        assert_eq!(file_name_lower(r"C:\APP.EXE"), Some("app.exe".to_string()));
+    }
+
+    #[test]
+    fn is_under_directory_matches_exact_directory() {
+        assert!(is_under_directory(r"c:\safe\folder", r"c:\safe\folder"));
+    }
+
+    #[test]
+    fn is_under_directory_matches_child_path() {
+        assert!(is_under_directory(r"c:\safe\folder\app.exe", r"c:\safe\folder"));
+    }
+
+    #[test]
+    fn is_under_directory_rejects_sibling_directory() {
+        assert!(!is_under_directory(r"c:\safe\folder2\app.exe", r"c:\safe\folder"));
+    }
+
+    #[test]
+    fn is_under_directory_rejects_partial_name_match() {
+        assert!(!is_under_directory(r"c:\safe\folder2", r"c:\safe\folder"));
+    }
+
+    #[test]
+    fn process_exclusion_matches_by_file_name() {
+        let entry = ExclusionEntry {
+            path: "notepad.exe".to_string(),
+            entry_type: "process".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(matches_exclusion(
+            &entry,
+            &normalize_path(r"C:\Windows\notepad.exe"),
+            Some("notepad.exe")
+        ));
+    }
+
+    #[test]
+    fn process_exclusion_matches_by_full_path() {
+        let entry = ExclusionEntry {
+            path: r"C:\Windows\notepad.exe".to_string(),
+            entry_type: "process".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(matches_exclusion(
+            &entry,
+            &normalize_path(r"c:\windows\notepad.exe"),
+            Some("notepad.exe")
+        ));
+    }
+
+    #[test]
+    fn process_exclusion_rejects_different_process() {
+        let entry = ExclusionEntry {
+            path: "notepad.exe".to_string(),
+            entry_type: "process".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(!matches_exclusion(
+            &entry,
+            &normalize_path(r"c:\windows\calc.exe"),
+            Some("calc.exe")
+        ));
+    }
+
+    #[test]
+    fn directory_exclusion_with_trailing_backslash_in_entry() {
+        let entry = ExclusionEntry {
+            path: r"C:\Safe\Folder\".to_string(),
+            entry_type: "directory".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        let normalized_dir = normalize_path(&entry.path);
+        assert!(is_under_directory(
+            &normalize_path(r"C:\Safe\Folder\app.exe"),
+            &normalized_dir
+        ));
+    }
+
+    #[test]
+    fn default_entry_type_is_file_match() {
+        let entry = ExclusionEntry {
+            path: r"C:\Safe\App.exe".to_string(),
+            entry_type: "unknown_type".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(matches_exclusion(
+            &entry,
+            &normalize_path(r"c:\safe\app.exe"),
+            Some("app.exe")
+        ));
+        assert!(!matches_exclusion(
+            &entry,
+            &normalize_path(r"c:\safe\app.exe.bak"),
+            Some("app.exe.bak")
+        ));
+    }
+
+    #[test]
+    fn normalize_path_handles_empty_string() {
+        assert_eq!(normalize_path(""), "");
+    }
+
+    #[test]
+    fn normalize_path_handles_whitespace_only() {
+        assert_eq!(normalize_path("   "), "");
+    }
+
+    #[test]
+    fn normalize_path_preserves_relative_path() {
+        assert_eq!(normalize_path(r"..\..\test.exe"), r"..\..\test.exe");
+        assert_eq!(normalize_path(r".\app.exe"), r".\app.exe");
+    }
+
+    #[test]
+    fn is_under_directory_rejects_parent_directory() {
+        assert!(!is_under_directory(r"c:\safe", r"c:\safe\folder"));
+    }
+
+    #[test]
+    fn is_under_directory_rejects_different_drive() {
+        assert!(!is_under_directory(r"d:\safe\folder\app.exe", r"c:\safe\folder"));
+    }
+
+    #[test]
+    fn file_name_lower_handles_unicode() {
+        let result = file_name_lower(r"C:\测试\应用.exe");
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), "应用.exe");
+    }
+
+    #[test]
+    fn file_name_lower_handles_no_extension() {
+        assert_eq!(file_name_lower(r"C:\Windows\README"), Some("readme".to_string()));
+    }
+
+    #[test]
+    fn matches_exclusion_with_empty_file_name() {
+        let entry = ExclusionEntry {
+            path: r"C:\Safe\App.exe".to_string(),
+            entry_type: "file".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(matches_exclusion(
+            &entry,
+            &normalize_path(r"c:\safe\app.exe"),
+            None
+        ));
+    }
+
+    #[test]
+    fn process_exclusion_with_empty_file_name_uses_path() {
+        let entry = ExclusionEntry {
+            path: r"C:\Windows\notepad.exe".to_string(),
+            entry_type: "process".to_string(),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(matches_exclusion(
+            &entry,
+            &normalize_path(r"c:\windows\notepad.exe"),
+            None
+        ));
+    }
+
+    #[test]
+    fn sha256_hex_of_file_computes_correct_hash() {
+        use std::io::Write;
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("anxin_test_{}.txt", std::process::id()));
+        let mut file = std::fs::File::create(&temp_file).expect("create temp file");
+        file.write_all(b"hello world").expect("write temp file");
+        drop(file);
+
+        let hash = sha256_hex_of_file(&temp_file.to_string_lossy()).expect("compute hash");
+        let _ = std::fs::remove_file(&temp_file);
+
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+    }
+
+    #[test]
+    fn sha256_hex_of_file_returns_error_for_nonexistent_file() {
+        let result = sha256_hex_of_file(r"C:\nonexistent\file\that\does\not\exist.txt");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn allowlist_entry_with_empty_hash_is_skipped() {
+        let entry = AllowlistEntry {
+            path: r"C:\Safe\App.exe".to_string(),
+            hash: Some("".to_string()),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(entry.hash.as_deref().filter(|v| !v.is_empty()).is_none());
+    }
+
+    #[test]
+    fn allowlist_entry_with_none_hash_is_skipped() {
+        let entry = AllowlistEntry {
+            path: r"C:\Safe\App.exe".to_string(),
+            hash: None,
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert!(entry.hash.as_deref().filter(|v| !v.is_empty()).is_none());
+    }
+
+    #[test]
+    fn allowlist_entry_with_valid_hash_is_used() {
+        let entry = AllowlistEntry {
+            path: r"C:\Safe\App.exe".to_string(),
+            hash: Some("abc123".to_string()),
+            description: None,
+            created_at: "2026-05-03T00:00:00Z".to_string(),
+        };
+        assert_eq!(
+            entry.hash.as_deref().filter(|v| !v.is_empty()),
+            Some("abc123")
+        );
+    }
 }

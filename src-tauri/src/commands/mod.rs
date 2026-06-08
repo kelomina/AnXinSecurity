@@ -18,6 +18,5 @@ pub mod scan_rules;
 pub mod scanner;
 pub mod snapshot;
 pub mod system;
-pub mod training;
 pub mod tray;
 pub mod trust;

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 /// 拦截队列中的条目 / Interception queue entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,10 +109,11 @@ impl InterceptionService {
     /// 函数作用：尝试弹出下一个拦截弹窗（若当前无弹窗且队列非空）。
     /// Purpose: Tries to show the next interception modal (if no modal is showing and queue is not empty).
     /// Called by: enqueue() 后自动调用, 或前端处理完上一个弹窗后调用
+    /// 参数 app_handle: Tauri 应用句柄，兼容真实运行时与测试运行时 / Tauri app handle for production and test runtimes
     /// Returns: 弹窗数据，若队列为空或无弹窗则为 None
     /// 中文关键词：弹窗展示，下一个拦截，弹窗状态
     /// English keywords: show modal, next interception, modal state
-    pub fn try_show_next(&self, app_handle: &AppHandle) -> Option<InterceptionEntry> {
+    pub fn try_show_next<R: Runtime>(&self, app_handle: &AppHandle<R>) -> Option<InterceptionEntry> {
         let mut showing = self.showing.lock().unwrap_or_else(|e| e.into_inner());
         if *showing {
             return None;
@@ -201,5 +202,316 @@ impl InterceptionService {
     /// English keywords: queue size, queue status
     pub fn get_queue_size(&self) -> usize {
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_service_initializes_empty() {
+        let service = InterceptionService::new();
+        assert_eq!(service.get_queue_size(), 0);
+        assert_eq!(service.get_paused_pids().len(), 0);
+    }
+
+    #[test]
+    fn enqueue_adds_entry_to_queue() {
+        let service = InterceptionService::new();
+        let entry = InterceptionEntry {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: "C:\\test.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "Test reason".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+
+        service.enqueue(entry);
+        assert_eq!(service.get_queue_size(), 1);
+        assert!(service.get_paused_pids().contains(&123));
+    }
+
+    #[test]
+    fn enqueue_prevents_duplicate_pids() {
+        let service = InterceptionService::new();
+        let entry = InterceptionEntry {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: "C:\\test.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "Test reason".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+
+        service.enqueue(entry.clone());
+        service.enqueue(entry);
+
+        assert_eq!(service.get_queue_size(), 1);
+    }
+
+    #[test]
+    fn mark_decision_records_and_clears_entry() {
+        let service = InterceptionService::new();
+        let entry = InterceptionEntry {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: "C:\\test.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "Test reason".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+
+        service.enqueue(entry);
+        service.mark_decision(123, InterceptionDecision::Allow);
+
+        assert_eq!(service.get_queue_size(), 0);
+    }
+
+    #[test]
+    fn clear_all_clears_queue_and_decisions() {
+        let service = InterceptionService::new();
+
+        let entry1 = InterceptionEntry {
+            pid: 123,
+            process_name: "test1.exe".to_string(),
+            file_path: "C:\\test1.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "Test reason 1".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+        let entry2 = InterceptionEntry {
+            pid: 456,
+            process_name: "test2.exe".to_string(),
+            file_path: "C:\\test2.exe".to_string(),
+            risk_level: "medium".to_string(),
+            threat_type: Some("suspicious".to_string()),
+            reason: "Test reason 2".to_string(),
+            payload: None,
+            timestamp: 1234567891,
+        };
+
+        service.enqueue(entry1);
+        service.enqueue(entry2);
+        service.clear_all();
+
+        assert_eq!(service.get_queue_size(), 0);
+        assert_eq!(service.get_paused_pids().len(), 0);
+    }
+
+    #[test]
+    fn try_show_next_returns_entry_when_available() {
+        let service = InterceptionService::new();
+        let entry = InterceptionEntry {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: "C:\\test.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "Test reason".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+
+        service.enqueue(entry.clone());
+        let dummy_app = tauri::test::mock_app();
+        let shown = service.try_show_next(&dummy_app.handle());
+
+        assert!(shown.is_some());
+        assert_eq!(shown.unwrap().pid, 123);
+    }
+
+    #[test]
+    fn try_show_next_blocks_when_showing_is_true() {
+        let service = InterceptionService::new();
+        let entry1 = InterceptionEntry {
+            pid: 100,
+            process_name: "first.exe".to_string(),
+            file_path: "C:\\first.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "First threat".to_string(),
+            payload: None,
+            timestamp: 1000,
+        };
+        let entry2 = InterceptionEntry {
+            pid: 200,
+            process_name: "second.exe".to_string(),
+            file_path: "C:\\second.exe".to_string(),
+            risk_level: "medium".to_string(),
+            threat_type: Some("suspicious".to_string()),
+            reason: "Second threat".to_string(),
+            payload: None,
+            timestamp: 2000,
+        };
+
+        service.enqueue(entry1);
+        service.enqueue(entry2);
+
+        let dummy_app = tauri::test::mock_app();
+        let first = service.try_show_next(&dummy_app.handle());
+        assert!(first.is_some());
+        assert_eq!(first.unwrap().pid, 100);
+
+        let second = service.try_show_next(&dummy_app.handle());
+        assert!(
+            second.is_none(),
+            "try_show_next should return None while showing is true"
+        );
+    }
+
+    #[test]
+    fn mark_decision_resets_showing_flag() {
+        let service = InterceptionService::new();
+        let entry = InterceptionEntry {
+            pid: 300,
+            process_name: "test.exe".to_string(),
+            file_path: "C:\\test.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "Test reason".to_string(),
+            payload: None,
+            timestamp: 3000,
+        };
+
+        service.enqueue(entry);
+        let dummy_app = tauri::test::mock_app();
+        let _ = service.try_show_next(&dummy_app.handle());
+
+        service.mark_decision(300, InterceptionDecision::Allow);
+
+        let next_entry = InterceptionEntry {
+            pid: 400,
+            process_name: "next.exe".to_string(),
+            file_path: "C:\\next.exe".to_string(),
+            risk_level: "medium".to_string(),
+            threat_type: None,
+            reason: "Next threat".to_string(),
+            payload: None,
+            timestamp: 4000,
+        };
+        service.enqueue(next_entry);
+
+        let next = service.try_show_next(&dummy_app.handle());
+        assert!(
+            next.is_some(),
+            "mark_decision should reset showing flag, allowing next modal"
+        );
+        assert_eq!(next.unwrap().pid, 400);
+    }
+
+    #[test]
+    fn try_show_next_returns_none_when_queue_empty() {
+        let service = InterceptionService::new();
+        let dummy_app = tauri::test::mock_app();
+        let result = service.try_show_next(&dummy_app.handle());
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn mark_decision_removes_entry_from_queue_if_still_present() {
+        let service = InterceptionService::new();
+        let entry = InterceptionEntry {
+            pid: 500,
+            process_name: "queued.exe".to_string(),
+            file_path: "C:\\queued.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("trojan".to_string()),
+            reason: "Queued threat".to_string(),
+            payload: None,
+            timestamp: 5000,
+        };
+
+        service.enqueue(entry);
+        assert_eq!(service.get_queue_size(), 1);
+
+        service.mark_decision(500, InterceptionDecision::Block);
+
+        assert_eq!(service.get_queue_size(), 0);
+        assert!(!service.get_paused_pids().contains(&500));
+    }
+
+    #[test]
+    fn concurrent_enqueue_and_mark_decision_safe() {
+        let service = Arc::new(InterceptionService::new());
+        let mut handles = vec![];
+
+        for i in 0..10u32 {
+            let svc = service.clone();
+            let handle = std::thread::spawn(move || {
+                let entry = InterceptionEntry {
+                    pid: i,
+                    process_name: format!("process_{}.exe", i),
+                    file_path: format!("C:\\process_{}.exe", i),
+                    risk_level: "medium".to_string(),
+                    threat_type: None,
+                    reason: format!("Thread {}", i),
+                    payload: None,
+                    timestamp: i as u64 * 1000,
+                };
+                svc.enqueue(entry);
+            });
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            handle.join().expect("thread should complete");
+        }
+
+        assert_eq!(service.get_queue_size(), 10);
+    }
+
+    #[test]
+    fn interception_entry_serialization_round_trip() {
+        let entry = InterceptionEntry {
+            pid: 9999,
+            process_name: "malware.exe".to_string(),
+            file_path: r"C:\Malware\malware.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("ransomware".to_string()),
+            reason: "Detected ransomware activity".to_string(),
+            payload: Some(r#"{"rule":"RANSOMWARE_001"}"#.to_string()),
+            timestamp: 1234567890123,
+        };
+
+        let json = serde_json::to_string(&entry).expect("serialization should succeed");
+        let parsed: InterceptionEntry =
+            serde_json::from_str(&json).expect("deserialization should succeed");
+
+        assert_eq!(parsed.pid, entry.pid);
+        assert_eq!(parsed.process_name, entry.process_name);
+        assert_eq!(parsed.file_path, entry.file_path);
+        assert_eq!(parsed.risk_level, entry.risk_level);
+        assert_eq!(parsed.threat_type, entry.threat_type);
+        assert_eq!(parsed.reason, entry.reason);
+        assert_eq!(parsed.payload, entry.payload);
+        assert_eq!(parsed.timestamp, entry.timestamp);
+    }
+
+    #[test]
+    fn interception_decision_serialization() {
+        assert_eq!(
+            serde_json::to_string(&InterceptionDecision::Allow).unwrap(),
+            r#""allow""#
+        );
+        assert_eq!(
+            serde_json::to_string(&InterceptionDecision::Block).unwrap(),
+            r#""block""#
+        );
+
+        let allow: InterceptionDecision = serde_json::from_str(r#""allow""#).unwrap();
+        assert_eq!(allow, InterceptionDecision::Allow);
+
+        let block: InterceptionDecision = serde_json::from_str(r#""block""#).unwrap();
+        assert_eq!(block, InterceptionDecision::Block);
     }
 }

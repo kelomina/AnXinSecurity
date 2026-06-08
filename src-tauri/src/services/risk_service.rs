@@ -2,7 +2,7 @@
 // ETW risk analysis service — performs risk scoring and secondary assessment on ETW rule-matched events
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Runtime};
 
 use crate::services::behavior_service::BehaviorService;
 use crate::services::interception_service::{InterceptionEntry, InterceptionService};
@@ -106,17 +106,17 @@ impl RiskService {
     /// 参数 event: 风险事件信息 / Risk event information
     /// 参数 trust: 信任验证服务 / Trust verification service
     /// 参数 behavior: 行为数据库服务 / Behavior database service
-    /// 参数 app_handle: Tauri 应用句柄 / Tauri app handle
+    /// 参数 app_handle: Tauri 应用句柄，兼容真实运行时与测试运行时 / Tauri app handle for production and test runtimes
     /// 副作用：写入行为数据库，高风险事件推入拦截队列并向前端 emit
     /// Side effects: writes to behavior DB, pushes high-risk events to interception queue, emits to frontend
     /// 中文关键词：风险分析，事件研判，威胁评估，安全评分，进程拦截
     /// English keywords: risk analysis, event assessment, threat evaluation, security scoring, process interception
-    pub async fn analyze_event(
+    pub async fn analyze_event<R: Runtime>(
         &self,
         event: RiskEvent,
         trust: Option<&TrustService>,
         behavior: Option<&BehaviorService>,
-        app_handle: &AppHandle,
+        app_handle: &AppHandle<R>,
     ) -> Result<RiskAssessment, String> {
         // 步骤1: 严重程度映射 → 风险等级 / Step 1: severity mapping → risk level
         let risk_level = match event.severity {
@@ -232,5 +232,131 @@ impl RiskService {
     /// English keywords: event count, analysis statistics
     pub fn get_event_count(&self) -> u64 {
         *self.event_counter.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn new_service_initializes_with_empty_state() {
+        let service = RiskService::new();
+        assert_eq!(service.get_event_count(), 0);
+    }
+
+    #[test]
+    fn severity_maps_to_correct_risk_level() {
+        let event_low = RiskEvent {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: None,
+            threat_type: "low_risk".to_string(),
+            threat_name: None,
+            severity: 20,
+            rule_id: "RULE_001".to_string(),
+            description: "Low severity event".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let event_medium = RiskEvent {
+            severity: 50,
+            ..event_low.clone()
+        };
+
+        let event_high = RiskEvent {
+            severity: 80,
+            ..event_low.clone()
+        };
+
+        let service = RiskService::new();
+        let dummy_app = tauri::test::mock_app();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result_low = service.analyze_event(event_low, None, None, &dummy_app.handle()).await.unwrap();
+            assert_eq!(result_low.risk_level, "low");
+
+            let result_medium = service.analyze_event(event_medium, None, None, &dummy_app.handle()).await.unwrap();
+            assert_eq!(result_medium.risk_level, "medium");
+
+            let result_high = service.analyze_event(event_high, None, None, &dummy_app.handle()).await.unwrap();
+            assert_eq!(result_high.risk_level, "high");
+        });
+    }
+
+    #[test]
+    fn should_intercept_for_medium_and_high_risk() {
+        let event_low = RiskEvent {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: None,
+            threat_type: "low_risk".to_string(),
+            threat_name: None,
+            severity: 20,
+            rule_id: "RULE_001".to_string(),
+            description: "Low severity event".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let event_medium = RiskEvent {
+            severity: 50,
+            ..event_low.clone()
+        };
+
+        let event_high = RiskEvent {
+            severity: 80,
+            ..event_low.clone()
+        };
+
+        let service = RiskService::new();
+        let dummy_app = tauri::test::mock_app();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result_low = service.analyze_event(event_low, None, None, &dummy_app.handle()).await.unwrap();
+            assert!(!result_low.should_intercept);
+
+            let result_medium = service.analyze_event(event_medium, None, None, &dummy_app.handle()).await.unwrap();
+            assert!(result_medium.should_intercept);
+
+            let result_high = service.analyze_event(event_high, None, None, &dummy_app.handle()).await.unwrap();
+            assert!(result_high.should_intercept);
+        });
+    }
+
+    #[test]
+    fn analyze_event_increments_counter() {
+        let service = RiskService::new();
+        let event = RiskEvent {
+            pid: 123,
+            process_name: "test.exe".to_string(),
+            file_path: None,
+            threat_type: "test".to_string(),
+            threat_name: None,
+            severity: 50,
+            rule_id: "RULE_001".to_string(),
+            description: "Test event".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let dummy_app = tauri::test::mock_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+
+        rt.block_on(async {
+            assert_eq!(service.get_event_count(), 0);
+            let _ = service.analyze_event(event.clone(), None, None, &dummy_app.handle()).await;
+            assert_eq!(service.get_event_count(), 1);
+            let _ = service.analyze_event(event, None, None, &dummy_app.handle()).await;
+            assert_eq!(service.get_event_count(), 2);
+        });
+    }
+
+    #[test]
+    fn set_interception_service_sets_correctly() {
+        let service = RiskService::new();
+        let interception = Arc::new(InterceptionService::new());
+        service.set_interception_service(interception.clone());
     }
 }

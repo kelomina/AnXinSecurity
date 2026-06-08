@@ -382,7 +382,7 @@ async fn test_simulate_multiple_events_create_processes_list() {
 
     // 同一个进程有多个事件（不同操作类型）
     // Same process with multiple events (different operations)
-    let base = json!({
+    let _base = json!({
         "pid": 950,
         "processName": "multi_op.exe",
         "path": "C:\\multi_op.exe",

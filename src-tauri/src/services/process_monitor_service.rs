@@ -6,10 +6,13 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::services::path_policy_service::should_skip_security_scan;
 use libloading::{Library, Symbol};
+
+const PROCESS_MONITOR_STOP_JOIN_TIMEOUT_MS: u64 = 2_500;
+const PROCESS_MONITOR_STOP_JOIN_POLL_MS: u64 = 25;
 
 /// 进程架构
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +95,7 @@ impl ProcessMonitorService {
                                 &injector_x86,
                                 &dll_x64,
                                 &dll_x86,
+                                &inject_stop,
                             );
                         }
                     }
@@ -110,7 +114,6 @@ impl ProcessMonitorService {
         let watcher_thread = thread::spawn(move || {
             let self_pid = std::process::id();
             let mut seen: HashSet<u32> = HashSet::new();
-            let mut step = 0u32;
 
             while !monitor_stop.load(Ordering::Relaxed) {
                 let current = collect_current_pids();
@@ -186,7 +189,6 @@ impl ProcessMonitorService {
                     }
                     thread::sleep(Duration::from_millis(sleep_chunk as u64));
                 }
-                step = step.wrapping_add(1);
             }
         });
 
@@ -203,25 +205,67 @@ impl ProcessMonitorService {
     }
 
     /// 函数名称：stop
-    /// 函数作用：停止进程监控线程和注入线程。
-    /// Purpose: Stops the process monitor and injector threads.
+    /// 函数作用：停止进程监控线程和注入线程，并用有限等待避免停止命令无限阻塞。
+    /// Purpose: Stops the process monitor and injector threads with bounded waits so stop cannot block indefinitely.
     /// 调用方：commands::process::stop_process_watcher
     /// Called by: commands::process::stop_process_watcher
-    /// 中文关键词：停止监控，停止进程轮询
-    /// English keywords: stop monitor, stop process polling
+    /// 被调用方：wait_for_process_monitor_thread_stop。
+    /// Calls: wait_for_process_monitor_thread_stop.
+    /// 错误处理：线程 panic 或超时未退出时返回 String；超时线程句柄会放回状态中，便于后续重试停止。
+    /// Error handling: Returns String for panicked or timed-out threads; timed-out handles are restored for later stop retry.
+    /// 中文关键词：停止监控，停止进程轮询，有限等待，阻塞防护
+    /// English keywords: stop monitor, stop process polling, bounded wait, blocking guard
     pub fn stop(&self) -> Result<(), String> {
         let mut guard = self.state.lock().unwrap();
-        if let Some(state) = guard.take() {
-            state.stop_flag.store(true, Ordering::Relaxed);
-            drop(guard); // 释放锁避免死锁
+        let Some(mut state) = guard.take() else {
+            return Ok(());
+        };
 
-            // 等待线程结束
-            if let Some(handle) = state.injector_thread {
-                let _ = handle.join();
+        state.stop_flag.store(true, Ordering::Relaxed);
+        drop(guard); // 释放锁避免死锁
+
+        let timeout = Duration::from_millis(PROCESS_MONITOR_STOP_JOIN_TIMEOUT_MS);
+        let mut pending_threads = Vec::new();
+        let mut errors = Vec::new();
+
+        if let Some(handle) = state.injector_thread.take() {
+            match wait_for_process_monitor_thread_stop(handle, timeout, "injector") {
+                Ok(Some(handle)) => {
+                    state.injector_thread = Some(handle);
+                    pending_threads.push("injector");
+                }
+                Ok(None) => {}
+                Err(err) => errors.push(err),
             }
-            if let Some(handle) = state.watcher_thread {
-                let _ = handle.join();
+        }
+        if let Some(handle) = state.watcher_thread.take() {
+            match wait_for_process_monitor_thread_stop(handle, timeout, "watcher") {
+                Ok(Some(handle)) => {
+                    state.watcher_thread = Some(handle);
+                    pending_threads.push("watcher");
+                }
+                Ok(None) => {}
+                Err(err) => errors.push(err),
             }
+        }
+
+        if !pending_threads.is_empty() {
+            let mut guard = self.state.lock().unwrap();
+            *guard = Some(state);
+            let mut message = format!(
+                "Process monitor did not stop within {} ms; still running thread(s): {}",
+                PROCESS_MONITOR_STOP_JOIN_TIMEOUT_MS,
+                pending_threads.join(", ")
+            );
+            if !errors.is_empty() {
+                message.push_str("; ");
+                message.push_str(&errors.join("; "));
+            }
+            return Err(message);
+        }
+
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
         }
         Ok(())
     }
@@ -265,6 +309,42 @@ impl ProcessMonitorService {
             Ok(Vec::new())
         }
     }
+}
+
+/// 函数名称：wait_for_process_monitor_thread_stop
+/// 函数作用：在限定时间内等待进程监控线程退出，避免 stop 路径无限 join。
+/// Purpose: Waits for a process monitor thread to finish within a bounded timeout, avoiding indefinite joins on stop.
+/// 调用方：ProcessMonitorService::stop，进程监控单元测试。
+/// Called by: ProcessMonitorService::stop, process monitor unit tests.
+/// 参数说明：handle 为后台线程句柄；timeout 为最大等待时间；thread_name 用于错误定位。
+/// Parameters: handle is the background thread handle; timeout is the maximum wait; thread_name labels errors.
+/// 返回值说明：线程结束返回 None；超时返回 Some(handle) 交还调用方保存。
+/// Returns: None when the thread finished; Some(handle) on timeout so the caller can keep it.
+/// 错误处理：线程 panic 转换为 String；超时不 panic、不无限等待。
+/// Error handling: Converts thread panic to String; timeout does not panic or wait indefinitely.
+/// 中文关键词：进程监控，线程等待，超时保护，阻塞防护
+/// English keywords: process monitor, thread wait, timeout guard, blocking guard
+fn wait_for_process_monitor_thread_stop(
+    handle: thread::JoinHandle<()>,
+    timeout: Duration,
+    thread_name: &str,
+) -> Result<Option<thread::JoinHandle<()>>, String> {
+    let started_at = Instant::now();
+
+    while started_at.elapsed() < timeout {
+        if handle.is_finished() {
+            handle.join().map_err(|_| {
+                format!(
+                    "Process monitor {} thread panicked during stop",
+                    thread_name
+                )
+            })?;
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(PROCESS_MONITOR_STOP_JOIN_POLL_MS));
+    }
+
+    Ok(Some(handle))
 }
 
 /// 函数名称：to_wide
@@ -471,6 +551,7 @@ fn launch_injector(
     injector_x86: &str,
     dll_x64: &str,
     dll_x86: &str,
+    stop_flag: &Arc<AtomicBool>,
 ) {
     let (injector, dll) = match arch {
         ProcArch::X64 => (injector_x64, dll_x64),
@@ -494,6 +575,10 @@ fn launch_injector(
             match child.try_wait() {
                 Ok(Some(_)) => break,
                 Ok(None) => {
+                    if stop_flag.load(Ordering::Relaxed) {
+                        let _ = child.kill();
+                        break;
+                    }
                     if start.elapsed() > timeout {
                         let _ = child.kill();
                         break;
@@ -506,5 +591,27 @@ fn launch_injector(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn process_monitor_thread_wait_joins_finished_thread_without_timeout() {
+        let handle = thread::spawn(|| {});
+
+        let remaining_handle = wait_for_process_monitor_thread_stop(
+            handle,
+            Duration::from_millis(250),
+            "unit",
+        )
+        .expect("finished thread should join cleanly");
+
+        assert!(
+            remaining_handle.is_none(),
+            "finished process monitor thread should not be retained"
+        );
     }
 }

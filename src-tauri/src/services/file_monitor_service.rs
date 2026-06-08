@@ -6,10 +6,14 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::broadcast;
+use tokio::time;
 
 use crate::services::engine_service::EngineService;
 use crate::services::path_policy_service::should_skip_security_scan;
+
+const FILE_MONITOR_STOP_POLL_MS: u64 = 250;
 
 // `tokio::spawn` 在 setup 阶段不可用，改用 Tauri 的 async_runtime
 // tokio::spawn is unavailable during setup, use tauri's async_runtime instead
@@ -57,9 +61,10 @@ impl FileMonitorService {
     ///
     /// 副作用：
     ///   启动后台 Tokio 任务，持续监听 ETW 事件并调用引擎扫描文件
+    ///   接收事件时使用短超时轮询，确保 stop() 修改运行标志后后台任务能及时醒来退出
     ///
     /// 中文关键词：启动监控，文件事件，ETW事件，引擎扫描，文件检测，排除项生效，允许列表生效，跳过扫描，运行时列表，实时保护
-    /// English keywords: start monitoring, file events, ETW events, engine scan, file detection, exclusion effective, allowlist effective, skip scan, runtime list, realtime protection
+    /// English keywords: start monitoring, file events, ETW events, engine scan, file detection, exclusion effective, allowlist effective, skip scan, runtime list, realtime protection, stoppable receive
     pub fn start(&self, engine: Arc<EngineService>, etw_rx: broadcast::Receiver<String>) {
         if self.running.load(Ordering::SeqCst) {
             eprintln!("[FileMonitor] Already running");
@@ -74,8 +79,11 @@ impl FileMonitorService {
             let mut rx = etw_rx;
 
             while running.load(Ordering::SeqCst) {
-                match rx.recv().await {
-                    Ok(json_str) => {
+                match time::timeout(file_monitor_stop_poll_interval(), rx.recv()).await {
+                    Err(_) => {
+                        continue;
+                    }
+                    Ok(Ok(json_str)) => {
                         if !running.load(Ordering::SeqCst) {
                             break;
                         }
@@ -120,10 +128,10 @@ impl FileMonitorService {
                             }
                         }
                     }
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                    Ok(Err(broadcast::error::RecvError::Lagged(n))) => {
                         eprintln!("[FileMonitor] Lagged by {} events", n);
                     }
-                    Err(broadcast::error::RecvError::Closed) => {
+                    Ok(Err(broadcast::error::RecvError::Closed)) => {
                         eprintln!("[FileMonitor] ETW channel closed, stopping");
                         break;
                     }
@@ -135,10 +143,10 @@ impl FileMonitorService {
     }
 
     /// 函数名称：stop
-    /// 函数作用：停止文件监控后台任务。
-    /// Purpose: Stops the file monitoring background task.
-    /// 中文关键词：停止监控，停止文件监控
-    /// English keywords: stop monitoring, stop file monitoring
+    /// 函数作用：停止文件监控后台任务；后台接收循环最多等待一个短轮询周期后退出。
+    /// Purpose: Stops the file monitoring background task; the receive loop exits after at most one short polling interval.
+    /// 中文关键词：停止监控，停止文件监控，可停止接收
+    /// English keywords: stop monitoring, stop file monitoring, stoppable receive
     #[allow(dead_code)]
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
@@ -154,6 +162,19 @@ impl FileMonitorService {
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
+}
+
+/// 函数名称：file_monitor_stop_poll_interval
+/// 函数作用：返回文件监控后台任务检查 stop 标志的最大等待间隔。
+/// Purpose: Returns the maximum wait interval before the file monitor background task checks the stop flag.
+/// 调用方：FileMonitorService::start，文件监控单元测试。
+/// Called by: FileMonitorService::start, file monitor unit tests.
+/// 返回值说明：返回短轮询 Duration，避免 recv().await 无限等待。
+/// Returns: Short polling Duration that prevents recv().await from waiting forever.
+/// 中文关键词：文件监控，停止轮询，阻塞防护
+/// English keywords: file monitor, stop polling, blocking guard
+fn file_monitor_stop_poll_interval() -> Duration {
+    Duration::from_millis(FILE_MONITOR_STOP_POLL_MS)
 }
 
 /// 函数名称：extract_file_path
@@ -196,4 +217,17 @@ fn extract_file_path(val: &serde_json::Value) -> Option<String> {
         .and_then(|v| v.as_str())
         .filter(|p| !p.is_empty())
         .map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_monitor_stop_poll_interval_stays_short() {
+        assert!(
+            file_monitor_stop_poll_interval() <= Duration::from_millis(250),
+            "file monitor stop should not wait on ETW events indefinitely"
+        );
+    }
 }

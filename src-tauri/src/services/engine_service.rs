@@ -5,24 +5,43 @@
 // The original TCP IPC communication has been replaced by native DLL direct loading.
 
 use crate::services::native_engine_service::NativeEngineService;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 /// 扫描引擎服务
 /// Scan engine service
 pub struct EngineService {
-    native: Arc<NativeEngineService>,
+    native: Arc<Mutex<Option<Arc<NativeEngineService>>>>,
+    engine_dll_path: String,
+    engine_root_path: String,
+    /// 取消标志 — 设置为 true 时，批量扫描在文件间中断 / Cancel flag — when true, batch scan stops between files
+    cancel_flag: Arc<AtomicBool>,
 }
 
 impl EngineService {
     /// 函数名称：new
-    /// 函数作用：创建 EngineService，封装 NativeEngineService。
-    /// Purpose: Creates EngineService wrapping the NativeEngineService.
+    /// 函数作用：创建 EngineService，并立即加载原生扫描引擎。
+    /// Purpose: Creates EngineService and loads the native scan engine immediately.
     /// 调用方：main.rs setup
     /// Called by: main.rs setup
-    /// 中文关键词：引擎服务，初始化，原生引擎封装
-    /// English keywords: engine service, initialization, native engine wrapper
-    pub fn new(native: Arc<NativeEngineService>) -> Self {
-        Self { native }
+    /// 被调用方：NativeEngineService::new。
+    /// Calls: NativeEngineService::new.
+    /// 参数说明：engine_dll_path 为 axon_engine.dll 路径；engine_root_path 为 Engine/Axon 根目录。
+    /// Parameters: engine_dll_path is axon_engine.dll path; engine_root_path is Engine/Axon root.
+    /// 返回值说明：加载成功返回 EngineService，加载失败返回 String。
+    /// Returns: EngineService when loading succeeds; String error when loading fails.
+    /// 错误处理：DLL 或模型加载失败时向上返回，避免应用误认为引擎可用。
+    /// Error handling: Propagates DLL/model loading failures so the app does not treat the engine as available.
+    /// 中文关键词：引擎服务，初始化，原生引擎封装，引擎启动
+    /// English keywords: engine service, initialization, native engine wrapper, engine start
+    pub fn new(engine_dll_path: String, engine_root_path: String) -> Result<Self, String> {
+        let native = NativeEngineService::new(&engine_dll_path, &engine_root_path)?;
+        Ok(Self {
+            native: Arc::new(Mutex::new(Some(Arc::new(native)))),
+            engine_dll_path,
+            engine_root_path,
+            cancel_flag: Arc::new(AtomicBool::new(false)),
+        })
     }
 
     /// 函数名称：health_check
@@ -33,10 +52,78 @@ impl EngineService {
     /// 中文关键词：引擎健康，心跳，状态检查
     /// English keywords: engine health, heartbeat, status check
     pub async fn health_check(&self) -> Result<serde_json::Value, String> {
-        let native = self.native.clone();
+        let Some(native) = self.native()? else {
+            return Ok(serde_json::json!({
+                "status": "stopped",
+                "engine": "axon_native"
+            }));
+        };
         tokio::task::spawn_blocking(move || native.health_check())
             .await
             .map_err(|e| format!("Health check task failed: {}", e))?
+    }
+
+    /// 函数名称：start_engine
+    /// 函数作用：启动扫描引擎；若已启动则保持幂等并返回成功。
+    /// Purpose: Starts the scan engine; if already running, keeps the call idempotent and succeeds.
+    /// 调用方：commands::engine::start_engine。
+    /// Called by: commands::engine::start_engine.
+    /// 被调用方：NativeEngineService::new。
+    /// Calls: NativeEngineService::new.
+    /// 返回值说明：true 表示命令成功；启动失败返回 String。
+    /// Returns: true when command succeeds; String error when startup fails.
+    /// 错误处理：DLL 或模型加载失败时返回错误，不伪造启动成功。
+    /// Error handling: Returns an error on DLL/model loading failure; does not fake success.
+    /// 中文关键词：启动引擎，加载DLL，恢复扫描
+    /// English keywords: start engine, load DLL, resume scan
+    pub async fn start_engine(&self) -> Result<bool, String> {
+        if self.native()?.is_some() {
+            return Ok(true);
+        }
+
+        let dll_path = self.engine_dll_path.clone();
+        let root_path = self.engine_root_path.clone();
+        let native = tokio::task::spawn_blocking(move || {
+            NativeEngineService::new(&dll_path, &root_path).map(Arc::new)
+        })
+        .await
+        .map_err(|e| format!("Start engine task failed: {}", e))??;
+
+        let mut guard = self.native.lock().map_err(|e| e.to_string())?;
+        if guard.is_none() {
+            *guard = Some(native);
+        }
+        self.cancel_flag.store(false, Ordering::SeqCst);
+        Ok(true)
+    }
+
+    /// 函数名称：stop_engine
+    /// 函数作用：停止扫描引擎并释放原生 DLL 句柄；已停止时保持幂等。
+    /// Purpose: Stops the scan engine and releases the native DLL handle; remains idempotent when already stopped.
+    /// 调用方：commands::engine::stop_engine。
+    /// Called by: commands::engine::stop_engine.
+    /// 被调用方：Option::take，NativeEngineService::drop。
+    /// Calls: Option::take, NativeEngineService::drop.
+    /// 返回值说明：true 表示命令成功。
+    /// Returns: true when command succeeds.
+    /// 错误处理：锁失败返回错误。
+    /// Error handling: Returns an error when the engine state lock fails.
+    /// 中文关键词：停止引擎，释放DLL，暂停扫描
+    /// English keywords: stop engine, release DLL, pause scan
+    pub async fn stop_engine(&self) -> Result<bool, String> {
+        self.cancel_flag.store(true, Ordering::SeqCst);
+        let mut guard = self.native.lock().map_err(|e| e.to_string())?;
+        let _ = guard.take();
+        Ok(true)
+    }
+
+    fn native(&self) -> Result<Option<Arc<NativeEngineService>>, String> {
+        Ok(self.native.lock().map_err(|e| e.to_string())?.clone())
+    }
+
+    fn require_native(&self) -> Result<Arc<NativeEngineService>, String> {
+        self.native()?
+            .ok_or_else(|| "扫描引擎未启动，请先启动扫描引擎".to_string())
     }
 
     /// 函数名称：scan_file
@@ -95,7 +182,7 @@ impl EngineService {
         file_path: &str,
         options: serde_json::Value,
     ) -> Result<serde_json::Value, String> {
-        let native = self.native.clone();
+        let native = self.require_native()?;
         let fp = file_path.to_string();
         let fp_for_closure = fp.clone();
         let result =
@@ -286,14 +373,39 @@ impl EngineService {
     }
 
     /// 函数名称：cancel_scan
-    /// 函数作用：取消当前扫描操作（原生 DLL 无取消机制，直接返回 true）。
-    /// Purpose: Cancels the current scan operation (native DLL has no cancel mechanism, returns true).
+    /// 函数作用：请求取消当前扫描操作。设置取消标志，批量扫描在文件间检查此标志并提前返回。
+    /// Purpose: Requests cancellation of the current scan. Sets the cancel flag; batch scan checks this between files and returns early.
     /// 调用方：commands::scanner::cancel_scan
     /// Called by: commands::scanner::cancel_scan
-    /// 中文关键词：取消扫描，中断扫描
-    /// English keywords: cancel scan, abort scan
+    /// 被调用方：AtomicBool::store。
+    /// Calls: AtomicBool::store.
+    /// 中文关键词：取消扫描，中断扫描，取消标志
+    /// English keywords: cancel scan, abort scan, cancel flag
     pub async fn cancel_scan(&self) -> Result<bool, String> {
+        self.cancel_flag.store(true, Ordering::SeqCst);
         Ok(true)
+    }
+
+    /// 函数名称：is_cancelled
+    /// 函数作用：检查取消标志是否已设置。
+    /// Purpose: Checks whether the cancel flag has been set.
+    /// 调用方：commands::scanner::scan_batch、commands::scanner::scan_file
+    /// Called by: commands::scanner::scan_batch, commands::scanner::scan_file
+    /// 中文关键词：取消检查，取消标志读取
+    /// English keywords: cancel check, cancel flag read
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel_flag.load(Ordering::SeqCst)
+    }
+
+    /// 函数名称：reset_cancel_flag
+    /// 函数作用：重置取消标志为 false，在开始新扫描前调用。
+    /// Purpose: Resets the cancel flag to false, called before starting a new scan.
+    /// 调用方：commands::scanner::scan_batch、commands::scanner::scan_file
+    /// Called by: commands::scanner::scan_batch, commands::scanner::scan_file
+    /// 中文关键词：重置取消，清除取消标志
+    /// English keywords: reset cancel, clear cancel flag
+    pub fn reset_cancel_flag(&self) {
+        self.cancel_flag.store(false, Ordering::SeqCst);
     }
 
     /// 函数名称：is_malware
@@ -304,7 +416,7 @@ impl EngineService {
     /// 中文关键词：恶意判断，快速检测
     /// English keywords: malware check, quick detection
     pub async fn is_malware(&self, file_path: &str) -> Result<(bool, f64), String> {
-        let native = self.native.clone();
+        let native = self.require_native()?;
         let file_path = file_path.to_string();
         tokio::task::spawn_blocking(move || native.is_malware(&file_path))
             .await

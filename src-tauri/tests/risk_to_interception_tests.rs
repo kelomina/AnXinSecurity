@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use anxin_security::services::risk_service::{RiskService, RiskEvent, RiskAssessment};
+use anxin_security::services::risk_service::{RiskEvent, RiskService};
 use anxin_security::services::interception_service::{InterceptionService, InterceptionEntry, InterceptionDecision};
 
 mod common;
@@ -134,8 +134,8 @@ fn test_risk_event_json_serialization() {
         timestamp: 10000,
     };
 
-    let json_str = serde_json::to_string(&event).expect("\u5e8f\u5217\u5316\u5e94\u6210\u529f");
-    let parsed: RiskEvent = serde_json::from_str(&json_str).expect("\u53cd\u5e8f\u5217\u5316\u5e94\u6210\u529f");
+    let json_str = serde_json::to_string(&event).expect("\u{5e8f}\u{5217}\u{5316}\u{5e94}\u{6210}\u{529f}");
+    let parsed: RiskEvent = serde_json::from_str(&json_str).expect("\u{53cd}\u{5e8f}\u{5217}\u{5316}\u{5e94}\u{6210}\u{529f}");
     assert_eq!(parsed.pid, event.pid);
     assert_eq!(parsed.severity, event.severity);
     assert_eq!(parsed.threat_type, event.threat_type);

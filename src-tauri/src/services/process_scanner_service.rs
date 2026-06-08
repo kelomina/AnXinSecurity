@@ -18,6 +18,8 @@ use crate::services::interception_service::{InterceptionEntry, InterceptionServi
 use crate::services::path_policy_service::should_skip_security_scan;
 use crate::services::scan_result_cache_service::{CachedScanResult, ScanResultCacheService};
 
+const PROCESS_SCANNER_STOP_POLL_MS: u64 = 250;
+
 // `tokio::spawn` 在 setup 阶段不可用，改用 Tauri 的 async_runtime
 // tokio::spawn is unavailable during setup, use tauri's async_runtime instead
 fn spawn_task<F>(fut: F)
@@ -66,9 +68,10 @@ impl ProcessScannerService {
     ///
     /// 副作用：
     ///   启动后台 Tokio 任务，持续轮询系统进程并调用引擎扫描
+    ///   轮询间隔内部使用短步进等待，确保 stop() 修改运行标志后后台任务能及时退出
     ///
-    /// 中文关键词：启动扫描，进程轮询，新进程检测，引擎扫描，排除项生效，允许列表生效，跳过扫描，运行时列表，路径策略，实时监控
-    /// English keywords: start scanning, process polling, new process detection, engine scan, exclusion effective, allowlist effective, skip scan, runtime list, path policy, realtime monitor
+    /// 中文关键词：启动扫描，进程轮询，新进程检测，引擎扫描，排除项生效，允许列表生效，跳过扫描，运行时列表，路径策略，实时监控，可停止等待
+    /// English keywords: start scanning, process polling, new process detection, engine scan, exclusion effective, allowlist effective, skip scan, runtime list, path policy, realtime monitor, stoppable wait
     pub fn start(
         &self,
         engine: Arc<EngineService>,
@@ -99,13 +102,8 @@ impl ProcessScannerService {
                 }
             }
 
-            let mut tick = time::interval(Duration::from_millis(interval));
-            tick.tick().await; // 跳过第一次立即执行
-
             while running.load(Ordering::SeqCst) {
-                tick.tick().await;
-
-                if !running.load(Ordering::SeqCst) {
+                if !wait_for_process_scan_interval(&running, interval).await {
                     break;
                 }
 
@@ -196,10 +194,10 @@ impl ProcessScannerService {
     }
 
     /// 函数名称：stop
-    /// 函数作用：停止进程扫描后台任务。
-    /// Purpose: Stops the process scanning background task.
-    /// 中文关键词：停止扫描，停止进程监控
-    /// English keywords: stop scanning, stop process monitoring
+    /// 函数作用：停止进程扫描后台任务；后台轮询等待最多一个短步进周期后退出。
+    /// Purpose: Stops the process scanning background task; the polling wait exits after at most one short step.
+    /// 中文关键词：停止扫描，停止进程监控，可停止等待
+    /// English keywords: stop scanning, stop process monitoring, stoppable wait
     #[allow(dead_code)]
     pub fn stop(&self) {
         self.running.store(false, Ordering::SeqCst);
@@ -214,6 +212,48 @@ impl ProcessScannerService {
     #[allow(dead_code)]
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
+    }
+}
+
+/// 函数名称：wait_for_process_scan_interval
+/// 函数作用：按短步进等待一次进程扫描轮询间隔，并在 stop 标志关闭时提前返回。
+/// Purpose: Waits for one process scan polling interval in short steps and returns early when the stop flag is cleared.
+/// 调用方：ProcessScannerService::start 后台任务。
+/// Called by: ProcessScannerService::start background task.
+/// 参数说明：running 为运行标志；interval_ms 为业务轮询间隔。
+/// Parameters: running is the runtime flag; interval_ms is the business polling interval.
+/// 返回值说明：完整等待后仍在运行返回 true；stop 已请求返回 false。
+/// Returns: true when the full wait completed and the service is still running; false when stop was requested.
+/// 中文关键词：进程扫描，短步进等待，停止服务，后台任务退出
+/// English keywords: process scan, short-step wait, stop service, background task exit
+async fn wait_for_process_scan_interval(running: &Arc<AtomicBool>, interval_ms: u64) -> bool {
+    let mut remaining_ms = interval_ms;
+    while running.load(Ordering::SeqCst) && remaining_ms > 0 {
+        let sleep_ms = remaining_ms.min(PROCESS_SCANNER_STOP_POLL_MS);
+        time::sleep(Duration::from_millis(sleep_ms)).await;
+        remaining_ms -= sleep_ms;
+    }
+
+    running.load(Ordering::SeqCst)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[tokio::test]
+    async fn process_scan_wait_returns_immediately_when_stop_requested() {
+        let running = Arc::new(AtomicBool::new(false));
+        let started_at = Instant::now();
+
+        let still_running = wait_for_process_scan_interval(&running, 2_000).await;
+
+        assert!(!still_running);
+        assert!(
+            started_at.elapsed() < Duration::from_millis(PROCESS_SCANNER_STOP_POLL_MS),
+            "process scanner wait should not sleep full interval after stop"
+        );
     }
 }
 

@@ -14,6 +14,5 @@ pub mod risk_service;
 pub mod runtime_list_store;
 pub mod scan_result_cache_service;
 pub mod snapshot_service;
-pub mod training_service;
 pub mod tray_service;
 pub mod trust_service;

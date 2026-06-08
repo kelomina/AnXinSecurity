@@ -1,13 +1,19 @@
 // 隔离区服务 - 处理文件隔离、恢复和删除
-use crate::utils::crypto::{decrypt_data, encrypt_data};
+use crate::utils::crypto::{
+    decrypt_data, encrypt_data, protect_data_with_dpapi, unprotect_data_with_dpapi,
+};
 use chrono::Utc;
 use rand::Rng;
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::fs;
 use std::path::PathBuf;
 use uuid::Uuid;
+
+const QUARANTINE_KEY_FILE_NAME: &str = "quarantine_key.bin";
+const QUARANTINE_KEY_ENTROPY: &[u8] = b"AnXinSecurity.QuarantineKey.v1";
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct QuarantineItem {
@@ -84,6 +90,34 @@ impl QuarantineService {
             .join("quarantine")
     }
 
+    /// 函数名称：get_runtime_directory
+    /// 函数作用：获取隔离区运行时密钥目录，默认位于 APPDATA 下。
+    /// Purpose: Gets the quarantine runtime key directory, defaulting to APPDATA.
+    /// 调用方：quarantine_key_path。
+    /// Called by: quarantine_key_path.
+    /// 中文关键词：隔离区密钥，APPDATA，运行时目录
+    /// English keywords: quarantine key, APPDATA, runtime directory
+    fn get_runtime_directory() -> PathBuf {
+        std::env::var("APPDATA")
+            .map(|app_data| {
+                PathBuf::from(app_data)
+                    .join("AnXinSecurity")
+                    .join("runtime")
+            })
+            .unwrap_or_else(|_| PathBuf::from("data").join("runtime"))
+    }
+
+    /// 函数名称：quarantine_key_path
+    /// 函数作用：返回 DPAPI 加密后的隔离区 AES 密钥文件路径。
+    /// Purpose: Returns the file path for the DPAPI-protected quarantine AES key.
+    /// 调用方：load_or_create_dpapi_encryption_key。
+    /// Called by: load_or_create_dpapi_encryption_key.
+    /// 中文关键词：隔离区密钥，DPAPI，密钥文件
+    /// English keywords: quarantine key, DPAPI, key file
+    fn quarantine_key_path() -> PathBuf {
+        Self::get_runtime_directory().join(QUARANTINE_KEY_FILE_NAME)
+    }
+
     /// 计算文件 SHA-256 哈希
     fn calculate_file_hash(file_path: &PathBuf) -> Result<String, String> {
         let data =
@@ -99,35 +133,69 @@ impl QuarantineService {
     /// 函数名称：get_encryption_key
     /// 函数作用：
     ///   获取文件加密密钥。优先从环境变量 ANXIN_SECURITY_QUARANTINE_KEY 读取 32 位 hex 字符串，
-    ///   若未设置则回退到开发用硬编码密钥（仅适用于非生产环境）。
+    ///   若未设置则读取或创建 DPAPI 保护的本机运行时密钥。
     /// Purpose:
     ///   Returns the encryption key for file quarantine. Prefers environment variable
-    ///   ANXIN_SECURITY_QUARANTINE_KEY (32-char hex string), falls back to dev hardcoded key.
+    ///   ANXIN_SECURITY_QUARANTINE_KEY (32-char hex string), otherwise reads or creates a DPAPI-protected local runtime key.
     /// 调用方：isolate_file, restore_file
     /// Called by: isolate_file, restore_file
-    /// 安全风险/Security risk: 回退密钥硬编码/fallback key is hardcoded — 不安全/not secure
-    ///   生产环境必须设置 ANXIN_SECURITY_QUARANTINE_KEY 环境变量（32位十六进制）。
-    ///   Production MUST set ANXIN_SECURITY_QUARANTINE_KEY env var (32 hex chars).
-    /// 中文关键词：加密密钥，环境变量，隔离区，AES，密钥管理
-    /// English keywords: encryption key, environment variable, quarantine, AES, key management
-    fn get_encryption_key() -> [u8; 16] {
+    /// 错误处理：环境变量格式错误或 DPAPI 密钥文件不可读时返回 String，不使用内置静态密钥。
+    /// Error handling: Invalid env var or unreadable DPAPI key file returns String; no built-in static key is used.
+    /// 中文关键词：加密密钥，环境变量，隔离区，AES，密钥管理，DPAPI
+    /// English keywords: encryption key, environment variable, quarantine, AES, key management, DPAPI
+    fn get_encryption_key() -> Result<[u8; 16], String> {
         if let Ok(hex_key) = std::env::var("ANXIN_SECURITY_QUARANTINE_KEY") {
             if hex_key.len() == 32 {
-                if let Ok(key) = <[u8; 16]>::try_from(
-                    (0..16)
-                        .map(|i| u8::from_str_radix(&hex_key[i * 2..i * 2 + 2], 16))
-                        .collect::<Result<Vec<_>, _>>()
-                        .unwrap_or_default(),
-                ) {
-                    return key;
+                let parsed_result: Result<Vec<u8>, _> = (0..16)
+                    .map(|i| u8::from_str_radix(&hex_key[i * 2..i * 2 + 2], 16))
+                    .collect();
+                if let Ok(bytes) = parsed_result {
+                    if let Ok(key) = <[u8; 16]>::try_from(bytes) {
+                        return Ok(key);
+                    }
                 }
             }
-            eprintln!("[QuarantineService] ANXIN_SECURITY_QUARANTINE_KEY 格式无效，需要32位hex字符串，使用回退密钥");
+            return Err(
+                "ANXIN_SECURITY_QUARANTINE_KEY 格式无效，需要 32 位 hex 字符串".to_string(),
+            );
         }
-        // 安全警告: 回退密钥仅用于开发/演示 — 生产环境请设置环境变量
-        // Security warning: fallback key for dev/demo only — set env var in production
-        eprintln!("[QuarantineService] WARNING: 使用硬编码回退加密密钥，生产环境请设置 ANXIN_SECURITY_QUARANTINE_KEY 环境变量");
-        *b"AnXinSecurityKey"
+
+        Self::load_or_create_dpapi_encryption_key()
+    }
+
+    /// 函数名称：load_or_create_dpapi_encryption_key
+    /// 函数作用：读取 DPAPI 保护的隔离区 AES 密钥；不存在时生成随机密钥并保存。
+    /// Purpose: Reads the DPAPI-protected quarantine AES key, generating and saving a random key when missing.
+    /// 调用方：get_encryption_key。
+    /// Called by: get_encryption_key.
+    /// 被调用方：protect_data_with_dpapi，unprotect_data_with_dpapi。
+    /// Calls: protect_data_with_dpapi, unprotect_data_with_dpapi.
+    /// 返回值说明：返回 16 字节 AES-128 密钥。
+    /// Returns: 16-byte AES-128 key.
+    /// 中文关键词：隔离区密钥，DPAPI，随机密钥，APPDATA
+    /// English keywords: quarantine key, DPAPI, random key, APPDATA
+    fn load_or_create_dpapi_encryption_key() -> Result<[u8; 16], String> {
+        let key_path = Self::quarantine_key_path();
+        if key_path.exists() {
+            let encrypted_key =
+                fs::read(&key_path).map_err(|err| format!("Failed to read key file: {}", err))?;
+            let key_bytes = unprotect_data_with_dpapi(&encrypted_key, QUARANTINE_KEY_ENTROPY)?;
+            return <[u8; 16]>::try_from(key_bytes)
+                .map_err(|_| "DPAPI quarantine key must be 16 bytes".to_string());
+        }
+
+        let mut key = [0u8; 16];
+        rand::thread_rng().fill_bytes(&mut key);
+        let encrypted_key = protect_data_with_dpapi(&key, QUARANTINE_KEY_ENTROPY)?;
+
+        if let Some(parent) = key_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("Failed to create quarantine key directory: {}", err))?;
+        }
+        fs::write(&key_path, encrypted_key)
+            .map_err(|err| format!("Failed to write quarantine key file: {}", err))?;
+
+        Ok(key)
     }
 
     /// 隔离文件：加密并移动到隔离区
@@ -161,7 +229,7 @@ impl QuarantineService {
             fs::read(&original_path).map_err(|e| format!("Failed to read file: {}", e))?;
 
         // 加密文件
-        let encryption_key = Self::get_encryption_key();
+        let encryption_key = Self::get_encryption_key()?;
         let encrypted_data = encrypt_data(&file_data, &encryption_key)?;
 
         // 生成唯一的隔离文件名
@@ -247,7 +315,7 @@ impl QuarantineService {
             .map_err(|e| format!("Failed to read encrypted file: {}", e))?;
 
         // 解密文件
-        let encryption_key = Self::get_encryption_key();
+        let encryption_key = Self::get_encryption_key()?;
         let decrypted_data = decrypt_data(&encrypted_data, &encryption_key)?;
 
         // 确保原文件的父目录存在
@@ -372,5 +440,131 @@ impl QuarantineService {
         .map_err(|e| format!("Failed to query quarantine items: {}", e))?;
 
         Ok(items)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct QuarantineKeyEnvGuard {
+        _lock: MutexGuard<'static, ()>,
+        original: Option<String>,
+    }
+
+    impl QuarantineKeyEnvGuard {
+        fn set(value: &str) -> Self {
+            let lock = ENV_LOCK.lock().expect("env lock should not be poisoned");
+            let original = std::env::var("ANXIN_SECURITY_QUARANTINE_KEY").ok();
+            std::env::set_var("ANXIN_SECURITY_QUARANTINE_KEY", value);
+            Self {
+                _lock: lock,
+                original,
+            }
+        }
+    }
+
+    impl Drop for QuarantineKeyEnvGuard {
+        fn drop(&mut self) {
+            if let Some(val) = &self.original {
+                std::env::set_var("ANXIN_SECURITY_QUARANTINE_KEY", val);
+            } else {
+                std::env::remove_var("ANXIN_SECURITY_QUARANTINE_KEY");
+            }
+        }
+    }
+
+    #[test]
+    fn get_encryption_key_returns_16_bytes() {
+        let _env_guard =
+            QuarantineKeyEnvGuard::set("00112233445566778899aabbccddeeff");
+        let key = QuarantineService::get_encryption_key().expect("valid env key should load");
+        assert_eq!(key.len(), 16, "encryption key must be 16 bytes for AES-128");
+    }
+
+    #[test]
+    fn get_encryption_key_with_valid_env_var() {
+        let _env_guard =
+            QuarantineKeyEnvGuard::set("00112233445566778899aabbccddeeff");
+        let key = QuarantineService::get_encryption_key().expect("valid env key should load");
+        assert_eq!(key[0], 0x00);
+        assert_eq!(key[1], 0x11);
+        assert_eq!(key[15], 0xff);
+    }
+
+    #[test]
+    fn get_encryption_key_with_short_env_var_returns_error() {
+        let _env_guard = QuarantineKeyEnvGuard::set("tooshort");
+        let result = QuarantineService::get_encryption_key();
+        assert!(result.is_err(), "short env var must not use a built-in static key");
+    }
+
+    #[test]
+    fn get_encryption_key_with_invalid_hex_env_var_returns_error() {
+        let _env_guard =
+            QuarantineKeyEnvGuard::set("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+        let result = QuarantineService::get_encryption_key();
+        assert!(result.is_err(), "invalid env var must not use a built-in static key");
+    }
+
+    #[test]
+    fn quarantine_key_path_uses_runtime_key_file() {
+        let key_path = QuarantineService::quarantine_key_path();
+        assert_eq!(
+            key_path.file_name().and_then(|name| name.to_str()),
+            Some(QUARANTINE_KEY_FILE_NAME)
+        );
+        assert!(
+            key_path.to_string_lossy().contains("runtime"),
+            "quarantine key should be stored in runtime data directory"
+        );
+    }
+
+    #[test]
+    fn quarantine_item_default_status_is_quarantined() {
+        let item = QuarantineItem {
+            id: "test-id".to_string(),
+            original_path: "C:\\test.exe".to_string(),
+            isolated_path: "C:\\quarantine\\test.enc".to_string(),
+            file_hash: "abc123".to_string(),
+            file_size: 1024,
+            threat_type: Some("trojan".to_string()),
+            threat_family: None,
+            status: "quarantined".to_string(),
+            isolated_at: "2026-01-01T00:00:00Z".to_string(),
+            restored_at: None,
+            description: None,
+        };
+        assert_eq!(item.status, "quarantined");
+        assert_eq!(item.file_size, 1024);
+        assert!(item.threat_type.is_some());
+        assert!(item.restored_at.is_none());
+    }
+
+    #[test]
+    fn quarantine_item_serialization_round_trip() {
+        let item = QuarantineItem {
+            id: "uuid-1234".to_string(),
+            original_path: "C:\\malware\\test.exe".to_string(),
+            isolated_path: "C:\\quarantine\\uuid-1234.enc".to_string(),
+            file_hash: "deadbeef".to_string(),
+            file_size: 2048,
+            threat_type: Some("ransomware".to_string()),
+            threat_family: Some("WannaCry".to_string()),
+            status: "quarantined".to_string(),
+            isolated_at: "2026-05-01T12:00:00Z".to_string(),
+            restored_at: None,
+            description: Some("Test quarantine item".to_string()),
+        };
+        let json = serde_json::to_string(&item).expect("serialization should succeed");
+        let parsed: QuarantineItem =
+            serde_json::from_str(&json).expect("deserialization should succeed");
+        assert_eq!(parsed.id, item.id);
+        assert_eq!(parsed.original_path, item.original_path);
+        assert_eq!(parsed.file_hash, item.file_hash);
+        assert_eq!(parsed.status, item.status);
     }
 }

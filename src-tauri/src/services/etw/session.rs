@@ -4,7 +4,7 @@ use std::sync::{
     Arc, Mutex,
 };
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 
@@ -19,6 +19,7 @@ const EVENT_TRACE_REAL_TIME_MODE: u32 = 0x00000100;
 const EVENT_TRACE_SYSTEM_LOGGER_MODE: u32 = 0x02000000;
 const PROCESS_TRACE_MODE_REAL_TIME: u32 = 0x00000100;
 const PROCESS_TRACE_MODE_EVENT_RECORD: u32 = 0x10000000;
+const ERROR_WMI_INSTANCE_NOT_FOUND: u32 = 4201;
 
 const SYSTEM_TRACE_CONTROL_GUID: [u8; 16] = [
     0x68, 0xDD, 0x9E, 0x9E, 0x0C, 0x8D, 0x84, 0x45, 0x82, 0x77, 0x7D, 0x5D, 0x82, 0xA9, 0xAC, 0xE4,
@@ -317,36 +318,76 @@ impl EtwSession {
         Ok(())
     }
 
-    pub fn stop(&mut self, _timeout_ms: u32) -> Result<(), String> {
-        unsafe {
-            let sechost = libloading::Library::new("sechost.dll")
-                .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
+    /// 函数名称：stop
+    /// 函数作用：停止 ETW 会话，并在限定时间内等待 ProcessTrace 后台线程退出。
+    /// Purpose: Stops the ETW session and waits for the ProcessTrace background thread to exit within a bounded timeout.
+    /// 调用方：EtwService::pause。
+    /// Called by: EtwService::pause.
+    /// 被调用方：ControlTraceW、wait_for_trace_thread_stop。
+    /// Calls: ControlTraceW, wait_for_trace_thread_stop.
+    /// 参数说明：timeout_ms 为等待后台线程退出的最长毫秒数。
+    /// Parameters: timeout_ms is the maximum milliseconds to wait for the background thread to exit.
+    /// 返回值说明：成功停止返回 Ok；ControlTraceW 失败或线程超时未退出返回 String。
+    /// Returns: Ok on successful stop; String when ControlTraceW fails or the thread does not exit before timeout.
+    /// 错误处理：不再无限 join；停止失败时保留线程句柄，方便后续重试或诊断。
+    /// Error handling: Does not join indefinitely; keeps the thread handle on failure for retry or diagnosis.
+    /// 中文关键词：停止ETW，ProcessTrace，有限等待，阻塞防护
+    /// English keywords: stop ETW, ProcessTrace, bounded wait, blocking guard
+    pub fn stop(&mut self, timeout_ms: u32) -> Result<(), String> {
+        self.stop_flag.store(true, Ordering::Relaxed);
 
-            type ControlTraceFn =
-                unsafe extern "system" fn(u64, *const u16, *mut EventTraceProperties, u32) -> u32;
-            let control_trace: ControlTraceFn = *sechost
-                .get(b"ControlTraceW")
-                .map_err(|e| format!("Failed to load ControlTraceW: {}", e))?;
+        if self.session_handle != 0 || self.trace_handle != 0 {
+            let stop_status = unsafe {
+                let sechost = libloading::Library::new("sechost.dll")
+                    .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
 
-            let mut buf: Vec<u8> = vec![0u8; std::mem::size_of::<EventTraceProperties>() + 2048];
-            let props = &mut *(buf.as_mut_ptr() as *mut EventTraceProperties);
-            props.wnode.buffer_size = (std::mem::size_of::<EventTraceProperties>() + 2048) as u32;
+                type ControlTraceFn = unsafe extern "system" fn(
+                    u64,
+                    *const u16,
+                    *mut EventTraceProperties,
+                    u32,
+                ) -> u32;
+                let control_trace: ControlTraceFn = *sechost
+                    .get(b"ControlTraceW")
+                    .map_err(|e| format!("Failed to load ControlTraceW: {}", e))?;
 
-            let wide_name: Vec<u16> = self
-                .session_name
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            let _ = control_trace(
-                self.session_handle,
-                wide_name.as_ptr(),
-                props,
-                EVENT_TRACE_CONTROL_STOP,
-            );
+                let mut buf: Vec<u8> =
+                    vec![0u8; std::mem::size_of::<EventTraceProperties>() + 2048];
+                let props = &mut *(buf.as_mut_ptr() as *mut EventTraceProperties);
+                props.wnode.buffer_size =
+                    (std::mem::size_of::<EventTraceProperties>() + 2048) as u32;
+
+                let wide_name: Vec<u16> = self
+                    .session_name
+                    .encode_utf16()
+                    .chain(std::iter::once(0))
+                    .collect();
+                control_trace(
+                    self.session_handle,
+                    wide_name.as_ptr(),
+                    props,
+                    EVENT_TRACE_CONTROL_STOP,
+                )
+            };
+
+            if stop_status != 0 && stop_status != ERROR_WMI_INSTANCE_NOT_FOUND {
+                return Err(format!("ControlTraceW stop failed: {}", stop_status));
+            }
         }
 
         if let Some(handle) = self.trace_thread.take() {
-            let _ = handle.join();
+            match wait_for_trace_thread_stop(handle, timeout_ms)? {
+                Some(handle) => {
+                    self.trace_thread = Some(handle);
+                    return Err(format!(
+                        "ETW trace thread did not stop within {} ms",
+                        timeout_ms.max(1)
+                    ));
+                }
+                None => {
+                    self.trace_handle = 0;
+                }
+            }
         }
 
         // Clean up callback context
@@ -363,6 +404,57 @@ impl EtwSession {
     pub fn poll_events(&self) -> Vec<String> {
         let mut queue = self.event_queue.lock().unwrap_or_else(|e| e.into_inner());
         queue.drain(..).collect()
+    }
+}
+
+/// 函数名称：wait_for_trace_thread_stop
+/// 函数作用：在限定时间内等待 ETW ProcessTrace 线程自然结束，避免 stop 路径无限阻塞。
+/// Purpose: Waits for the ETW ProcessTrace thread to finish within a bounded timeout so the stop path cannot block forever.
+/// 调用方：EtwSession::stop。
+/// Called by: EtwSession::stop.
+/// 参数说明：handle 为后台线程句柄；timeout_ms 为最大等待毫秒数。
+/// Parameters: handle is the background thread handle; timeout_ms is the maximum wait in milliseconds.
+/// 返回值说明：线程结束返回 None；超时返回 Some(handle) 交还调用方保存。
+/// Returns: None when the thread finished; Some(handle) on timeout so the caller can keep it.
+/// 错误处理：线程 panic 转换为 String；超时不 panic、不无限等待。
+/// Error handling: Converts thread panic to String; timeout does not panic or wait indefinitely.
+/// 中文关键词：ETW停止，线程等待，超时保护，阻塞防护
+/// English keywords: ETW stop, thread wait, timeout guard, blocking guard
+fn wait_for_trace_thread_stop(
+    handle: thread::JoinHandle<()>,
+    timeout_ms: u32,
+) -> Result<Option<thread::JoinHandle<()>>, String> {
+    let timeout = Duration::from_millis(timeout_ms.max(1) as u64);
+    let started_at = Instant::now();
+
+    while started_at.elapsed() < timeout {
+        if handle.is_finished() {
+            handle
+                .join()
+                .map_err(|_| "ETW trace thread panicked during stop".to_string())?;
+            return Ok(None);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+
+    Ok(Some(handle))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trace_thread_wait_joins_finished_thread_without_timeout() {
+        let handle = thread::spawn(|| {});
+
+        let remaining_handle = wait_for_trace_thread_stop(handle, 250)
+            .expect("finished trace thread should join cleanly");
+
+        assert!(
+            remaining_handle.is_none(),
+            "finished trace thread should not be kept for retry"
+        );
     }
 }
 

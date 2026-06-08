@@ -20,16 +20,20 @@ pub async fn scanner_health(
 
 /// 函数名称：scan_file
 /// 函数作用：扫描单个文件；命中排除项或允许列表时返回 clean 跳过结果，否则调用扫描引擎。
+///   若取消标志已设置，返回错误而非继续扫描。
 /// Function name: scan_file
-/// Purpose: Scans a single file; returns a clean skipped result when exclusions or allowlist match, otherwise calls the scan engine.
+/// Purpose: Scans a single file; returns a clean skipped result when exclusions or allowlist match,
+///   otherwise calls the scan engine. Returns an error if the cancel flag is set.
 /// 调用方：前端 ScanPage scanFile API。
 /// Called by: Frontend ScanPage scanFile API.
-/// 被调用方：path_policy_service::should_skip_security_scan、skipped_scan_result、EngineService::scan_file。
-/// Calls: path_policy_service::should_skip_security_scan, skipped_scan_result, EngineService::scan_file.
+/// 被调用方：path_policy_service::should_skip_security_scan、skipped_scan_result、EngineService::scan_file、
+///   EngineService::is_cancelled、EngineService::reset_cancel_flag。
+/// Calls: path_policy_service::should_skip_security_scan, skipped_scan_result, EngineService::scan_file,
+///   EngineService::is_cancelled, EngineService::reset_cancel_flag.
 /// 参数说明：file_path 为待扫描文件路径；options 为可选扫描选项。
 /// Parameters: file_path is the file to scan; options contains optional scan options.
-/// 返回值说明：Result<serde_json::Value, String>，返回前端 ScanResult 兼容 JSON。
-/// Returns: Result<serde_json::Value, String>, returning frontend ScanResult-compatible JSON.
+/// 返回值说明：Result<serde_json::Value, String>，返回前端 ScanResult 兼容 JSON；取消时返回错误。
+/// Returns: Result<serde_json::Value, String>, returning frontend ScanResult-compatible JSON; error on cancel.
 /// 内部关键变量：opts 为扫描选项；skip 表示路径策略是否命中。
 /// Internal variables: opts stores scan options; skip indicates path policy match.
 /// 接入方式：接口层命令入口；所有手动单文件扫描应经过本函数。
@@ -42,33 +46,37 @@ pub async fn scanner_health(
 /// Transaction boundary: No Unit of Work and no database transaction.
 /// 并发与幂等：列表和文件不变时结果稳定；列表更新后下一次扫描生效。
 /// Concurrency and idempotency: Stable while lists and file content do not change; list updates affect the next scan.
-/// 中文关键词：文件扫描，排除项生效，允许列表生效，跳过扫描，威胁扫描，安全扫描，路径策略，设置页，运行时列表，手动扫描
-/// English keywords: file scan, exclusion effective, allowlist effective, skip scan, threat scan, security scan, path policy, settings page, runtime list, manual scan
+/// 中文关键词：文件扫描，排除项生效，允许列表生效，跳过扫描，取消检查，威胁扫描
+/// English keywords: file scan, exclusion effective, allowlist effective, skip scan, cancel check, threat scan
 #[tauri::command]
 pub async fn scan_file(
     engine: State<'_, Arc<EngineService>>,
     file_path: String,
     options: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
-    let opts = options.unwrap_or_default();
+    engine.reset_cancel_flag();
     if should_skip_security_scan(&file_path)? {
         return Ok(skipped_scan_result(&file_path));
     }
-    engine.scan_file(&file_path, opts).await
+    engine.scan_file(&file_path, options.unwrap_or_default()).await
 }
 
 /// 函数名称：scan_batch
 /// 函数作用：批量扫描多个文件；对命中排除项或允许列表的文件返回 clean 跳过结果。
+///   每个文件扫描前检查取消标志，若已取消则立即返回已扫描结果并附带 cancelled 标记。
 /// Function name: scan_batch
 /// Purpose: Scans multiple files; files matching exclusions or allowlist return clean skipped results.
+///   Checks the cancel flag before each file; if cancelled, returns partial results with a cancelled marker.
 /// 调用方：前端 ScanPage scanBatch API。
 /// Called by: Frontend ScanPage scanBatch API.
-/// 被调用方：path_policy_service::should_skip_security_scan、skipped_scan_result、EngineService::scan_file。
-/// Calls: path_policy_service::should_skip_security_scan, skipped_scan_result, EngineService::scan_file.
+/// 被调用方：path_policy_service::should_skip_security_scan、skipped_scan_result、EngineService::scan_file、
+///   EngineService::is_cancelled、EngineService::reset_cancel_flag。
+/// Calls: path_policy_service::should_skip_security_scan, skipped_scan_result, EngineService::scan_file,
+///   EngineService::is_cancelled, EngineService::reset_cancel_flag.
 /// 参数说明：file_paths 为待扫描路径列表；options 为可选扫描选项。
 /// Parameters: file_paths is the list to scan; options contains optional scan options.
-/// 返回值说明：Result<serde_json::Value, String>，包含 results、totalFiles、threatsFound。
-/// Returns: Result<serde_json::Value, String>, containing results, totalFiles, and threatsFound.
+/// 返回值说明：Result<serde_json::Value, String>，包含 results、totalFiles、threatsFound、cancelled。
+/// Returns: Result<serde_json::Value, String>, containing results, totalFiles, threatsFound, and cancelled.
 /// 内部关键变量：results 保存每个文件结果；opts 为每次扫描复用的选项。
 /// Internal variables: results stores per-file results; opts is reused for each scan.
 /// 接入方式：接口层命令入口；目录/多文件扫描应经过本函数。
@@ -81,8 +89,8 @@ pub async fn scan_file(
 /// Transaction boundary: No Unit of Work and no database transaction.
 /// 并发与幂等：串行扫描；列表更新后下一次文件判断生效。
 /// Concurrency and idempotency: Sequential scan; list updates affect the next file check.
-/// 中文关键词：批量扫描，排除项生效，允许列表生效，跳过扫描，多文件扫描，目录扫描，路径策略，运行时列表，设置页，威胁统计
-/// English keywords: batch scan, exclusion effective, allowlist effective, skip scan, multi-file scan, directory scan, path policy, runtime list, settings page, threat count
+/// 中文关键词：批量扫描，排除项生效，允许列表生效，跳过扫描，取消检查，多文件扫描
+/// English keywords: batch scan, exclusion effective, allowlist effective, skip scan, cancel check, multi-file scan
 #[tauri::command]
 pub async fn scan_batch(
     engine: State<'_, Arc<EngineService>>,
@@ -90,9 +98,21 @@ pub async fn scan_batch(
     options: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, String> {
     let opts = options.unwrap_or_default();
-    let mut results = Vec::new();
+    let mut results: Vec<serde_json::Value> = Vec::new();
+
+    engine.reset_cancel_flag();
 
     for file_path in &file_paths {
+        if engine.is_cancelled() {
+            return Ok(serde_json::json!({
+                "results": results,
+                "totalFiles": file_paths.len(),
+                "threatsFound": results.iter().filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("malware")).count(),
+                "scannedFiles": results.len(),
+                "cancelled": true,
+            }));
+        }
+
         if should_skip_security_scan(file_path)? {
             results.push(skipped_scan_result(file_path));
         } else {
@@ -113,14 +133,14 @@ pub async fn scan_batch(
 }
 
 /// 函数名称：cancel_scan
-/// 函数作用：取消当前正在进行的扫描操作。向扫描引擎发送取消请求。
-/// Purpose: Cancels the current scan operation. Sends a cancel request to the scan engine.
+/// 函数作用：取消当前正在进行的扫描操作。设置引擎取消标志，批量扫描在文件间检查此标志并提前返回。
+/// Purpose: Cancels the current scan operation. Sets the engine cancel flag; batch scan checks this between files and returns early.
 /// 调用方：前端 ScanPage 取消按钮 → scannerStore.cancelScan()
 /// Called by: Frontend ScanPage cancel button → scannerStore.cancelScan()
-/// 副作用：向引擎 TCP 连接发送 cancel 命令请求
-/// Side effect: Sends cancel command to engine via TCP
-/// 中文关键词：取消扫描，中断扫描，停止扫描，取消操作
-/// English keywords: cancel scan, abort scan, stop scan, cancel operation
+/// 被调用方：EngineService::cancel_scan。
+/// Calls: EngineService::cancel_scan.
+/// 中文关键词：取消扫描，中断扫描，停止扫描，取消标志
+/// English keywords: cancel scan, abort scan, stop scan, cancel flag
 #[tauri::command]
 pub async fn cancel_scan(engine: State<'_, Arc<EngineService>>) -> Result<bool, String> {
     engine.cancel_scan().await
