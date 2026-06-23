@@ -1,200 +1,175 @@
-use std::sync::{Arc, Mutex};
+use anxin_security::services::process_monitor_service::{
+    process_hook_default_path_candidates, resolve_process_hook_paths,
+};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-pub struct TestSharedState {
-    pub value: u32,
+struct TempProcessHookDir {
+    root: PathBuf,
 }
 
-impl TestSharedState {
-    pub fn new() -> Self {
-        Self { value: 0 }
+impl TempProcessHookDir {
+    fn new(test_name: &str) -> Self {
+        let unique_id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after unix epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "anxin_process_hook_{}_{}_{}",
+            std::process::id(),
+            test_name,
+            unique_id
+        ));
+
+        fs::create_dir_all(&root).expect("test temp directory should be created");
+        Self { root }
+    }
+
+    fn path(&self) -> &Path {
+        &self.root
+    }
+
+    fn create_resource_file(&self, arch_dir: &str, file_name: &str) -> PathBuf {
+        let file_path = self.root.join(arch_dir).join(file_name);
+        fs::create_dir_all(file_path.parent().expect("file should have parent"))
+            .expect("resource arch directory should be created");
+        fs::write(&file_path, b"test binary placeholder")
+            .expect("placeholder resource file should be written");
+        file_path
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_shared_state_new_creates_with_zero() {
-        let state = TestSharedState::new();
-        assert_eq!(state.value, 0);
+impl Drop for TempProcessHookDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
     }
+}
 
-    #[test]
-    fn test_arc_mutex_state_access() {
-        let state = Arc::new(Mutex::new(TestSharedState::new()));
-        
-        {
-            let mut guard = state.lock().unwrap();
-            guard.value = 42;
-        }
-        
-        let guard = state.lock().unwrap();
-        assert_eq!(guard.value, 42);
-    }
+#[test]
+fn resource_path_candidates_include_development_then_resource_locations() {
+    let resource_dir = TempProcessHookDir::new("candidate_order");
 
-    #[test]
-    fn test_arc_mutex_allows_concurrent_access() {
-        let state = Arc::new(Mutex::new(TestSharedState::new()));
-        let mut handles = vec![];
+    let candidates = process_hook_default_path_candidates(
+        "win32-x64",
+        "file_hook_injector.exe",
+        Some(resource_dir.path()),
+    );
 
-        for i in 0..10 {
-            let s = state.clone();
-            let handle = std::thread::spawn(move || {
-                let mut guard = s.lock().unwrap();
-                guard.value = i;
-            });
-            handles.push(handle);
-        }
+    assert!(
+        candidates.len() >= 2,
+        "default candidates should include development and resource locations"
+    );
+    assert!(
+        candidates[0]
+            .to_string_lossy()
+            .contains(r"native/bin\win32-x64\file_hook_injector.exe")
+            || candidates[0]
+                .to_string_lossy()
+                .contains("native/bin/win32-x64/file_hook_injector.exe"),
+        "development native/bin candidate should be checked first: {}",
+        candidates[0].display()
+    );
+    assert_eq!(
+        candidates[1],
+        resource_dir
+            .path()
+            .join("native/bin")
+            .join("win32-x64")
+            .join("file_hook_injector.exe")
+    );
+}
 
-        for handle in handles {
-            handle.join().expect("thread should complete");
-        }
+#[test]
+fn resolve_process_hook_paths_selects_matching_architecture_files_from_resource_dir() {
+    let resource_dir = TempProcessHookDir::new("resolve_resource");
+    resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_injector.exe");
+    resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_injector.exe");
+    resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_detours.dll");
+    resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_detours.dll");
 
-        let guard = state.lock().unwrap();
-        assert!(guard.value < 10);
-    }
+    let resolved = resolve_process_hook_paths("", "", "", "", Some(resource_dir.path()))
+        .expect("resource files should resolve");
 
-    #[test]
-    fn test_option_none_handling() {
-        let option: Option<u32> = None;
-        assert!(option.is_none());
-        
-        let value = option.unwrap_or(100);
-        assert_eq!(value, 100);
-    }
+    assert!(
+        resolved
+            .injector_x64
+            .ends_with(Path::new("win32-x64").join("file_hook_injector.exe")),
+        "x64 injector should resolve from a win32-x64 path: {}",
+        resolved.injector_x64.display()
+    );
+    assert!(
+        resolved
+            .injector_x86
+            .ends_with(Path::new("win32-x86").join("file_hook_injector.exe")),
+        "x86 injector should resolve from a win32-x86 path: {}",
+        resolved.injector_x86.display()
+    );
+    assert!(
+        resolved
+            .dll_x64
+            .ends_with(Path::new("win32-x64").join("file_hook_detours.dll")),
+        "x64 DLL should resolve from a win32-x64 path: {}",
+        resolved.dll_x64.display()
+    );
+    assert!(
+        resolved
+            .dll_x86
+            .ends_with(Path::new("win32-x86").join("file_hook_detours.dll")),
+        "x86 DLL should resolve from a win32-x86 path: {}",
+        resolved.dll_x86.display()
+    );
+}
 
-    #[test]
-    fn test_option_some_handling() {
-        let option: Option<u32> = Some(50);
-        assert!(option.is_some());
-        
-        let value = option.unwrap_or(100);
-        assert_eq!(value, 50);
-    }
+#[test]
+fn resolve_process_hook_paths_reports_clear_error_when_required_file_is_missing() {
+    let explicit_dir = TempProcessHookDir::new("missing_error");
+    let injector_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_injector.exe");
+    let injector_x86 = explicit_dir.create_resource_file("manual-x86", "file_hook_injector.exe");
+    let dll_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_detours.dll");
+    let missing_dll_x86 = explicit_dir
+        .path()
+        .join("manual-x86")
+        .join("file_hook_detours.dll");
 
-    #[test]
-    fn test_string_empty_check() {
-        let empty = String::new();
-        let not_empty = "test".to_string();
-        
-        assert!(empty.is_empty());
-        assert!(!not_empty.is_empty());
-    }
+    let error = resolve_process_hook_paths(
+        &injector_x64.to_string_lossy(),
+        &injector_x86.to_string_lossy(),
+        &dll_x64.to_string_lossy(),
+        &missing_dll_x86.to_string_lossy(),
+        None,
+    )
+    .expect_err("missing x86 DLL should return an error");
 
-    #[test]
-    fn test_path_normalization_logic() {
-        fn normalize_path(path: &str) -> String {
-            let mut normalized: String = path
-                .chars()
-                .map(|ch| {
-                    if ch == '/' {
-                        '\\'
-                    } else {
-                        ch.to_ascii_lowercase()
-                    }
-                })
-                .collect();
-            if normalized.starts_with("\\\\?\\") {
-                normalized = normalized[4..].to_string();
-            }
-            if normalized.starts_with("\\??\\") {
-                normalized = normalized[4..].to_string();
-            }
-            normalized
-        }
+    assert!(
+        error.contains("Missing APIHook x86 DLL file 'file_hook_detours.dll'"),
+        "error should name the missing x86 DLL: {error}"
+    );
+    assert!(
+        error.contains("manual-x86") && error.contains("file_hook_detours.dll"),
+        "error should include checked explicit path: {error}"
+    );
+}
 
-        assert_eq!(normalize_path("C:/Windows/System32"), r"c:\windows\system32");
-        assert_eq!(normalize_path(r"\\?\C:\Test"), r"c:\test");
-        assert_eq!(normalize_path(r"\??\D:\App"), r"d:\app");
-        assert_eq!(normalize_path(r"C:\Normal\Path"), r"c:\normal\path");
-    }
+#[test]
+fn explicit_existing_paths_keep_backward_compatible_frontend_inputs() {
+    let explicit_dir = TempProcessHookDir::new("explicit_paths");
+    let injector_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_injector.exe");
+    let injector_x86 = explicit_dir.create_resource_file("manual-x86", "file_hook_injector.exe");
+    let dll_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_detours.dll");
+    let dll_x86 = explicit_dir.create_resource_file("manual-x86", "file_hook_detours.dll");
 
-    #[test]
-    fn test_process_arch_enum() {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum ProcArch {
-            Unknown,
-            X86,
-            X64,
-        }
+    let resolved = resolve_process_hook_paths(
+        &injector_x64.to_string_lossy(),
+        &injector_x86.to_string_lossy(),
+        &dll_x64.to_string_lossy(),
+        &dll_x86.to_string_lossy(),
+        None,
+    )
+    .expect("explicit existing paths should resolve");
 
-        assert_eq!(ProcArch::Unknown as u32, 0);
-        assert_eq!(ProcArch::X86 as u32, 1);
-        assert_eq!(ProcArch::X64 as u32, 2);
-    }
-
-    #[test]
-    fn test_inject_task_struct() {
-        #[derive(Debug)]
-        struct InjectTask {
-            pid: u32,
-            arch: &'static str,
-        }
-
-        let task = InjectTask { pid: 1234, arch: "x64" };
-        assert_eq!(task.pid, 1234);
-        assert_eq!(task.arch, "x64");
-    }
-
-    #[test]
-    fn test_interval_validation() {
-        fn validate_interval(interval_ms: u32) -> u32 {
-            std::cmp::max(interval_ms, 100)
-        }
-
-        assert_eq!(validate_interval(50), 100);
-        assert_eq!(validate_interval(100), 100);
-        assert_eq!(validate_interval(500), 500);
-        assert_eq!(validate_interval(0), 100);
-    }
-
-    #[test]
-    fn test_sign_cache_hashmap_operations() {
-        use std::collections::HashMap;
-        
-        let mut cache: HashMap<String, bool> = HashMap::new();
-        
-        cache.insert(r"C:\Windows\notepad.exe".to_string(), true);
-        cache.insert(r"C:\Test\unknown.exe".to_string(), false);
-        
-        assert_eq!(cache.len(), 2);
-        assert_eq!(cache.get(r"C:\Windows\notepad.exe"), Some(&true));
-        assert_eq!(cache.get(r"C:\Test\unknown.exe"), Some(&false));
-        assert_eq!(cache.get(r"C:\NonExistent\app.exe"), None);
-        
-        cache.remove(r"C:\Windows\notepad.exe");
-        assert_eq!(cache.len(), 1);
-    }
-
-    #[test]
-    fn test_pid_set_operations() {
-        use std::collections::HashSet;
-        
-        let mut seen: HashSet<u32> = HashSet::new();
-        
-        assert!(seen.insert(100));
-        assert!(!seen.insert(100));
-        
-        assert!(seen.contains(&100));
-        assert!(!seen.contains(&200));
-        
-        seen.insert(200);
-        seen.insert(300);
-        assert_eq!(seen.len(), 3);
-    }
-
-    #[test]
-    fn test_retain_logic() {
-        use std::collections::HashSet;
-
-        let current: Vec<u32> = vec![100, 200, 300];
-        let mut seen: HashSet<u32> = HashSet::from([100, 200, 400]);
-        
-        seen.retain(|p| current.contains(p));
-        
-        assert!(seen.contains(&100));
-        assert!(seen.contains(&200));
-        assert!(!seen.contains(&400));
-    }
+    assert_eq!(resolved.injector_x64, injector_x64);
+    assert_eq!(resolved.injector_x86, injector_x86);
+    assert_eq!(resolved.dll_x64, dll_x64);
+    assert_eq!(resolved.dll_x86, dll_x86);
 }

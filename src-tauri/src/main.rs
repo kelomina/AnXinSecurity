@@ -8,24 +8,28 @@ mod services;
 mod utils;
 
 use crate::models::config::AppConfig;
+use crate::services::app_lifecycle_service::AppLifecycleService;
 use crate::services::behavior_service::BehaviorService;
 use crate::services::engine_service::EngineService;
 use crate::services::etw_service::EtwService;
 use crate::services::file_monitor_service::FileMonitorService;
 use crate::services::hook_service::HookService;
+use crate::services::interception_diagnostics_service::append_interception_diagnostic;
+use crate::services::interception_recovery_service::recover_suspended_processes_from_ledger;
 use crate::services::interception_service::InterceptionService;
+use crate::services::interception_window_service::prepare_interception_window;
 use crate::services::process_monitor_service::ProcessMonitorService;
 use crate::services::process_scanner_service::ProcessScannerService;
 use crate::services::quarantine_service::QuarantineService;
 use crate::services::risk_service::RiskService;
 use crate::services::scan_result_cache_service::ScanResultCacheService;
-use crate::services::snapshot_service::SnapshotService;
+use crate::services::snapshot_service::{SnapshotScanOptions, SnapshotService};
 use crate::services::tray_service::TrayService;
 use crate::services::trust_service::TrustService;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use tauri::Manager;
+use tauri::{Manager, RunEvent};
 
 /// 函数名称：resolve_behavior_database_path
 /// 函数作用：解析行为分析与隔离区共用 SQLite 数据库路径；相对路径写入 APPDATA，避免 tauri dev 监听仓库运行时文件后重载。
@@ -147,12 +151,100 @@ fn migrate_legacy_behavior_database(
     Ok(())
 }
 
+/// 函数名称：start_runtime_process_scanner_before_snapshot
+/// 函数作用：在完整启动快照完成前启动新进程恶意扫描器，让新增进程尽早进入实时防护。
+/// Function name: start_runtime_process_scanner_before_snapshot
+/// Purpose: Starts the new-process malware scanner before the full startup snapshot completes so newly created processes are protected early.
+/// 调用方：main setup 初始化完进程扫描服务后。
+/// Called by: main setup after managing ProcessScannerService.
+/// 被调用方：ProcessScannerService::start。
+/// Calls: ProcessScannerService::start.
+/// 参数说明：app_handle 用于读取 Tauri managed state；process_monitoring_enabled 来自启动时配置快照。
+/// Parameters: app_handle reads Tauri managed state; process_monitoring_enabled comes from the startup config snapshot.
+/// 错误处理：缺失 managed state 或启动失败只记录日志，不阻断应用启动。
+/// Error handling: Missing managed state or startup failures are logged and do not abort app startup.
+/// 中文关键词：启动顺序，启动快照，进程扫描，实时防护，防护就绪
+/// English keywords: startup order, startup snapshot, process scanner, realtime protection, protection ready
+fn start_runtime_process_scanner_before_snapshot(
+    app_handle: &tauri::AppHandle,
+    process_monitoring_enabled: bool,
+) {
+    if !process_monitoring_enabled {
+        eprintln!("[main] Process scanner disabled by config");
+        return;
+    }
+
+    match (
+        app_handle.try_state::<ProcessScannerService>(),
+        app_handle.try_state::<Arc<EngineService>>(),
+        app_handle.try_state::<Arc<ScanResultCacheService>>(),
+        app_handle.try_state::<Arc<InterceptionService>>(),
+    ) {
+        (Some(process_scanner), Some(engine), Some(cache), Some(interception)) => {
+            process_scanner.start(
+                engine.inner().clone(),
+                cache.inner().clone(),
+                interception.inner().clone(),
+                app_handle.clone(),
+                2000,
+            );
+            eprintln!("[main] Process scanner started before startup snapshot");
+        }
+        _ => eprintln!("[main] Failed to start Process scanner: required service not managed"),
+    }
+}
+
+/// 函数名称：start_apihook_process_watcher_after_snapshot
+/// 函数作用：启动快照完成后再启动 APIHook watcher，避免启动快照扫描到本次启动期间由自身注入的 Hook DLL。
+/// Function name: start_apihook_process_watcher_after_snapshot
+/// Purpose: Starts the APIHook watcher after the startup snapshot so the snapshot is not polluted by hook DLLs injected by this app during startup.
+/// 调用方：main setup 的启动快照后台任务。
+/// Called by: startup snapshot background task in main setup.
+/// 被调用方：ProcessMonitorService::start_with_resource_dir。
+/// Calls: ProcessMonitorService::start_with_resource_dir.
+/// 参数说明：app_handle 用于读取 Tauri managed state；process_monitoring_enabled 来自启动时配置快照。
+/// Parameters: app_handle reads Tauri managed state; process_monitoring_enabled comes from the startup config snapshot.
+/// 错误处理：缺失 managed state 或启动失败只记录日志，不阻断应用启动。
+/// Error handling: Missing managed state or startup failures are logged and do not abort app startup.
+/// 中文关键词：启动顺序，启动快照，APIHook，自身注入，误报控制
+/// English keywords: startup order, startup snapshot, APIHook, self injection, false-positive control
+fn start_apihook_process_watcher_after_snapshot(
+    app_handle: &tauri::AppHandle,
+    process_monitoring_enabled: bool,
+) {
+    if !process_monitoring_enabled {
+        eprintln!("[main] APIHook process watcher disabled by config");
+        return;
+    }
+
+    match app_handle.try_state::<ProcessMonitorService>() {
+        Some(process_monitor_service) => {
+            let resource_dir = app_handle.path().resource_dir().ok();
+            match process_monitor_service.start_with_resource_dir(
+                "",
+                "",
+                "",
+                "",
+                2000,
+                resource_dir.as_deref(),
+            ) {
+                Ok(_) => eprintln!("[main] APIHook process watcher started after startup snapshot"),
+                Err(e) => eprintln!("[main] Failed to start APIHook process watcher: {}", e),
+            }
+        }
+        None => eprintln!("[main] Failed to start APIHook process watcher: service not managed"),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            // 注册应用生命周期状态。退出时先设置这个状态，隐藏的拦截窗口就不会再阻止关闭。
+            app.manage(AppLifecycleService::new());
+
             // 初始化托盘
             TrayService::create_tray(app.handle()).map_err(|e| {
                 eprintln!("Failed to create tray: {}", e);
@@ -233,52 +325,78 @@ fn main() {
             app.manage(Arc::new(Mutex::new(behavior_service)));
 
             // 初始化信任验证服务
-            let trust_service = TrustService::new();
+            let trust_service = Arc::new(TrustService::new());
             app.manage(trust_service);
 
             // 初始化拦截队列管理器 — 核心安全组件
             let interception_service = Arc::new(InterceptionService::new());
             app.manage(interception_service.clone());
+            match recover_suspended_processes_from_ledger() {
+                Ok(summary) => {
+                    if summary.loaded_records > 0 {
+                        eprintln!(
+                            "[main] Interception recovery summary: loaded={}, recovered={}, stale_or_exited={}, failed={}",
+                            summary.loaded_records,
+                            summary.recovered,
+                            summary.stale_or_exited,
+                            summary.failed
+                        );
+                    }
+                }
+                Err(err) => eprintln!("[main] Failed to recover stale interceptions: {}", err),
+            }
+            if let Ok(window) = prepare_interception_window(app.handle()) {
+                let _ = window.hide();
+            }
 
             // 初始化风险分析服务 — 关联拦截服务和信任服务
             let risk_service = RiskService::new();
             risk_service.set_interception_service(interception_service.clone());
             app.manage(risk_service);
 
-            // 初始化进程监控服务
+            // 初始化进程监控服务（APIHook watcher）
+            // Initialize process monitor service (APIHook watcher)
             let process_monitor_service = ProcessMonitorService::new();
-            app.manage(process_monitor_service);
 
             // 初始化文件钩子服务 — 命名管道服务端。
-            // Hook events may immediately enter logs, behavior DB, risk analysis, and interception,
-            // so this starts only after those dependent services have been managed.
+            // 这个接收端必须在应用启动期常驻：它本身只是轻量管道监听，不代表主动注入；
+            // 进程/文件监控开关只控制 watcher/ETW 是否主动采集。若管道不常驻，受控注入器
+            // 或已加载的 file_hook_detours.dll 上报时会得到 ERROR_FILE_NOT_FOUND(pipeError=2)，
+            // 导致 APIHook 已经阻断了远程线程但 AnXin 收不到拦截窗口事件。
+            // Initialize file hook named-pipe receiver unconditionally during setup. The receiver is
+            // lightweight and does not inject by itself; monitoring toggles control active watchers.
             let hook_service = HookService::new();
             hook_service
                 .start("anxin_security_filehook", app.handle().clone())
                 .map_err(|e| format!("Failed to start file hook pipe service: {}", e))?;
-            eprintln!("[main] File hook pipe service started");
+            append_interception_diagnostic(
+                "hook_pipe_service_started",
+                serde_json::json!({
+                    "pipeName": r"\\.\pipe\anxin_security_filehook",
+                    "processMonitoringEnabled": config.process_monitoring.enabled,
+                    "fileMonitoringEnabled": config.file_monitoring.enabled,
+                }),
+            );
+            eprintln!("[main] File hook pipe service started: \\\\.\\pipe\\anxin_security_filehook");
             app.manage(Arc::new(hook_service));
+
+            // APIHook watcher 会在启动快照完成后启动，避免自身注入的 Hook DLL 污染启动基线。
+            // The APIHook watcher starts after the startup snapshot to avoid polluting the baseline with our own hook DLL.
+            app.manage(process_monitor_service);
 
             // 初始化进程快照服务 — 关联拦截服务
             let snapshot_service = SnapshotService::new();
             snapshot_service.set_interception_service(interception_service.clone());
             app.manage(snapshot_service);
 
-            // 初始化进程扫描服务（新进程恶意代码检测）
+            // 初始化进程扫描服务（新进程恶意代码检测），并在完整快照前启动实时新进程防护。
+            // Initialize process scanner and start realtime new-process protection before the full snapshot completes.
             let process_scanner = ProcessScannerService::new();
-            if config.process_monitoring.enabled {
-                process_scanner.start(
-                    engine_service.clone(),
-                    scan_result_cache.clone(),
-                    interception_service.clone(),
-                    app.handle().clone(),
-                    2000,
-                );
-                eprintln!("[main] Process scanner started");
-            } else {
-                eprintln!("[main] Process scanner disabled by config");
-            }
             app.manage(process_scanner);
+            start_runtime_process_scanner_before_snapshot(
+                app.handle(),
+                config.process_monitoring.enabled,
+            );
 
             // 初始化文件监控服务（ETW 文件事件检测）
             let file_monitor = FileMonitorService::new();
@@ -286,7 +404,13 @@ fn main() {
                 if let Some(etw_state) = app.try_state::<Arc<std::sync::Mutex<EtwService>>>() {
                     if let Ok(etw) = etw_state.lock() {
                         let etw_rx = etw.subscribe();
-                        file_monitor.start(engine_service.clone(), etw_rx);
+                        file_monitor.start(
+                            engine_service.clone(),
+                            scan_result_cache.clone(),
+                            interception_service.clone(),
+                            app.handle().clone(),
+                            etw_rx,
+                        );
                         eprintln!("[main] File monitor started");
                     }
                 }
@@ -298,20 +422,39 @@ fn main() {
             // 管理池状态
             app.manage(pool);
 
-            // 启动 ETW 监控
-            let app_handle_etw = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = start_etw_monitoring(app_handle_etw).await {
-                    eprintln!("Failed to start ETW monitoring: {}", e);
-                }
-            });
+            // 启动 ETW 监控：配置关闭时只管理服务，不采集事件，避免“开关关了但仍在跑”。
+            // Start ETW only when enabled so the persisted toggle controls runtime collection.
+            if config.behavior_monitoring.enabled {
+                let app_handle_etw = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = start_etw_monitoring(app_handle_etw).await {
+                        eprintln!("Failed to start ETW monitoring: {}", e);
+                    }
+                });
+            } else {
+                eprintln!("[main] ETW monitoring disabled by config");
+            }
 
             // 启动启动快照扫描（延迟，等待服务就绪）
             let app_handle_snapshot = app.handle().clone();
+            let snapshot_scan_options = SnapshotScanOptions {
+                slow_warn_ms: config.scanner.startup_snapshot_slow_warn_ms,
+                target_scan_timeout_ms: config.scanner.timeout_ms,
+                module_enumeration_timeout_ms: config
+                    .scanner
+                    .startup_module_enumeration_timeout_ms,
+                signature_verify_timeout_ms: config.scanner.startup_signature_verify_timeout_ms,
+                signature_verify_concurrency: config
+                    .scanner
+                    .startup_signature_verify_concurrency,
+                revocation_check_timeout_ms: config.scanner.startup_revocation_check_timeout_ms,
+                revocation_check_concurrency: config.scanner.startup_revocation_check_concurrency,
+            };
+            let process_monitoring_enabled_after_snapshot = config.process_monitoring.enabled;
             tauri::async_runtime::spawn(async move {
                 // 等待1秒确保前端和后端服务都就绪
                 tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
-                if let Some(trust) = app_handle_snapshot.try_state::<TrustService>() {
+                if let Some(trust) = app_handle_snapshot.try_state::<Arc<TrustService>>() {
                     if let Some(snapshot) = app_handle_snapshot.try_state::<SnapshotService>() {
                         let Some(engine) = app_handle_snapshot.try_state::<Arc<EngineService>>() else {
                             eprintln!("[StartupSnapshot] Failed: EngineService not managed");
@@ -323,20 +466,26 @@ fn main() {
                         };
                         match snapshot
                             .take_startup_snapshot(
-                                &trust,
+                                trust.inner().clone(),
                                 engine.inner().clone(),
                                 cache.inner().clone(),
                                 &app_handle_snapshot,
+                                snapshot_scan_options,
                             )
                             .await
                         {
                             Ok(result) => {
                                 eprintln!(
-                                    "[StartupSnapshot] Done: {} processes, {} signed, {} unsigned, {} paused, {} modules, {} malicious processes, {} malicious modules, {} cache hits ({}ms)",
+                                    "[StartupSnapshot] Baseline done: {} processes, {} signed, {} unsigned, {} paused, {} modules, {} pending deep module checks, {} malicious processes, {} malicious modules, {} image integrity alerts, {} unknown processes, {} unknown modules, {} module enumeration failures ({} access denied), {} cache hits ({}ms)",
                                     result.total_processes, result.signed_processes,
                                     result.unsigned_processes, result.paused_processes,
-                                    result.scanned_modules, result.malicious_processes,
-                                    result.malicious_modules, result.cache_hits,
+                                    result.scanned_modules, result.deep_scan_pending_modules,
+                                    result.malicious_processes,
+                                    result.malicious_modules, result.image_integrity_alerts,
+                                    result.unknown_processes, result.unknown_modules,
+                                    result.module_enumeration_failures,
+                                    result.module_enumeration_access_denied,
+                                    result.cache_hits,
                                     result.duration_ms
                                 );
                             }
@@ -344,6 +493,10 @@ fn main() {
                         }
                     }
                 }
+                start_apihook_process_watcher_after_snapshot(
+                    &app_handle_snapshot,
+                    process_monitoring_enabled_after_snapshot,
+                );
             });
 
             Ok(())
@@ -368,6 +521,10 @@ fn main() {
             // 行为分析 V1 (2)
             commands::behavior::pause_etw,
             commands::behavior::resume_etw,
+            commands::behavior::get_etw_status,
+            commands::behavior::get_etw_diagnostics_snapshot,
+            commands::behavior::clear_etw_diagnostics,
+            commands::behavior::export_etw_diagnostics,
             // 隔离区 (4)
             commands::quarantine::list_quarantine,
             commands::quarantine::isolate_file,
@@ -387,12 +544,13 @@ fn main() {
             commands::tray::request_exit_confirmation,
             commands::tray::execute_exit,
             commands::tray::minimize_to_tray,
-            // 进程控制 (7)
+            // 进程控制 (8)
             commands::process::suspend_process,
             commands::process::resume_process,
             commands::process::terminate_process,
             commands::process::start_process_watcher,
             commands::process::stop_process_watcher,
+            commands::process::get_process_watcher_status,
             commands::process::set_signed_process_list,
             commands::process::poll_new_pids,
             // 引擎 (2)
@@ -411,6 +569,7 @@ fn main() {
             commands::interception::clear_interception_queue,
             commands::interception::get_interception_status,
             commands::interception::get_interception_signer_info,
+            commands::interception::peek_current_interception,
             // 风险分析 (1) — 新增
             commands::risk::get_risk_status,
             // 进程快照 (2) — 新增
@@ -444,8 +603,24 @@ fn main() {
             commands::scan_rules::load_scan_rules,
             commands::scan_rules::load_mitre_rules,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app_handle, event| match event {
+            RunEvent::ExitRequested { .. } => {
+                if let Some(lifecycle) = app_handle.try_state::<AppLifecycleService>() {
+                    lifecycle.begin_exit();
+                }
+            }
+            RunEvent::Exit => {
+                if let Some(lifecycle) = app_handle.try_state::<AppLifecycleService>() {
+                    lifecycle.begin_exit();
+                }
+                if let Some(interception) = app_handle.try_state::<Arc<InterceptionService>>() {
+                    interception.clear_all();
+                }
+            }
+            _ => {}
+        });
 }
 
 async fn start_etw_monitoring(app_handle: tauri::AppHandle) -> Result<(), String> {

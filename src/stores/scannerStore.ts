@@ -7,6 +7,7 @@
  */
 import { create } from 'zustand'
 import { scanFile, scanBatch, cancelScan, onScanProgress, type ScanResult, type ScanProgressEvent } from '../api/scanner'
+import { cancelWalk } from '../api/fs'
 
 /** 扫描统计信息/Scan statistics */
 interface ScanStats {
@@ -136,6 +137,12 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       // Loop: process current batch → check pending → continue or finish
       let shouldContinueScanning = true
       while (shouldContinueScanning) {
+        // 检查是否已被取消
+        // Check if scan has been cancelled
+        if (!get().isScanning) {
+          break
+        }
+
         const currentBatch = get().selectedFiles
         if (currentBatch.length === 0) {
           shouldContinueScanning = false
@@ -150,6 +157,11 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
         } else {
           const batchResult = await scanBatch(currentBatch)
           batchResults = batchResult.results || []
+          // 后端报告已取消 → 立即退出循环
+          // Backend reports cancellation → exit loop immediately
+          if (batchResult.cancelled) {
+            break
+          }
         }
 
         allResults.push(...batchResults)
@@ -237,7 +249,20 @@ export const useScannerStore = create<ScannerState>((set, get) => ({
       // Ignore backend cancel failure, frontend state still needs reset
       console.error('[scannerStore] Cancel scan failed:', e)
     }
-    set({ isScanning: false, scanProgress: 0, currentFile: undefined })
+    // 同时取消后台文件遍历
+    // Also cancel background file walk
+    try {
+      await cancelWalk()
+    } catch (e) {
+      console.error('[scannerStore] Cancel walk failed:', e)
+    }
+    set({
+      isScanning: false,
+      scanProgress: 0,
+      currentFile: undefined,
+      isWalkComplete: true,
+      pendingFiles: [],
+    })
   },
 
   /**

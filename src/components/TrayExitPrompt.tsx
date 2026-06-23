@@ -2,21 +2,83 @@
  * 托盘退出确认弹窗
  * Tray exit confirmation prompt
  *
- * 监听 tray-exit-requested 事件，显示退出确认对话框。
- * 用户必须勾选"我确认要退出AnXin Security"后方可点击确认退出按钮。
- * Listens for tray-exit-requested event and displays exit confirmation dialog.
- * User must check "I confirm to exit AnXin Security" to enable the confirm button.
- *
  * 调用方：App.tsx（由 tray-exit-requested 事件触发 isOpen）
  * Called by: App.tsx (triggered via tray-exit-requested event setting isOpen)
- *
- * 中文关键词：托盘退出，退出确认，确认勾选，退出弹窗
- * English keywords: tray exit, exit confirmation, confirm checkbox, exit prompt
  */
 import React, { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Power, X } from 'lucide-react'
+import { Power } from 'lucide-react'
 import { invoke } from '@tauri-apps/api/core'
+import { useI18nStore } from '../stores/i18nStore'
+import {
+  Button,
+  Checkbox,
+  makeStyles,
+  shorthands,
+  tokens,
+} from '@fluentui/react-components'
+
+const useStyles = makeStyles({
+  overlay: {
+    position: 'fixed',
+    inset: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 9999,
+    backdropFilter: 'blur(4px)',
+  },
+  surface: {
+    backgroundColor: tokens.colorNeutralBackground1,
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    boxShadow: tokens.shadow28,
+    width: '420px',
+    maxWidth: '90vw',
+    overflow: 'hidden',
+  },
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+    ...shorthands.padding('20px', '24px', '16px'),
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+  iconWrap: {
+    width: '40px',
+    height: '40px',
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: tokens.colorPaletteRedBackground2,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    color: tokens.colorPaletteRedForeground2,
+  },
+  title: {
+    fontSize: tokens.fontSizeBase400,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    flex: 1,
+  },
+  body: {
+    ...shorthands.padding('16px', '24px'),
+  },
+  message: {
+    fontSize: tokens.fontSizeBase300,
+    color: tokens.colorNeutralForeground2,
+    marginBottom: '16px',
+    lineHeight: tokens.lineHeightBase300,
+  },
+  actions: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    ...shorthands.gap('8px'),
+    ...shorthands.padding('12px', '24px', '20px'),
+    borderTop: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+})
 
 interface TrayExitPromptProps {
   isOpen: boolean
@@ -24,6 +86,8 @@ interface TrayExitPromptProps {
 }
 
 const TrayExitPrompt: React.FC<TrayExitPromptProps> = ({ isOpen, onClose }) => {
+  const { t } = useI18nStore()
+  const styles = useStyles()
   const [confirmed, setConfirmed] = useState<boolean>(false)
   const [isLoading, setIsLoading] = useState<boolean>(false)
 
@@ -46,65 +110,49 @@ const TrayExitPrompt: React.FC<TrayExitPromptProps> = ({ isOpen, onClose }) => {
     <AnimatePresence>
       {isOpen && (
         <motion.div
-          className="modal-overlay"
+          className={styles.overlay}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           onClick={handleCancel}
         >
           <motion.div
-            className="modal-surface"
+            className={styles.surface}
             initial={{ scale: 0.95, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.95, opacity: 0 }}
             transition={{ type: 'spring', damping: 25, stiffness: 300 }}
             onClick={(e) => e.stopPropagation()}
-            style={{ maxWidth: '420px' }}
           >
-            <div className="modal-header">
-              <div className="modal-icon" style={{ color: '#ef4444' }}>
-                <Power size={24} />
+            <div className={styles.header}>
+              <div className={styles.iconWrap}>
+                <Power size={20} />
               </div>
-              <h3>退出应用</h3>
-              <button className="modal-close" onClick={handleCancel} disabled={isLoading}>
-                <X size={18} />
-              </button>
+              <span className={styles.title}>{t('tray_exit_title')}</span>
             </div>
 
-            <div className="modal-body">
-              <p className="modal-message">
-                确定要退出 AnXin Security 吗？
-              </p>
-
-              <div className="exit-options" style={{ marginTop: '16px' }}>
-                <label className="checkbox-label" style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={confirmed}
-                    onChange={(e) => setConfirmed(e.target.checked)}
-                    disabled={isLoading}
-                    style={{ width: '16px', height: '16px', cursor: 'pointer' }}
-                  />
-                  <span>我确认要退出 AnXin Security</span>
-                </label>
-              </div>
-            </div>
-
-            <div className="modal-actions" style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
-              <button
-                className="btn btn-outline-secondary"
-                onClick={handleCancel}
+            <div className={styles.body}>
+              <p className={styles.message}>{t('tray_exit_message')}</p>
+              <Checkbox
+                checked={confirmed}
+                onChange={(_, data) => setConfirmed(!!data.checked)}
                 disabled={isLoading}
-              >
-                取消
-              </button>
-              <button
-                className="btn btn-danger"
+                label={t('tray_exit_confirm_label')}
+              />
+            </div>
+
+            <div className={styles.actions}>
+              <Button appearance="secondary" onClick={handleCancel} disabled={isLoading}>
+                {t('tray_exit_cancel')}
+              </Button>
+              <Button
+                appearance="primary"
                 onClick={handleConfirm}
                 disabled={!confirmed || isLoading}
+                style={{ backgroundColor: tokens.colorPaletteRedBackground3, color: '#fff' }}
               >
-                {isLoading ? '退出中...' : '确认退出'}
-              </button>
+                {isLoading ? t('tray_exit_exiting') : t('tray_exit_confirm_btn')}
+              </Button>
             </div>
           </motion.div>
         </motion.div>

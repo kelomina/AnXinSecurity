@@ -1,0 +1,7 @@
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/detours.dir
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/file_hook_detours.dir
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/peb_unlink_real_payload.dir
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/reflective_load_real_payload.dir
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/file_hook_injector.dir
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/ALL_BUILD.dir
+E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18/CMakeFiles/ZERO_CHECK.dir

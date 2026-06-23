@@ -33,7 +33,7 @@ mod tests {
         let pool = SqlitePool::connect("sqlite::memory:")
             .await
             .expect("Failed to create in-memory SQLite pool");
-        
+
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS quarantine_items (
@@ -54,7 +54,7 @@ mod tests {
         .execute(&pool)
         .await
         .expect("Failed to create quarantine_items table");
-        
+
         pool
     }
 
@@ -65,7 +65,7 @@ mod tests {
     #[tokio::test]
     async fn test_insert_quarantine_item() {
         let pool = create_test_pool().await;
-        
+
         let result = sqlx::query(
             r#"
             INSERT INTO quarantine_items 
@@ -84,7 +84,7 @@ mod tests {
         .await;
 
         assert!(result.is_ok(), "Insert should succeed");
-        
+
         let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM quarantine_items")
             .fetch_one(&pool)
             .await
@@ -95,7 +95,7 @@ mod tests {
     #[tokio::test]
     async fn test_query_quarantine_item_by_id() {
         let pool = create_test_pool().await;
-        
+
         sqlx::query(
             r#"
             INSERT INTO quarantine_items 
@@ -113,13 +113,11 @@ mod tests {
         .await
         .unwrap();
 
-        let item: QuarantineItem = sqlx::query_as(
-            r#"SELECT * FROM quarantine_items WHERE id = ?"#
-        )
-        .bind("query-test-id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let item: QuarantineItem = sqlx::query_as(r#"SELECT * FROM quarantine_items WHERE id = ?"#)
+            .bind("query-test-id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
         assert_eq!(item.id, "query-test-id");
         assert_eq!(item.original_path, r"C:\test\virus.exe");
@@ -130,7 +128,7 @@ mod tests {
     #[tokio::test]
     async fn test_update_quarantine_status_to_restored() {
         let pool = create_test_pool().await;
-        
+
         sqlx::query(
             r#"
             INSERT INTO quarantine_items 
@@ -149,7 +147,7 @@ mod tests {
         .unwrap();
 
         sqlx::query(
-            r#"UPDATE quarantine_items SET status = 'restored', restored_at = ? WHERE id = ?"#
+            r#"UPDATE quarantine_items SET status = 'restored', restored_at = ? WHERE id = ?"#,
         )
         .bind("2026-05-23T13:00:00Z")
         .bind("restore-test-id")
@@ -157,13 +155,11 @@ mod tests {
         .await
         .unwrap();
 
-        let item: QuarantineItem = sqlx::query_as(
-            r#"SELECT * FROM quarantine_items WHERE id = ?"#
-        )
-        .bind("restore-test-id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let item: QuarantineItem = sqlx::query_as(r#"SELECT * FROM quarantine_items WHERE id = ?"#)
+            .bind("restore-test-id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
         assert_eq!(item.status, "restored");
         assert!(item.restored_at.is_some());
@@ -172,7 +168,7 @@ mod tests {
     #[tokio::test]
     async fn test_delete_quarantine_item() {
         let pool = create_test_pool().await;
-        
+
         sqlx::query(
             r#"
             INSERT INTO quarantine_items 
@@ -210,7 +206,7 @@ mod tests {
     #[tokio::test]
     async fn test_cannot_restore_non_quarantined_item() {
         let pool = create_test_pool().await;
-        
+
         sqlx::query(
             r#"
             INSERT INTO quarantine_items 
@@ -228,24 +224,25 @@ mod tests {
         .await
         .unwrap();
 
-        let item: QuarantineItem = sqlx::query_as(
-            r#"SELECT * FROM quarantine_items WHERE id = ?"#
-        )
-        .bind("already-restored-id")
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let item: QuarantineItem = sqlx::query_as(r#"SELECT * FROM quarantine_items WHERE id = ?"#)
+            .bind("already-restored-id")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
 
         assert_eq!(item.status, "restored");
-        
+
         let can_restore = item.status == "quarantined";
-        assert!(!can_restore, "Should not be able to restore an already restored item");
+        assert!(
+            !can_restore,
+            "Should not be able to restore an already restored item"
+        );
     }
 
     #[tokio::test]
     async fn test_list_only_quarantined_items() {
         let pool = create_test_pool().await;
-        
+
         sqlx::query(
             r#"INSERT INTO quarantine_items (id, original_path, isolated_path, file_hash, file_size, status, isolated_at) VALUES (?, ?, ?, ?, ?, 'quarantined', ?)"#
         )
@@ -258,7 +255,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        
+
         sqlx::query(
             r#"INSERT INTO quarantine_items (id, original_path, isolated_path, file_hash, file_size, status, isolated_at) VALUES (?, ?, ?, ?, ?, 'restored', ?)"#
         )
@@ -272,12 +269,11 @@ mod tests {
         .await
         .unwrap();
 
-        let quarantined: Vec<QuarantineItem> = sqlx::query_as(
-            r#"SELECT * FROM quarantine_items WHERE status = 'quarantined'"#
-        )
-        .fetch_all(&pool)
-        .await
-        .unwrap();
+        let quarantined: Vec<QuarantineItem> =
+            sqlx::query_as(r#"SELECT * FROM quarantine_items WHERE status = 'quarantined'"#)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(quarantined.len(), 1);
         assert_eq!(quarantined[0].id, "quarantined-1");
@@ -291,18 +287,21 @@ mod tests {
     fn test_encrypted_file_extension() {
         let id = "550e8400-e29b-41d4-a716-446655440000";
         let expected_filename = format!("{}.enc", id);
-        assert_eq!(expected_filename, "550e8400-e29b-41d4-a716-446655440000.enc");
+        assert_eq!(
+            expected_filename,
+            "550e8400-e29b-41d4-a716-446655440000.enc"
+        );
     }
 
     #[test]
     fn test_quarantine_directory_path_construction() {
         use std::path::PathBuf;
-        
+
         let app_data = "C:\\Users\\Test\\AppData\\Roaming";
         let quarantine_dir = PathBuf::from(app_data)
             .join("AnXinSecurity")
             .join("quarantine");
-        
+
         assert_eq!(
             quarantine_dir.to_string_lossy(),
             r"C:\Users\Test\AppData\Roaming\AnXinSecurity\quarantine"
@@ -316,14 +315,14 @@ mod tests {
     #[test]
     fn test_file_size_limit_500mb() {
         const MAX_SIZE: i64 = 500 * 1024 * 1024;
-        
+
         assert!(1024 * 1024 < MAX_SIZE);
         assert!(MAX_SIZE < 600 * 1024 * 1024);
-        
+
         let under_limit = 100 * 1024 * 1024;
         let at_limit = MAX_SIZE;
         let over_limit = 600 * 1024 * 1024;
-        
+
         assert!(under_limit <= MAX_SIZE);
         assert!(at_limit <= MAX_SIZE);
         assert!(over_limit > MAX_SIZE);
@@ -336,9 +335,9 @@ mod tests {
     #[test]
     fn test_overwrite_passes_count() {
         const OVERWRITE_PASSES: usize = 3;
-        
+
         assert_eq!(OVERWRITE_PASSES, 3);
-        
+
         let pass_types = ["random", "zeros", "0xFF"];
         assert_eq!(pass_types.len(), 3);
     }
@@ -346,16 +345,16 @@ mod tests {
     #[test]
     fn test_overwrite_data_generation() {
         use rand::Rng;
-        
+
         let mut rng = rand::thread_rng();
-        
+
         let file_size: usize = 1024;
         let random_data: Vec<u8> = (0..file_size).map(|_| rng.gen()).collect();
         assert_eq!(random_data.len(), file_size);
-        
+
         let zeros = vec![0u8; file_size];
         assert!(zeros.iter().all(|&b| b == 0));
-        
+
         let ff_data = vec![0xFFu8; file_size];
         assert!(ff_data.iter().all(|&b| b == 0xFF));
     }
@@ -410,12 +409,12 @@ mod tests {
     #[test]
     fn test_uuid_format() {
         use uuid::Uuid;
-        
+
         let id = Uuid::new_v4().to_string();
-        
+
         assert_eq!(id.len(), 36);
         assert!(id.contains('-'));
-        
+
         let parts: Vec<_> = id.split('-').collect();
         assert_eq!(parts.len(), 5);
         assert_eq!(parts[0].len(), 8);
@@ -432,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn test_isolated_path_uniqueness_constraint() {
         let pool = create_test_pool().await;
-        
+
         sqlx::query(
             r#"INSERT INTO quarantine_items (id, original_path, isolated_path, file_hash, file_size, status, isolated_at) VALUES (?, ?, ?, ?, ?, 'quarantined', ?)"#
         )
@@ -458,7 +457,10 @@ mod tests {
         .execute(&pool)
         .await;
 
-        assert!(result.is_err(), "Duplicate isolated_path should fail due to UNIQUE constraint");
+        assert!(
+            result.is_err(),
+            "Duplicate isolated_path should fail due to UNIQUE constraint"
+        );
     }
 
     // ================================================================
@@ -468,7 +470,7 @@ mod tests {
     #[tokio::test]
     async fn test_list_quarantine_items_ordered_by_time() {
         let pool = create_test_pool().await;
-        
+
         for i in 0..5 {
             sqlx::query(
                 r#"INSERT INTO quarantine_items (id, original_path, isolated_path, file_hash, file_size, status, isolated_at) VALUES (?, ?, ?, ?, ?, 'quarantined', ?)"#
@@ -485,14 +487,14 @@ mod tests {
         }
 
         let items: Vec<QuarantineItem> = sqlx::query_as(
-            r#"SELECT * FROM quarantine_items ORDER BY isolated_at DESC LIMIT 1000"#
+            r#"SELECT * FROM quarantine_items ORDER BY isolated_at DESC LIMIT 1000"#,
         )
         .fetch_all(&pool)
         .await
         .unwrap();
 
         assert_eq!(items.len(), 5);
-        
+
         for i in 0..items.len() - 1 {
             assert!(
                 items[i].isolated_at >= items[i + 1].isolated_at,
@@ -508,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn test_status_index_efficiency() {
         let pool = create_test_pool().await;
-        
+
         for i in 0..100 {
             sqlx::query(
                 r#"INSERT INTO quarantine_items (id, original_path, isolated_path, file_hash, file_size, status, isolated_at) VALUES (?, ?, ?, ?, ?, ?, ?)"#
@@ -525,12 +527,11 @@ mod tests {
             .unwrap();
         }
 
-        let quarantined_count: (i64,) = sqlx::query_as(
-            r#"SELECT COUNT(*) FROM quarantine_items WHERE status = 'quarantined'"#
-        )
-        .fetch_one(&pool)
-        .await
-        .unwrap();
+        let quarantined_count: (i64,) =
+            sqlx::query_as(r#"SELECT COUNT(*) FROM quarantine_items WHERE status = 'quarantined'"#)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
 
         assert_eq!(quarantined_count.0, 50);
     }

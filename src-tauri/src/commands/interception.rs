@@ -1,7 +1,11 @@
 // 拦截命令 — 拦截弹窗操作和队列管理
 // Interception commands — interception modal operations and queue management
-use crate::services::interception_service::{InterceptionDecision, InterceptionService};
+use crate::services::interception_service::{
+    InterceptionDecision, InterceptionEntry, InterceptionService,
+};
+use crate::services::process_control_service::{resume_process_by_pid, terminate_process_by_pid};
 use crate::services::trust_service::TrustService;
+use std::sync::Arc;
 
 /// 函数名称：handle_interception
 /// 函数作用：处理用户的拦截决策（放行/阻止指定 PID 的进程）。
@@ -15,9 +19,10 @@ use crate::services::trust_service::TrustService;
 /// English keywords: interception decision, allow process, block process, terminate process, resume process
 #[tauri::command]
 pub async fn handle_interception(
+    app_handle: tauri::AppHandle,
     pid: u32,
     action: String,
-    interception: tauri::State<'_, InterceptionService>,
+    interception: tauri::State<'_, Arc<InterceptionService>>,
 ) -> Result<bool, String> {
     let decision = match action.as_str() {
         "allow" => InterceptionDecision::Allow,
@@ -30,17 +35,28 @@ pub async fn handle_interception(
         }
     };
 
-    // 记录决策 / Record decision
-    interception.mark_decision(pid, decision);
+    let Some(entry) = interception.entry_for_pid(pid) else {
+        return Err(format!("未找到 PID {} 的待处理拦截记录", pid));
+    };
 
-    // 若阻止，则终止进程 / If block, terminate the process
-    if decision == InterceptionDecision::Block {
-        // 调用进程终止命令 / Call process terminate
-        super::process::terminate_process_internal(pid).await?;
+    match decision {
+        InterceptionDecision::Allow => {
+            interception.mark_allowed_temporarily(&entry);
+            if let Err(err) = resume_process_by_pid(pid) {
+                interception.remove_temporary_allow(&entry);
+                return Err(err);
+            }
+            interception.mark_decision_with_window(pid, decision, &app_handle);
+            interception.complete_allow(pid);
+        }
+        InterceptionDecision::Block => {
+            terminate_process_by_pid(pid)?;
+            interception.mark_decision_with_window(pid, decision, &app_handle);
+        }
     }
 
     // 尝试展示下一个弹窗 / Try to show next modal
-    // (AppHandle 由前端通过监听事件处理)
+    interception.try_show_next(&app_handle);
     Ok(true)
 }
 
@@ -53,7 +69,7 @@ pub async fn handle_interception(
 /// English keywords: interception queue, paused process list, queue status
 #[tauri::command]
 pub async fn get_interception_queue(
-    interception: tauri::State<'_, InterceptionService>,
+    interception: tauri::State<'_, Arc<InterceptionService>>,
 ) -> Result<Vec<u32>, String> {
     Ok(interception.get_paused_pids())
 }
@@ -67,9 +83,11 @@ pub async fn get_interception_queue(
 /// English keywords: clear queue, reset interception
 #[tauri::command]
 pub async fn clear_interception_queue(
-    interception: tauri::State<'_, InterceptionService>,
+    app_handle: tauri::AppHandle,
+    interception: tauri::State<'_, Arc<InterceptionService>>,
 ) -> Result<bool, String> {
     interception.clear_all();
+    crate::services::interception_window_service::hide_interception_window(&app_handle);
     Ok(true)
 }
 
@@ -82,11 +100,12 @@ pub async fn clear_interception_queue(
 /// English keywords: interception status, queue size, modal state
 #[tauri::command]
 pub async fn get_interception_status(
-    interception: tauri::State<'_, InterceptionService>,
+    interception: tauri::State<'_, Arc<InterceptionService>>,
 ) -> Result<serde_json::Value, String> {
     Ok(serde_json::json!({
         "queueSize": interception.get_queue_size(),
         "pausedPids": interception.get_paused_pids(),
+        "temporaryAllowlistSize": interception.get_temporary_allowlist_size(),
     }))
 }
 
@@ -100,7 +119,7 @@ pub async fn get_interception_status(
 #[tauri::command]
 pub async fn get_interception_signer_info(
     file_path: String,
-    trust: tauri::State<'_, TrustService>,
+    trust: tauri::State<'_, std::sync::Arc<TrustService>>,
 ) -> Result<serde_json::Value, String> {
     let signer = trust.get_signer_info(&file_path)?;
     Ok(serde_json::json!({
@@ -108,4 +127,18 @@ pub async fn get_interception_signer_info(
         "issuer": signer.issuer,
         "thumbprint": signer.thumbprint,
     }))
+}
+
+/// 函数名称：peek_current_interception
+/// 函数作用：返回当前正在展示的拦截条目（若有），供拦截窗口前端初始化后主动拉取。
+/// Purpose: Returns the currently shown interception entry (if any) for the interception window frontend to pull after initialization.
+/// 调用方：前端 InterceptionWindowApp 初始化后调用
+/// Called by: Frontend InterceptionWindowApp after initialization
+/// 中文关键词：当前拦截，前端拉取，窗口初始化
+/// English keywords: current interception, frontend pull, window initialization
+#[tauri::command]
+pub async fn peek_current_interception(
+    interception: tauri::State<'_, Arc<InterceptionService>>,
+) -> Result<Option<InterceptionEntry>, String> {
+    Ok(interception.peek_current())
 }

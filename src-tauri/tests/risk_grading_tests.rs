@@ -17,10 +17,10 @@ fn map_severity_to_risk_level(severity: u32) -> &'static str {
     }
 }
 
-/// 判断是否需要拦截（中/高风险需要拦截）
-/// Determine if interception is needed (medium/high risk should intercept)
+/// 判断是否需要自动拦截（只有高风险强证据才进入自动挂起）
+/// Determine if automatic interception is needed (only high-risk strong evidence auto-suspends)
 fn should_intercept(risk_level: &str) -> bool {
-    matches!(risk_level, "high" | "medium")
+    risk_level == "high"
 }
 
 // ================================================================
@@ -48,19 +48,19 @@ fn test_severity_25_boundary_maps_to_low() {
 #[test]
 fn test_severity_26_boundary_maps_to_medium() {
     assert_eq!(map_severity_to_risk_level(26), "medium");
-    assert!(should_intercept("medium"));
+    assert!(!should_intercept("medium"));
 }
 
 #[test]
 fn test_severity_50_maps_to_medium() {
     assert_eq!(map_severity_to_risk_level(50), "medium");
-    assert!(should_intercept("medium"));
+    assert!(!should_intercept("medium"));
 }
 
 #[test]
 fn test_severity_60_boundary_maps_to_medium() {
     assert_eq!(map_severity_to_risk_level(60), "medium");
-    assert!(should_intercept("medium"));
+    assert!(!should_intercept("medium"));
 }
 
 #[test]
@@ -91,8 +91,8 @@ fn test_low_risk_does_not_intercept() {
 }
 
 #[test]
-fn test_medium_risk_does_intercept() {
-    assert!(should_intercept("medium"));
+fn test_medium_risk_does_not_auto_intercept() {
+    assert!(!should_intercept("medium"));
 }
 
 #[test]

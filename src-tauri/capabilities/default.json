@@ -10,6 +10,8 @@
     "core:window:allow-hide",
     "core:window:allow-show",
     "core:window:allow-is-maximized",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
     "dialog:default",
     "shell:default",
     "fs:default"

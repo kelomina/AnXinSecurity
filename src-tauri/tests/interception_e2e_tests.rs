@@ -1,8 +1,8 @@
-use std::sync::Arc;
-use anxin_security::services::risk_service::RiskService;
 use anxin_security::services::interception_service::{
-    InterceptionService, InterceptionEntry, InterceptionDecision,
+    InterceptionDecision, InterceptionEntry, InterceptionService,
 };
+use anxin_security::services::risk_service::RiskService;
+use std::sync::Arc;
 
 mod common;
 
@@ -12,23 +12,32 @@ fn make_entry(pid: u32, name: &str, risk_level: &str, severity: u32) -> Intercep
         process_name: name.to_string(),
         file_path: format!("C:\\test\\{}.exe", name),
         risk_level: risk_level.to_string(),
-        threat_type: Some(match severity {
-            0..=25 => "adware",
-            26..=60 => "trojan",
-            _ => "ransomware",
-        }.to_string()),
-        reason: format!("\u{98ce}\u{9669}\u{4e8b}\u{4ef6}: {} (\u{4e25}\u{91cd}\u{5ea6}: {})", name, severity),
-        payload: Some(serde_json::json!({
-            "severity": severity,
-            "ruleId": format!("E2E_RULE_{}", severity),
-        }).to_string()),
+        threat_type: Some(
+            match severity {
+                0..=25 => "adware",
+                26..=60 => "trojan",
+                _ => "ransomware",
+            }
+            .to_string(),
+        ),
+        reason: format!(
+            "\u{98ce}\u{9669}\u{4e8b}\u{4ef6}: {} (\u{4e25}\u{91cd}\u{5ea6}: {})",
+            name, severity
+        ),
+        payload: Some(
+            serde_json::json!({
+                "severity": severity,
+                "ruleId": format!("E2E_RULE_{}", severity),
+            })
+            .to_string(),
+        ),
         timestamp: 1000 + pid as u64,
     }
 }
 
 #[test]
 fn test_e2e_single_process_lifecycle() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     let entry = make_entry(5001, "ransom.exe", "high", 90);
     inter.enqueue(entry);
@@ -45,7 +54,7 @@ fn test_e2e_single_process_lifecycle() {
 
 #[test]
 fn test_e2e_single_process_allow_then_re_enqueue() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     inter.enqueue(make_entry(6001, "suspicious.exe", "medium", 50));
     assert_eq!(inter.get_queue_size(), 1);
@@ -59,7 +68,7 @@ fn test_e2e_single_process_allow_then_re_enqueue() {
 
 #[test]
 fn test_e2e_multi_process_fifo_order() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     inter.enqueue(make_entry(100, "proc_a.exe", "low", 10));
     inter.enqueue(make_entry(200, "proc_b.exe", "medium", 50));
@@ -80,7 +89,7 @@ fn test_e2e_multi_process_fifo_order() {
 
 #[test]
 fn test_e2e_duplicate_prevention() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     inter.enqueue(make_entry(7001, "dup.exe", "high", 80));
     inter.enqueue(make_entry(7001, "dup.exe", "high", 80));
@@ -95,7 +104,7 @@ fn test_e2e_duplicate_prevention() {
 
 #[test]
 fn test_e2e_clear_all() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     inter.enqueue(make_entry(8001, "a.exe", "low", 10));
     inter.enqueue(make_entry(8002, "b.exe", "medium", 50));
@@ -108,7 +117,7 @@ fn test_e2e_clear_all() {
 
 #[test]
 fn test_e2e_mixed_decisions() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     inter.enqueue(make_entry(100, "allow.exe", "low", 10));
     inter.enqueue(make_entry(200, "block.exe", "high", 90));
@@ -134,7 +143,7 @@ fn test_risk_service_initially_has_zero_count() {
 #[test]
 fn test_risk_service_and_interaction_wired() {
     let risk = RiskService::new();
-    let inter = Arc::new(InterceptionService::new());
+    let inter = Arc::new(InterceptionService::new_for_tests());
     risk.set_interception_service(inter.clone());
 
     let entry = make_entry(9001, "wired.exe", "high", 70);

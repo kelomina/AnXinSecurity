@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{
     atomic::{AtomicBool, AtomicPtr, Ordering},
     Arc, Mutex,
@@ -19,11 +20,62 @@ const EVENT_TRACE_REAL_TIME_MODE: u32 = 0x00000100;
 const EVENT_TRACE_SYSTEM_LOGGER_MODE: u32 = 0x02000000;
 const PROCESS_TRACE_MODE_REAL_TIME: u32 = 0x00000100;
 const PROCESS_TRACE_MODE_EVENT_RECORD: u32 = 0x10000000;
+const WNODE_FLAG_TRACED_GUID: u32 = 0x00020000;
+const ERROR_SUCCESS: u32 = 0;
+const ERROR_ACCESS_DENIED: u32 = 5;
+const ERROR_ALREADY_EXISTS: u32 = 183;
 const ERROR_WMI_INSTANCE_NOT_FOUND: u32 = 4201;
+const INVALID_PROCESSTRACE_HANDLE: u64 = u64::MAX;
 
-const SYSTEM_TRACE_CONTROL_GUID: [u8; 16] = [
-    0x68, 0xDD, 0x9E, 0x9E, 0x0C, 0x8D, 0x84, 0x45, 0x82, 0x77, 0x7D, 0x5D, 0x82, 0xA9, 0xAC, 0xE4,
+// 内核 ETW 会话标志 — 必须在 EventTraceProperties.enable_flags 中设置，内核提供者才会产生事件
+// Kernel ETW session flags — must be set in EventTraceProperties.enable_flags for kernel providers to emit events
+const EVENT_TRACE_FLAG_PROCESS: u32 = 0x00000001;
+const EVENT_TRACE_FLAG_THREAD: u32 = 0x00000002;
+const EVENT_TRACE_FLAG_DISK_FILE_IO: u32 = 0x00000200;
+const EVENT_TRACE_FLAG_REGISTRY: u32 = 0x00080000;
+const EVENT_TRACE_FLAG_NETWORK_TCPIP: u32 = 0x00010000;
+
+// Microsoft-Windows-Kernel-* provider keyword values verified with:
+// logman query providers "Microsoft-Windows-Kernel-Process/File/Registry/Network"
+pub(crate) const KERNEL_PROCESS_KEYWORD_PROCESS: u64 = 0x0000000000000010;
+pub(crate) const KERNEL_PROCESS_KEYWORD_THREAD: u64 = 0x0000000000000020;
+pub(crate) const KERNEL_PROCESS_KEYWORD_IMAGE: u64 = 0x0000000000000040;
+pub(crate) const KERNEL_FILE_KEYWORD_FILENAME: u64 = 0x0000000000000010;
+pub(crate) const KERNEL_FILE_KEYWORD_CREATE: u64 = 0x0000000000000080;
+pub(crate) const KERNEL_FILE_KEYWORD_DELETE_PATH: u64 = 0x0000000000000400;
+pub(crate) const KERNEL_FILE_KEYWORD_RENAME_SETLINK_PATH: u64 = 0x0000000000000800;
+pub(crate) const KERNEL_FILE_KEYWORD_CREATE_NEW_FILE: u64 = 0x0000000000001000;
+pub(crate) const KERNEL_REGISTRY_KEYWORD_SET_VALUE: u64 = 0x0000000000000100;
+pub(crate) const KERNEL_REGISTRY_KEYWORD_DELETE_VALUE: u64 = 0x0000000000000200;
+pub(crate) const KERNEL_REGISTRY_KEYWORD_CREATE_KEY: u64 = 0x0000000000001000;
+pub(crate) const KERNEL_REGISTRY_KEYWORD_DELETE_KEY: u64 = 0x0000000000004000;
+pub(crate) const KERNEL_NETWORK_KEYWORD_IPV4: u64 = 0x0000000000000010;
+pub(crate) const KERNEL_NETWORK_KEYWORD_IPV6: u64 = 0x0000000000000020;
+
+pub(crate) const DEFAULT_PROCESS_ANY_KEYWORD: u64 =
+    KERNEL_PROCESS_KEYWORD_PROCESS | KERNEL_PROCESS_KEYWORD_THREAD | KERNEL_PROCESS_KEYWORD_IMAGE;
+pub(crate) const DEFAULT_FILE_ANY_KEYWORD: u64 = KERNEL_FILE_KEYWORD_FILENAME
+    | KERNEL_FILE_KEYWORD_CREATE
+    | KERNEL_FILE_KEYWORD_DELETE_PATH
+    | KERNEL_FILE_KEYWORD_RENAME_SETLINK_PATH
+    | KERNEL_FILE_KEYWORD_CREATE_NEW_FILE;
+pub(crate) const DEFAULT_REGISTRY_ANY_KEYWORD: u64 = KERNEL_REGISTRY_KEYWORD_SET_VALUE
+    | KERNEL_REGISTRY_KEYWORD_DELETE_VALUE
+    | KERNEL_REGISTRY_KEYWORD_CREATE_KEY
+    | KERNEL_REGISTRY_KEYWORD_DELETE_KEY;
+pub(crate) const DEFAULT_NETWORK_ANY_KEYWORD: u64 =
+    KERNEL_NETWORK_KEYWORD_IPV4 | KERNEL_NETWORK_KEYWORD_IPV6;
+
+// AnXin 自己的 ETW 会话 GUID，避免误用 Windows 系统 logger 的控制 GUID。
+// AnXin-owned ETW session GUID; avoids reusing the Windows system logger control GUID.
+const ANXIN_ETW_SESSION_GUID: [u8; 16] = [
+    0xBC, 0xB6, 0x67, 0x1A, 0x6E, 0x43, 0x30, 0x43, 0xBE, 0x4D, 0xC7, 0x47, 0xEF, 0xAE, 0x83, 0xE7,
 ];
+
+type StartTraceFn =
+    unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceProperties) -> u32;
+type ControlTraceFn =
+    unsafe extern "system" fn(u64, *const u16, *mut EventTraceProperties, u32) -> u32;
 
 // Global static for the callback context (set before ProcessTrace, cleared after)
 static CALLBACK_CTX: AtomicPtr<EtwCallbackContext> = AtomicPtr::new(std::ptr::null_mut());
@@ -72,12 +124,23 @@ struct EventTraceProperties {
 #[repr(C)]
 struct EventRecord {
     event_header: EventHeader,
-    buffer_context: [u32; 4],
+    // Windows EVENT_RECORD.BufferContext is ETW_BUFFER_CONTEXT: a 4-byte
+    // structure ({ u16 processor/alignment/index } + u16 logger id).  This
+    // local FFI mirror must stay layout-compatible with the Windows binding;
+    // using a larger placeholder shifts UserDataLength/UserData and makes every
+    // payload look empty in live ETW callbacks.
+    buffer_context: EtwBufferContext,
     extended_data_count: u16,
     user_data_length: u16,
     extended_data: *const u8,
     user_data: *const u8,
     user_context: *const u8,
+}
+
+#[repr(C)]
+struct EtwBufferContext {
+    processor_or_index: u16,
+    logger_id: u16,
 }
 
 #[repr(C)]
@@ -111,6 +174,66 @@ struct EtwCallbackContext {
     rule_engine: Arc<Mutex<EtwRuleEngine>>,
 }
 
+/// 函数名称：build_private_trace_properties_buffer
+/// 函数作用：构造 StartTraceW / ControlTraceW 共用的 ETW 会话属性缓冲区。
+/// Purpose: Builds the ETW session properties buffer shared by StartTraceW / ControlTraceW.
+///
+/// 关键点：这里创建的是 AnXin 私有系统实时会话，因此使用项目自己的 GUID 和会话名，
+/// 同时设置 EVENT_TRACE_SYSTEM_LOGGER_MODE，让 Windows 把系统级 provider 事件送入本会话。
+/// 可以把它理解成“开自己的系统收音频道”，后续再通过 EnableTraceEx2 订阅进程、文件、注册表和网络事件。
+/// Key point: This creates an AnXin-owned private real-time session with the
+/// project session GUID/name and system logger mode instead of taking over the Windows NT Kernel Logger.
+fn build_private_trace_properties_buffer(wide_name: &[u16]) -> Vec<u8> {
+    let props_size = std::mem::size_of::<EventTraceProperties>();
+    let name_bytes = wide_name.len() * std::mem::size_of::<u16>();
+    let buf_size = props_size + name_bytes + 1024;
+    let mut buf: Vec<u8> = vec![0u8; buf_size];
+
+    unsafe {
+        let props = &mut *(buf.as_mut_ptr() as *mut EventTraceProperties);
+        props.wnode.buffer_size = buf_size as u32;
+        props.wnode.client_context = 1;
+        props.wnode.flags = WNODE_FLAG_TRACED_GUID;
+        props.wnode.guid = raw_guid(&ANXIN_ETW_SESSION_GUID);
+        props.log_file_mode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
+        // 必须设置内核追踪标志，否则内核提供者不会产生事件
+        // Must set kernel trace flags, otherwise kernel providers will not emit events
+        props.enable_flags = EVENT_TRACE_FLAG_PROCESS
+            | EVENT_TRACE_FLAG_THREAD
+            | EVENT_TRACE_FLAG_DISK_FILE_IO
+            | EVENT_TRACE_FLAG_REGISTRY
+            | EVENT_TRACE_FLAG_NETWORK_TCPIP;
+        props.logger_name_offset = props_size as u32;
+
+        let name_dst = buf.as_mut_ptr().add(props.logger_name_offset as usize) as *mut u16;
+        std::ptr::copy_nonoverlapping(wide_name.as_ptr(), name_dst, wide_name.len());
+    }
+
+    buf
+}
+
+/// 函数名称：start_private_trace_session
+/// 函数作用：用统一属性启动一次 AnXin 私有 ETW 会话，并把 Windows 返回码原样交给调用方判断。
+/// Purpose: Starts one AnXin private ETW session with shared properties and returns the raw Windows status code.
+unsafe fn start_private_trace_session(
+    start_trace: StartTraceFn,
+    wide_name: &[u16],
+    handle: &mut u64,
+) -> u32 {
+    let mut buf = build_private_trace_properties_buffer(wide_name);
+    let props = buf.as_mut_ptr() as *mut EventTraceProperties;
+    start_trace(handle, wide_name.as_ptr(), props)
+}
+
+/// 函数名称：stop_existing_trace_session
+/// 函数作用：按会话名停止同名 ETW 会话，用于清理异常退出留下的 AnXin 残留会话。
+/// Purpose: Stops a same-name ETW session to clean up stale AnXin sessions left by abnormal exits.
+unsafe fn stop_existing_trace_session(control_trace: ControlTraceFn, wide_name: &[u16]) -> u32 {
+    let mut buf = build_private_trace_properties_buffer(wide_name);
+    let props = buf.as_mut_ptr() as *mut EventTraceProperties;
+    control_trace(0, wide_name.as_ptr(), props, EVENT_TRACE_CONTROL_STOP)
+}
+
 /// 函数名称：current_ts_ms
 /// 函数作用：获取当前 Unix 时间戳（毫秒）。
 /// Purpose: Gets current Unix timestamp in milliseconds.
@@ -134,53 +257,74 @@ pub struct EtwSession {
 
 impl EtwSession {
     /// 函数名称：new
-    /// 函数作用：创建 ETW 会话。先尝试启用 SE_SYSTEM_PROFILE_NAME 特权（系统级 ETW 所需），
-    ///   然后调用 StartTraceW 创建系统日志会话。若首次失败且为权限错误，重试一次。
-    /// Purpose: Creates an ETW session. First tries to enable SE_SYSTEM_PROFILE_NAME privilege
-    ///   (required for system-level ETW), then calls StartTraceW to create a system logger session.
-    ///   Retries once if the first attempt fails with access denied.
+    /// 函数作用：创建 ETW 会话，并初始化从 config/etw_match_rules.json 加载的规则引擎。
+    /// Purpose: Creates an ETW session and initializes the rule engine loaded from config/etw_match_rules.json.
+    /// 调用方：EtwService::start。
+    /// Called by: EtwService::start.
+    /// 被调用方：enable_se_system_profile_privilege、StartTraceW、ControlTraceW、EtwRuleEngine::new。
+    /// Calls: enable_se_system_profile_privilege, StartTraceW, ControlTraceW, EtwRuleEngine::new.
+    /// 参数说明：session_name 为 ETW 会话名。
+    /// Parameters: session_name is the ETW session name.
+    /// 返回值说明：成功返回可启动的 ETW 会话；DLL 加载或 StartTraceW 非权限错误失败时返回 String。
+    /// Returns: ETW session on success; String when DLL loading or non-permission StartTraceW failures occur.
+    /// 错误处理：无管理员权限时保留 session_handle=0 并让上层跳过 provider 启用；同名残留会话会停止后只重试一次；规则配置失败由 EtwRuleEngine::new 明确回退。
+    /// Error handling: Keeps session_handle=0 without admin rights so the caller skips provider enabling; stale same-name sessions are stopped and retried once; rule config failures are explicitly handled by EtwRuleEngine::new fallback.
+    /// 中文关键词：ETW会话，规则配置加载，私有实时会话，权限回退
+    /// English keywords: ETW session, rule config loading, private real-time session, permission fallback
     pub fn new(session_name: &str) -> Result<Self, String> {
         let wide_name: Vec<u16> = session_name
             .encode_utf16()
             .chain(std::iter::once(0))
             .collect();
-        let buf_size = std::mem::size_of::<EventTraceProperties>() + 2048;
-
         unsafe {
             let sechost = libloading::Library::new("sechost.dll")
                 .map_err(|e| format!("Failed to load sechost.dll: {}", e))?;
 
-            type StartTraceFn =
-                unsafe extern "system" fn(*mut u64, *const u16, *mut EventTraceProperties) -> u32;
-
             let start_trace: StartTraceFn = *sechost
                 .get(b"StartTraceW")
                 .map_err(|e| format!("Failed to load StartTraceW: {}", e))?;
+            let control_trace: ControlTraceFn = *sechost
+                .get(b"ControlTraceW")
+                .map_err(|e| format!("Failed to load ControlTraceW: {}", e))?;
 
-            // 尝试启用 SE_SYSTEM_PROFILE_NAME 特权（系统级 ETW 会话必需）
-            // Try to enable SE_SYSTEM_PROFILE_NAME privilege (required for system-level ETW sessions)
+            // 尝试启用 SE_SYSTEM_PROFILE_NAME 特权。部分内核 provider 需要管理员令牌里启用该特权。
+            // Try to enable SE_SYSTEM_PROFILE_NAME privilege. Some kernel providers require it in the administrator token.
             let _ = enable_se_system_profile_privilege();
 
-            // 创建 Session（使用 SYSTEM_TRACE_CONTROL_GUID）
-            // 如果有同名 Session 已存在（183），MSDN 说明 handle 仍有效
-            let mut buf: Vec<u8> = vec![0u8; buf_size];
-            let props = &mut *(buf.as_mut_ptr() as *mut EventTraceProperties);
-            props.wnode.buffer_size = buf_size as u32;
-            props.wnode.flags = 0x00020000;
-            props.wnode.guid = raw_guid(&SYSTEM_TRACE_CONTROL_GUID);
-            props.log_file_mode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_SYSTEM_LOGGER_MODE;
-            props.logger_name_offset = std::mem::size_of::<EventTraceProperties>() as u32;
-
-            let name_dst = buf.as_mut_ptr().add(props.logger_name_offset as usize) as *mut u16;
-            std::ptr::copy_nonoverlapping(wide_name.as_ptr(), name_dst, wide_name.len());
-
+            // 创建 AnXin 私有实时 ETW Session。不要使用 Windows 系统 logger 的控制 GUID，
+            // 否则容易和系统级 session 或上次异常退出残留的 session 冲突。
+            // Create an AnXin-owned private real-time ETW session. Do not use the
+            // Windows system logger control GUID here, because it can collide with
+            // system-level sessions or stale sessions from a previous crash.
             let mut handle: u64 = 0;
-            let status = start_trace(&mut handle, wide_name.as_ptr(), props);
-            if status != 0 && status != 183 && status != 5 {
+            let mut status = start_private_trace_session(start_trace, &wide_name, &mut handle);
+
+            if status == ERROR_ALREADY_EXISTS {
+                eprintln!(
+                    "[EtwSession] Existing ETW session '{}' found; stopping it before retry",
+                    session_name
+                );
+                let stop_status = stop_existing_trace_session(control_trace, &wide_name);
+                if stop_status != ERROR_SUCCESS && stop_status != ERROR_WMI_INSTANCE_NOT_FOUND {
+                    return Err(format!(
+                        "ControlTraceW stop existing session failed: {}",
+                        stop_status
+                    ));
+                }
+
+                thread::sleep(Duration::from_millis(150));
+                handle = 0;
+                status = start_private_trace_session(start_trace, &wide_name, &mut handle);
+            }
+
+            if status == ERROR_ACCESS_DENIED {
+                eprintln!("[EtwSession] Access denied (code 5) on StartTraceW. ETW unavailable.");
+            }
+            if status != ERROR_SUCCESS && status != ERROR_ACCESS_DENIED {
                 return Err(format!("StartTraceW failed: {}", status));
             }
-            if status == 5 {
-                eprintln!("[EtwSession] Access denied (code 5) on StartTraceW. ETW unavailable.");
+            if status == ERROR_SUCCESS && handle == 0 {
+                return Err("StartTraceW returned success but session handle was 0".to_string());
             }
 
             Ok(Self {
@@ -248,8 +392,20 @@ impl EtwSession {
                     0,                // Timeout = no wait
                     std::ptr::null(), // EnableParameters = none
                 );
+                eprintln!(
+                    "[EtwSession] EnableTraceEx2: guid={:02X}{:02X}{:02X}{:02X}-..., any_kw=0x{:X}, status={}",
+                    guid_bytes[0], guid_bytes[1], guid_bytes[2], guid_bytes[3],
+                    any_kw, status
+                );
                 if status != 0 {
-                    return Err(format!("EnableTraceEx2 failed: {}", status));
+                    // 内核 ETW 会话通过 enable_flags 已经启用了事件采集，
+                    // EnableTraceEx2 对内核提供者 GUID 可能返回错误，不应致命。
+                    // For kernel ETW sessions, enable_flags already enables event collection.
+                    // EnableTraceEx2 may fail for kernel provider GUIDs; treat as non-fatal.
+                    eprintln!(
+                        "[EtwSession] EnableTraceEx2 warning: status={}, any_kw=0x{:X} (non-fatal, events still collected via enable_flags)",
+                        status, any_kw
+                    );
                 }
             }
 
@@ -259,6 +415,7 @@ impl EtwSession {
                 rule_engine: self.rule_engine.clone(),
             });
             CALLBACK_CTX.store(Box::into_raw(ctx), Ordering::SeqCst);
+            eprintln!("[EtwSession] Callback context stored, about to call OpenTraceW");
 
             // Open the trace with callback
             let mut wide_name: Vec<u16> = self
@@ -282,9 +439,15 @@ impl EtwSession {
                 .map_err(|e| format!("Failed to load OpenTraceW: {}", e))?;
 
             let trace_handle = open_trace(&mut logfile);
-            if trace_handle == 0 {
-                CALLBACK_CTX.store(std::ptr::null_mut(), Ordering::SeqCst);
-                return Err("OpenTraceW failed".to_string());
+            if trace_handle == 0 || trace_handle == INVALID_PROCESSTRACE_HANDLE {
+                let ptr = CALLBACK_CTX.swap(std::ptr::null_mut(), Ordering::SeqCst);
+                if !ptr.is_null() {
+                    drop(Box::from_raw(ptr));
+                }
+                return Err(format!(
+                    "OpenTraceW failed: invalid handle {}",
+                    trace_handle
+                ));
             }
             self.trace_handle = trace_handle;
 
@@ -456,14 +619,233 @@ mod tests {
             "finished trace thread should not be kept for retry"
         );
     }
+
+    #[test]
+    fn etw_callback_panic_guard_catches_panic() {
+        let caught = run_etw_callback_with_panic_guard(|| {
+            panic!("simulated ETW callback parser panic");
+        });
+
+        assert!(
+            caught,
+            "ETW callback panic guard must catch panics before they cross the FFI boundary"
+        );
+    }
+
+    #[test]
+    fn etw_callback_panic_guard_reports_normal_completion() {
+        let caught = run_etw_callback_with_panic_guard(|| {});
+
+        assert!(
+            !caught,
+            "ETW callback panic guard should return false when the callback body completes"
+        );
+    }
+
+    #[test]
+    fn etw_callback_pid_guard_filters_system_and_invalid_pid() {
+        assert!(is_system_or_invalid_pid(0));
+        assert!(is_system_or_invalid_pid(4));
+        assert!(is_system_or_invalid_pid(u32::MAX));
+        assert!(!is_system_or_invalid_pid(47216));
+    }
+
+    #[test]
+    fn private_trace_properties_use_anxin_guid_and_realtime_mode() {
+        let wide_name: Vec<u16> = "AnXinETWSession"
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+        let buf = build_private_trace_properties_buffer(&wide_name);
+
+        unsafe {
+            let props = &*(buf.as_ptr() as *const EventTraceProperties);
+            assert_ne!(
+                props.log_file_mode & EVENT_TRACE_REAL_TIME_MODE,
+                0,
+                "ETW session must be real-time so events can be streamed to the app"
+            );
+            assert_ne!(
+                props.log_file_mode & EVENT_TRACE_SYSTEM_LOGGER_MODE,
+                0,
+                "SystemTraceProvider sessions must set EVENT_TRACE_SYSTEM_LOGGER_MODE"
+            );
+            assert_eq!(props.wnode.client_context, 1);
+            assert_eq!(props.wnode.flags, WNODE_FLAG_TRACED_GUID);
+            assert_eq!(guid_bytes(&props.wnode.guid), ANXIN_ETW_SESSION_GUID);
+            // 验证内核追踪标志已设置
+            // Verify kernel trace flags are set
+            assert_ne!(
+                props.enable_flags & EVENT_TRACE_FLAG_PROCESS,
+                0,
+                "EVENT_TRACE_FLAG_PROCESS must be set"
+            );
+            assert_ne!(
+                props.enable_flags & EVENT_TRACE_FLAG_DISK_FILE_IO,
+                0,
+                "EVENT_TRACE_FLAG_DISK_FILE_IO must be set"
+            );
+            assert_ne!(
+                props.enable_flags & EVENT_TRACE_FLAG_REGISTRY,
+                0,
+                "EVENT_TRACE_FLAG_REGISTRY must be set"
+            );
+
+            let name_ptr = buf.as_ptr().add(props.logger_name_offset as usize) as *const u16;
+            let stored_name = std::slice::from_raw_parts(name_ptr, wide_name.len());
+            assert_eq!(stored_name, wide_name.as_slice());
+        }
+    }
+
+    #[test]
+    fn local_event_record_layout_matches_windows_binding() {
+        use std::mem::{align_of, size_of};
+        use windows::Win32::System::Diagnostics::Etw::{
+            ETW_BUFFER_CONTEXT, EVENT_HEADER, EVENT_RECORD,
+        };
+
+        assert_eq!(
+            size_of::<EtwBufferContext>(),
+            size_of::<ETW_BUFFER_CONTEXT>(),
+            "ETW_BUFFER_CONTEXT is 4 bytes; a larger local mirror shifts UserDataLength"
+        );
+        assert_eq!(
+            align_of::<EtwBufferContext>(),
+            align_of::<ETW_BUFFER_CONTEXT>()
+        );
+        assert_eq!(size_of::<EventHeader>(), size_of::<EVENT_HEADER>());
+        assert_eq!(align_of::<EventHeader>(), align_of::<EVENT_HEADER>());
+        assert_eq!(size_of::<EventRecord>(), size_of::<EVENT_RECORD>());
+        assert_eq!(align_of::<EventRecord>(), align_of::<EVENT_RECORD>());
+    }
+
+    #[test]
+    fn default_provider_keywords_match_kernel_provider_categories() {
+        for required in [
+            KERNEL_PROCESS_KEYWORD_PROCESS,
+            KERNEL_PROCESS_KEYWORD_THREAD,
+            KERNEL_PROCESS_KEYWORD_IMAGE,
+        ] {
+            assert_ne!(
+                DEFAULT_PROCESS_ANY_KEYWORD & required,
+                0,
+                "process provider default keywords must include 0x{required:X}"
+            );
+        }
+
+        for required in [
+            KERNEL_FILE_KEYWORD_FILENAME,
+            KERNEL_FILE_KEYWORD_CREATE,
+            KERNEL_FILE_KEYWORD_DELETE_PATH,
+            KERNEL_FILE_KEYWORD_RENAME_SETLINK_PATH,
+            KERNEL_FILE_KEYWORD_CREATE_NEW_FILE,
+        ] {
+            assert_ne!(
+                DEFAULT_FILE_ANY_KEYWORD & required,
+                0,
+                "file provider default keywords must include 0x{required:X}"
+            );
+        }
+
+        for required in [
+            KERNEL_REGISTRY_KEYWORD_SET_VALUE,
+            KERNEL_REGISTRY_KEYWORD_DELETE_VALUE,
+            KERNEL_REGISTRY_KEYWORD_CREATE_KEY,
+            KERNEL_REGISTRY_KEYWORD_DELETE_KEY,
+        ] {
+            assert_ne!(
+                DEFAULT_REGISTRY_ANY_KEYWORD & required,
+                0,
+                "registry provider default keywords must include 0x{required:X}"
+            );
+        }
+
+        assert_ne!(
+            DEFAULT_NETWORK_ANY_KEYWORD & KERNEL_NETWORK_KEYWORD_IPV4,
+            0,
+            "network provider must subscribe to IPv4 events"
+        );
+        assert_ne!(
+            DEFAULT_NETWORK_ANY_KEYWORD & KERNEL_NETWORK_KEYWORD_IPV6,
+            0,
+            "network provider must subscribe to IPv6 events"
+        );
+    }
+
+    #[test]
+    fn unknown_provider_json_preserves_pid_for_downstream_filtering() {
+        let ev = ParsedEvent {
+            ts_ms: 123456,
+            pid: 47216,
+            tid: 77,
+            ppid: 0,
+            provider: ProviderKind::Unknown,
+            opcode: 9,
+            id: 42,
+            op: "unknown".to_string(),
+            target: String::new(),
+            target2: String::new(),
+            image_base: None,
+            image_size: None,
+            start_address: None,
+            raw_user_data_len: 0,
+            raw_user_data_preview: String::new(),
+        };
+
+        let json_line = parsed_event_to_json(&ev, 123456);
+        let value: serde_json::Value =
+            serde_json::from_str(&json_line).expect("unknown provider JSON should parse");
+
+        assert_eq!(value["event"]["pid"], 47216);
+        assert_eq!(value["event"]["tid"], 77);
+        assert_eq!(value["event"]["provider"], "Unknown");
+    }
 }
 
-/// ETW event record callback — called from ProcessTrace thread
 /// ETW 事件记录回调 — 由 ProcessTrace 线程调用，解析事件并推入队列并运行规则引擎。
 /// ETW event record callback — called by ProcessTrace thread, parses events, pushes to queue, runs rule engine.
 /// 中文关键词：ETW回调，事件记录，ProcessTrace，规则匹配
 /// English keywords: ETW callback, event record, ProcessTrace, rule matching
 unsafe extern "system" fn etw_event_record_callback(rec: *mut EVENT_RECORD) {
+    if run_etw_callback_with_panic_guard(|| {
+        etw_event_record_callback_inner(rec);
+    }) {
+        eprintln!("[EtwSession] ETW callback panic was caught; dropped one event");
+    }
+}
+
+/// 函数名称：run_etw_callback_with_panic_guard
+/// 函数作用：执行 ETW 回调主体并捕获 panic，避免 Rust panic 穿过 Windows FFI 回调边界。
+/// Purpose: Runs the ETW callback body and catches panics so Rust panics cannot cross the Windows FFI callback boundary.
+/// 调用方：etw_event_record_callback，ETW session 单元测试。
+/// Called by: etw_event_record_callback and ETW session unit tests.
+/// 返回值说明：返回 true 表示捕获到 panic 并丢弃该事件；false 表示正常完成。
+/// Returns: true when a panic was caught and the event was dropped; false on normal completion.
+/// 中文关键词：ETW回调，panic隔离，FFI边界
+/// English keywords: ETW callback, panic isolation, FFI boundary
+fn run_etw_callback_with_panic_guard(callback_body: impl FnOnce()) -> bool {
+    catch_unwind(AssertUnwindSafe(callback_body)).is_err()
+}
+
+/// 函数名称：is_system_or_invalid_pid
+/// 函数作用：识别不应进入 ETW 队列的系统或无效 PID。
+/// Purpose: Identifies system or invalid PIDs that should not enter the ETW queue.
+/// 中文关键词：ETW过滤，PID过滤，无效PID，性能保护
+/// English keywords: ETW filter, PID filter, invalid PID, performance guard
+fn is_system_or_invalid_pid(pid: u32) -> bool {
+    matches!(pid, 0 | 4) || pid == u32::MAX
+}
+
+/// 函数名称：etw_event_record_callback_inner
+/// 函数作用：处理单条 ETW EVENT_RECORD；只能由外层 catch_unwind 包裹的 FFI 回调调用。
+/// Purpose: Handles one ETW EVENT_RECORD; called only by the outer FFI callback wrapped with catch_unwind.
+/// 调用方：etw_event_record_callback。
+/// Called by: etw_event_record_callback.
+/// 错误处理：内部尽量跳过异常字段；外层回调兜底捕获 panic，避免 panic 穿过 Windows 回调边界导致进程 abort。
+/// Error handling: Skips invalid fields where possible; the outer callback catches panics so they cannot cross the Windows callback boundary and abort the process.
+/// 中文关键词：ETW回调，panic隔离，FFI安全，事件丢弃
+/// English keywords: ETW callback, panic isolation, FFI safety, event drop
+unsafe fn etw_event_record_callback_inner(rec: *mut EVENT_RECORD) {
     if rec.is_null() {
         return;
     }
@@ -480,6 +862,13 @@ unsafe extern "system" fn etw_event_record_callback(rec: *mut EVENT_RECORD) {
     let id = header.event_descriptor.id;
     let pid = header.process_id;
     let tid = header.thread_id;
+
+    // 过滤系统/无效事件：PID 0 是 System Idle Process，PID 4 是 System Process，
+    // 0xFFFFFFFF 表示没有有效进程归属，不能进入实时日志和风险链路。
+    // Filter system/invalid events before queueing to avoid downstream noise and extra work.
+    if is_system_or_invalid_pid(pid) {
+        return;
+    }
 
     // ETW timestamp is 100ns intervals since Jan 1, 1601
     let ts_ms = if header.time_stamp > 0 {
@@ -561,6 +950,8 @@ fn raw_guid(bytes: &[u8; 16]) -> Guid {
 fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
     let provider_name = match ev.provider {
         ProviderKind::Process => "Process",
+        ProviderKind::Thread => "Thread",
+        ProviderKind::Image => "Image",
         ProviderKind::File => "File",
         ProviderKind::Registry => "Registry",
         ProviderKind::Network => "Network",
@@ -572,8 +963,37 @@ fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
             "event": {
                 "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
                 "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                "rawUserDataLength": ev.raw_user_data_len,
+                "rawUserDataPreview": ev.raw_user_data_preview,
                 "data": {
                     "processName": ev.target, "parentPid": ev.ppid, "type": ev.op
+                }
+            }
+        })).unwrap_or_default(),
+        ProviderKind::Thread => serde_json::to_string(&json!({
+            "type": "log",
+            "event": {
+                "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
+                "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                "rawUserDataLength": ev.raw_user_data_len,
+                "rawUserDataPreview": ev.raw_user_data_preview,
+                "data": {
+                    "threadId": ev.target, "type": ev.op,
+                    "startAddress": ev.start_address.map(|addr| format!("0x{:x}", addr))
+                }
+            }
+        })).unwrap_or_default(),
+        ProviderKind::Image => serde_json::to_string(&json!({
+            "type": "log",
+            "event": {
+                "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
+                "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                "rawUserDataLength": ev.raw_user_data_len,
+                "rawUserDataPreview": ev.raw_user_data_preview,
+                "data": {
+                    "imageName": ev.target, "type": ev.op,
+                    "imageBase": ev.image_base.map(|addr| format!("0x{:x}", addr)),
+                    "imageSize": ev.image_size
                 }
             }
         })).unwrap_or_default(),
@@ -582,6 +1002,8 @@ fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
             "event": {
                 "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
                 "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                "rawUserDataLength": ev.raw_user_data_len,
+                "rawUserDataPreview": ev.raw_user_data_preview,
                 "data": {
                     "fileName": ev.target, "type": ev.op
                 }
@@ -592,6 +1014,8 @@ fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
             "event": {
                 "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
                 "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                "rawUserDataLength": ev.raw_user_data_len,
+                "rawUserDataPreview": ev.raw_user_data_preview,
                 "data": {
                     "keyName": if ev.target2.is_empty() { ev.target.clone() } else { ev.target2.clone() },
                     "operation": ev.op
@@ -605,6 +1029,8 @@ fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
                 "event": {
                     "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
                     "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                    "rawUserDataLength": ev.raw_user_data_len,
+                    "rawUserDataPreview": ev.raw_user_data_preview,
                     "data": {
                         "remoteAddress": parts.first().unwrap_or(&""),
                         "remotePort": parts.get(1).and_then(|p| p.parse::<u16>().ok()).unwrap_or(0),
@@ -613,7 +1039,19 @@ fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
                 }
             })).unwrap_or_default()
         }
-        _ => serde_json::to_string(&json!({"type": "log", "event": {}})).unwrap_or_default(),
+        _ => serde_json::to_string(&json!({
+            "type": "log",
+            "event": {
+                "timestamp": ev.ts_ms, "pid": ev.pid, "tid": ev.tid,
+                "provider": provider_name, "opcode": ev.opcode, "id": ev.id,
+                "rawUserDataLength": ev.raw_user_data_len,
+                "rawUserDataPreview": ev.raw_user_data_preview,
+                "data": {
+                    "type": ev.op
+                }
+            }
+        }))
+        .unwrap_or_default(),
     }
 }
 
@@ -624,13 +1062,17 @@ fn parsed_event_to_json(ev: &ParsedEvent, _ts_ms: u64) -> String {
 fn match_event_to_json(m: &MatchedEvent) -> String {
     serde_json::to_string(&json!({
         "type": "match",
+        "matched": true,
         "ruleId": m.rule_id,
         "threatType": m.threat_type,
         "severity": m.severity,
         "recommendAction": m.recommend_action,
+        "description": m.description,
         "provider": m.provider,
         "op": m.op,
+        "operation": m.op,
         "pid": m.pid,
+        "path": m.path,
         "tsMs": m.ts_ms,
         "evidence": m.evidence,
         "context": m.context.iter().map(|c| json!({
@@ -641,18 +1083,17 @@ fn match_event_to_json(m: &MatchedEvent) -> String {
 }
 
 /// 函数名称：enable_se_system_profile_privilege
-/// 函数作用：启用当前进程的 SE_SYSTEM_PROFILE_NAME 特权。系统级 ETW 会话（StartTraceW
-///   使用 SYSTEM_TRACE_CONTROL_GUID + EVENT_TRACE_SYSTEM_LOGGER_MODE）需要此特权，
-///   即使以管理员身份运行，默认也可能未启用。此函数通过 AdjustTokenPrivileges 启用该特权。
+/// 函数作用：启用当前进程的 SE_SYSTEM_PROFILE_NAME 特权。某些内核级 ETW provider
+///   在管理员会话里仍需要这个特权处于启用状态；即使以管理员身份运行，默认也可能未启用。
+///   这里通过 AdjustTokenPrivileges 只做“打开现有钥匙”，不创建新的权限。
 /// Purpose: Enables the SE_SYSTEM_PROFILE_NAME privilege for the current process.
-///   System-level ETW sessions (StartTraceW with SYSTEM_TRACE_CONTROL_GUID +
-///   EVENT_TRACE_SYSTEM_LOGGER_MODE) require this privilege. Even when running as
-///   Administrator, it may not be enabled by default. This function enables it via
-///   AdjustTokenPrivileges.
+///   Some kernel-level ETW providers still require this privilege to be enabled
+///   in the administrator token. Even when running as Administrator, it may not
+///   be enabled by default. This function enables it via AdjustTokenPrivileges.
 /// 调用方：EtwSession::new() — 在 StartTraceW 之前调用
 /// Called by: EtwSession::new() — called before StartTraceW
-/// 中文关键词：特权启用，SE_SYSTEM_PROFILE_NAME，系统级ETW，管理员权限
-/// English keywords: privilege enable, SE_SYSTEM_PROFILE_NAME, system-level ETW, admin privilege
+/// 中文关键词：特权启用，SE_SYSTEM_PROFILE_NAME，内核ETW，管理员权限
+/// English keywords: privilege enable, SE_SYSTEM_PROFILE_NAME, kernel ETW, admin privilege
 fn enable_se_system_profile_privilege() -> Result<(), String> {
     unsafe {
         let advapi32 = libloading::Library::new("advapi32.dll")
@@ -704,7 +1145,7 @@ fn enable_se_system_profile_privilege() -> Result<(), String> {
             TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES,
             &mut token,
         );
-        if status != 0 {
+        if status == 0 {
             return Err(format!("OpenProcessToken failed: {}", status));
         }
 
@@ -713,7 +1154,7 @@ fn enable_se_system_profile_privilege() -> Result<(), String> {
         let priv_name: Vec<u16> = "SeSystemProfilePrivilege\0".encode_utf16().collect();
         let mut luid: i64 = 0;
         let status = lookup_privilege_value(std::ptr::null(), priv_name.as_ptr(), &mut luid);
-        if status != 0 {
+        if status == 0 {
             // 关闭令牌 / Close token
             let _ = std::mem::drop(advapi32);
             return Err(format!("LookupPrivilegeValueW failed: {}", status));

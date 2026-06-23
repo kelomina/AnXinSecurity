@@ -16,6 +16,16 @@ import { listen } from '@tauri-apps/api/event'
 import { listEvents } from '../api/behavior'
 import { loadMitreRules, type MitreRule } from '../api/scanRules'
 import type { EtwEvent } from '../api/behavior'
+import { ArrowLeft, Search } from 'lucide-react'
+import {
+  Button,
+  Badge,
+  makeStyles,
+  shorthands,
+  tokens,
+  Skeleton,
+  SkeletonItem,
+} from '@fluentui/react-components'
 
 /** MITRE ATT&CK 映射项 / MITRE ATT&CK mapping entry */
 interface MitreMapping {
@@ -49,6 +59,150 @@ function buildMitreMap(rules: MitreRule[]): MitreRulesMap {
   return map
 }
 
+const useStyles = makeStyles({
+  page: {
+    maxWidth: '1400px',
+    margin: '0 auto',
+    paddingBottom: '24px',
+  },
+  header: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+    marginBottom: '24px',
+  },
+  pageTitle: {
+    fontSize: tokens.fontSizeBase600,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    marginTop: 0,
+    marginBottom: '4px',
+  },
+  pidLabel: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    fontFamily: 'Consolas, "Courier New", monospace',
+  },
+  errorCard: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorPaletteRedBorderActive),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('16px'),
+    marginBottom: '16px',
+  },
+  errorText: {
+    color: tokens.colorPaletteRedForeground2,
+    marginTop: 0,
+    marginBottom: '8px',
+  },
+  sectionTitle: {
+    fontSize: tokens.fontSizeBase400,
+    fontWeight: tokens.fontWeightSemibold,
+    marginBottom: '12px',
+    color: tokens.colorNeutralForeground1,
+  },
+  tacticGrid: {
+    display: 'flex',
+    flexWrap: 'wrap',
+    ...shorthands.gap('8px'),
+    marginBottom: '20px',
+  },
+  tacticCard: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ...shorthands.padding('8px', '16px'),
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+  },
+  tacticName: {
+    fontWeight: tokens.fontWeightSemibold,
+    fontSize: tokens.fontSizeBase200,
+  },
+  eventList: {
+    maxHeight: '60vh',
+    overflowY: 'auto',
+  },
+  eventItem: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ...shorthands.padding('12px', '16px'),
+    marginBottom: '8px',
+    cursor: 'pointer',
+    transitionProperty: 'all',
+    transitionDuration: tokens.durationNormal,
+    ':hover': {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+      boxShadow: tokens.shadow4,
+    },
+  },
+  eventHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+    flexWrap: 'wrap',
+  },
+  eventTimestamp: {
+    fontSize: tokens.fontSizeBase200,
+    fontFamily: 'Consolas, "Courier New", monospace',
+    color: tokens.colorNeutralForeground3,
+  },
+  eventPid: {
+    fontSize: tokens.fontSizeBase200,
+    fontFamily: 'Consolas, "Courier New", monospace',
+    color: tokens.colorNeutralForeground3,
+  },
+  eventProvider: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+    marginLeft: 'auto',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  eventDetails: {
+    marginTop: '12px',
+    ...shorthands.padding('12px'),
+    backgroundColor: tokens.colorNeutralBackground3,
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    fontSize: tokens.fontSizeBase200,
+    fontFamily: 'Consolas, "Courier New", monospace',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+    maxHeight: '300px',
+    overflowY: 'auto',
+    color: tokens.colorNeutralForeground2,
+  },
+  emptyState: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('40px', '20px'),
+    textAlign: 'center' as const,
+  },
+  emptyIcon: {
+    fontSize: '48px',
+    marginBottom: '16px',
+  },
+  emptyText: {
+    color: tokens.colorNeutralForeground3,
+    marginTop: 0,
+    marginBottom: '8px',
+  },
+  emptySubtext: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    marginTop: 0,
+  },
+  mitreTag: {
+    fontSize: tokens.fontSizeBase100,
+    color: tokens.colorNeutralForeground3,
+    fontFamily: 'Consolas, "Courier New", monospace',
+  },
+})
+
 interface BehaviorLifecyclePageProps {
   pid: number
   processName: string
@@ -56,6 +210,7 @@ interface BehaviorLifecyclePageProps {
 }
 
 const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, processName, onBack }) => {
+  const styles = useStyles()
   const [events, setEvents] = useState<EtwEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -144,17 +299,21 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
   }
 
   return (
-    <div className="page">
+    <div className={styles.page}>
       {/* 头部 / Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '24px' }}>
-        <button className="btn btn-outline-secondary btn-sm" onClick={onBack}>
-          ← 返回
-        </button>
+      <div className={styles.header}>
+        <Button
+          appearance="subtle"
+          icon={<ArrowLeft size={16} />}
+          onClick={onBack}
+        >
+          返回
+        </Button>
         <div>
-          <h2 className="page-title" style={{ margin: 0 }}>
+          <h2 className={styles.pageTitle}>
             {processName}
           </h2>
-          <span style={{ fontSize: '12px', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>
+          <span className={styles.pidLabel}>
             PID: {pid}
           </span>
         </div>
@@ -162,19 +321,21 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
 
       {/* 错误提示 / Error display */}
       {error && (
-        <div className="card" style={{ marginBottom: '16px', borderColor: 'var(--danger)' }}>
-          <p style={{ color: 'var(--danger)', margin: 0 }}>{error}</p>
-          <button className="btn btn-outline-danger btn-sm" style={{ marginTop: '8px' }} onClick={loadEvents}>
+        <div className={styles.errorCard}>
+          <p className={styles.errorText}>{error}</p>
+          <Button appearance="outline" onClick={loadEvents}>
             重试
-          </button>
+          </Button>
         </div>
       )}
 
       {/* 加载骨架 / Loading skeleton */}
       {loading && (
-        <div className="skeleton-list">
+        <div>
           {[1, 2, 3, 4, 5].map((i) => (
-            <div key={i} className="skeleton-event" style={{ height: '48px', marginBottom: '8px' }} />
+            <Skeleton key={i} style={{ marginBottom: '8px' }}>
+              <SkeletonItem style={{ height: '48px' }} />
+            </Skeleton>
           ))}
         </div>
       )}
@@ -184,36 +345,26 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
         <>
           {/* MITRE ATT&CK 战术面板 / MITRE ATT&CK tactic panel */}
           <div style={{ marginBottom: '20px' }}>
-            <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '12px' }}>
+            <h3 className={styles.sectionTitle}>
               MITRE ATT&CK 映射
             </h3>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+            <div className={styles.tacticGrid}>
               {Object.keys(tacticGroups).map((tactic) => (
-                <div
-                  key={tactic}
-                  className="card"
-                  style={{
-                    padding: '8px 16px',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '8px',
-                    backgroundColor: 'var(--bg-secondary)',
-                  }}
-                >
-                  <span style={{ fontWeight: 600, fontSize: '13px' }}>{tactic}</span>
-                  <span className="badge" style={{ backgroundColor: 'var(--brand-color)', color: '#fff' }}>
+                <div key={tactic} className={styles.tacticCard}>
+                  <span className={styles.tacticName}>{tactic}</span>
+                  <Badge appearance="filled" color="brand">
                     {tacticGroups[tactic].length}
-                  </span>
+                  </Badge>
                 </div>
               ))}
             </div>
           </div>
 
           {/* 事件时间线列表 / Event timeline list */}
-          <h3 style={{ fontSize: '16px', fontWeight: 600, marginBottom: '12px' }}>
+          <h3 className={styles.sectionTitle}>
             行为时间线 ({events.length} 条记录)
           </h3>
-          <div className="event-list" style={{ maxHeight: '60vh', overflowY: 'auto' }}>
+          <div className={styles.eventList}>
             {events.map((event, index) => {
               const mitre = getMitreMapping(event)
               const eventId = event.id || `${event.pid}-${index}`
@@ -222,47 +373,36 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
               return (
                 <div
                   key={eventId}
-                  className="event-item"
-                  style={{ cursor: 'pointer' }}
+                  className={styles.eventItem}
                   onClick={() => setExpandedEvent(isExpanded ? null : eventId)}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-                    <span className="event-timestamp">{formatTime(event.timestamp)}</span>
-                    <span className="event-pid">PID:{event.pid}</span>
-                    <span className={`event-type-badge severity-${mitre ? 'high' : 'low'}`}>
+                  <div className={styles.eventHeader}>
+                    <span className={styles.eventTimestamp}>{formatTime(event.timestamp)}</span>
+                    <span className={styles.eventPid}>PID:{event.pid}</span>
+                    <Badge
+                      appearance="filled"
+                      color={mitre ? 'danger' : 'subtle'}
+                    >
                       {event.type || event.operation || 'Unknown'}
-                    </span>
+                    </Badge>
                     {mitre && (
                       <>
-                        <span className="badge" style={{ backgroundColor: 'var(--warning)', color: '#000' }}>
+                        <Badge appearance="filled" color="warning">
                           {mitre.tactic}
-                        </span>
-                        <span style={{ fontSize: '11px', color: 'var(--text-tertiary)', fontFamily: 'monospace' }}>
+                        </Badge>
+                        <span className={styles.mitreTag}>
                           {mitre.techniqueId}: {mitre.techniqueName}
                         </span>
                       </>
                     )}
-                    <span className="event-provider" style={{ marginLeft: 'auto' }}>
+                    <span className={styles.eventProvider}>
                       {event.provider || ''} {event.path || event.details || ''}
                     </span>
                   </div>
 
                   {/* 展开的详情 / Expanded details */}
                   {isExpanded && (
-                    <div
-                      style={{
-                        marginTop: '12px',
-                        padding: '12px',
-                        backgroundColor: 'var(--bg-tertiary)',
-                        borderRadius: '8px',
-                        fontSize: '12px',
-                        fontFamily: 'monospace',
-                        whiteSpace: 'pre-wrap',
-                        wordBreak: 'break-all',
-                        maxHeight: '300px',
-                        overflowY: 'auto',
-                      }}
-                    >
+                    <div className={styles.eventDetails}>
                       {event.details ? (
                         (() => {
                           try {
@@ -273,7 +413,7 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
                           }
                         })()
                       ) : (
-                        <span style={{ color: 'var(--text-tertiary)' }}>无额外详情</span>
+                        <span style={{ color: tokens.colorNeutralForeground3 }}>无额外详情</span>
                       )}
                     </div>
                   )}
@@ -286,10 +426,12 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
 
       {/* 空状态 / Empty state */}
       {!loading && events.length === 0 && (
-        <div className="empty-state">
-          <div className="empty-icon">🔍</div>
-          <p>该进程暂无行为数据</p>
-          <p style={{ fontSize: '13px', color: 'var(--text-tertiary)' }}>
+        <div className={styles.emptyState}>
+          <div className={styles.emptyIcon}>
+            <Search size={48} color={tokens.colorNeutralForeground3} />
+          </div>
+          <p className={styles.emptyText}>该进程暂无行为数据</p>
+          <p className={styles.emptySubtext}>
             请确认行为监控已启用，且该进程产生了系统级操作
           </p>
         </div>

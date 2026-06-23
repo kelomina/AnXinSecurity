@@ -12,6 +12,11 @@ pub struct ParsedEvent {
     pub op: String,
     pub target: String,
     pub target2: String,
+    pub image_base: Option<u64>,
+    pub image_size: Option<u64>,
+    pub start_address: Option<u64>,
+    pub raw_user_data_len: usize,
+    pub raw_user_data_preview: String,
 }
 
 /// 解析 EVENT_RECORD 中的原始 UserData 字节，提取事件字段。
@@ -28,22 +33,29 @@ pub fn parse_event_record(
     ts_ms: u64,
     user_data: &[u8],
 ) -> ParsedEvent {
-    let (provider, op, target, target2) = if same_guid(provider_guid, &PROCESS_GUID) {
-        parse_process_event(opcode, user_data)
-    } else if same_guid(provider_guid, &FILE_GUID) {
-        parse_file_event(id, user_data)
-    } else if same_guid(provider_guid, &REGISTRY_GUID) {
-        parse_registry_event(opcode, user_data)
-    } else if same_guid(provider_guid, &NETWORK_GUID) {
-        parse_network_event(opcode, user_data)
-    } else {
-        (
-            ProviderKind::Unknown,
-            String::new(),
-            String::new(),
-            String::new(),
-        )
-    };
+    let (provider, op, target, target2, image_base, image_size, start_address) =
+        if same_guid(provider_guid, &PROCESS_GUID) {
+            parse_process_event(opcode, id, user_data)
+        } else if same_guid(provider_guid, &FILE_GUID) {
+            let (provider, op, target, target2) = parse_file_event(id, user_data);
+            (provider, op, target, target2, None, None, None)
+        } else if same_guid(provider_guid, &REGISTRY_GUID) {
+            let (provider, op, target, target2) = parse_registry_event(opcode, user_data);
+            (provider, op, target, target2, None, None, None)
+        } else if same_guid(provider_guid, &NETWORK_GUID) {
+            let (provider, op, target, target2) = parse_network_event(opcode, user_data);
+            (provider, op, target, target2, None, None, None)
+        } else {
+            (
+                ProviderKind::Unknown,
+                String::new(),
+                String::new(),
+                String::new(),
+                None,
+                None,
+                None,
+            )
+        };
 
     ParsedEvent {
         ts_ms,
@@ -56,6 +68,11 @@ pub fn parse_event_record(
         op,
         target,
         target2,
+        image_base,
+        image_size,
+        start_address,
+        raw_user_data_len: user_data.len(),
+        raw_user_data_preview: hex_preview(user_data, 96),
     }
 }
 
@@ -77,27 +94,263 @@ fn same_guid(a: &[u8; 16], b: &[u8; 16]) -> bool {
     a == b
 }
 
-fn parse_process_event(opcode: u16, data: &[u8]) -> (ProviderKind, String, String, String) {
-    let op = match opcode {
-        1 => "start",
-        2 => "stop",
-        _ => "unknown",
-    };
-    let mut process_name = String::new();
-    // Try to extract image path from UserData
-    if data.len() >= 8 {
-        // Process events typically have image path as wide string at offset 8
-        let offset = 8;
-        if data.len() > offset {
-            process_name = extract_wide_string(&data[offset..]);
+fn hex_preview(data: &[u8], max_bytes: usize) -> String {
+    let mut output = String::new();
+    for (index, byte) in data.iter().take(max_bytes).enumerate() {
+        if index > 0 {
+            output.push(' ');
+        }
+        output.push_str(&format!("{:02x}", byte));
+    }
+    if data.len() > max_bytes {
+        output.push_str(" …");
+    }
+    output
+}
+
+fn parse_process_event(
+    opcode: u16,
+    id: u16,
+    data: &[u8],
+) -> (
+    ProviderKind,
+    String,
+    String,
+    String,
+    Option<u64>,
+    Option<u64>,
+    Option<u64>,
+) {
+    match map_kernel_process_task(id, data) {
+        KernelProcessTask::ThreadStart {
+            thread_id,
+            start_address,
+        } => (
+            ProviderKind::Thread,
+            "start".to_string(),
+            format!("thread:{}", thread_id),
+            String::new(),
+            None,
+            None,
+            start_address,
+        ),
+        KernelProcessTask::ThreadStop { thread_id } => (
+            ProviderKind::Thread,
+            "stop".to_string(),
+            format!("thread:{}", thread_id),
+            String::new(),
+            None,
+            None,
+            None,
+        ),
+        KernelProcessTask::ImageLoad {
+            image_base,
+            image_size,
+            path,
+        } => (
+            ProviderKind::Image,
+            "load".to_string(),
+            path,
+            String::new(),
+            image_base,
+            image_size,
+            None,
+        ),
+        KernelProcessTask::ImageUnload {
+            image_base,
+            image_size,
+            path,
+        } => (
+            ProviderKind::Image,
+            "unload".to_string(),
+            path,
+            String::new(),
+            image_base,
+            image_size,
+            None,
+        ),
+        KernelProcessTask::ProcessLike => {
+            let op = match opcode {
+                1 => "start",
+                2 => "stop",
+                _ => "unknown",
+            };
+            let process_name = pick_best_path_from_bytes(data);
+            (
+                ProviderKind::Process,
+                op.to_string(),
+                process_name,
+                String::new(),
+                None,
+                None,
+                None,
+            )
         }
     }
-    (
-        ProviderKind::Process,
-        op.to_string(),
-        process_name.clone(),
-        String::new(),
-    )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KernelProcessTask {
+    ProcessLike,
+    ThreadStart {
+        thread_id: u32,
+        start_address: Option<u64>,
+    },
+    ThreadStop {
+        thread_id: u32,
+    },
+    ImageLoad {
+        image_base: Option<u64>,
+        image_size: Option<u64>,
+        path: String,
+    },
+    ImageUnload {
+        image_base: Option<u64>,
+        image_size: Option<u64>,
+        path: String,
+    },
+}
+
+fn map_kernel_process_task(id: u16, data: &[u8]) -> KernelProcessTask {
+    match id {
+        3 => {
+            let thread_id = read_u32_le(data, 4).unwrap_or_default();
+            let start_address = likely_thread_start_address(data);
+            return KernelProcessTask::ThreadStart {
+                thread_id,
+                start_address,
+            };
+        }
+        4 => {
+            let thread_id = read_u32_le(data, 4).unwrap_or_default();
+            return KernelProcessTask::ThreadStop { thread_id };
+        }
+        5 | 6 => {
+            let mut image_candidates = extract_wide_strings(data)
+                .into_iter()
+                .filter(|value| looks_like_image_path(value))
+                .collect::<Vec<_>>();
+            image_candidates.sort_by_key(|candidate| -pick_best_path_score(candidate));
+
+            let path = image_candidates.into_iter().next().unwrap_or_default();
+            let image_base = first_non_zero_pointer(data);
+            let image_size = likely_image_size(data);
+            if id == 5 {
+                return KernelProcessTask::ImageLoad {
+                    image_base,
+                    image_size,
+                    path,
+                };
+            }
+            return KernelProcessTask::ImageUnload {
+                image_base,
+                image_size,
+                path,
+            };
+        }
+        _ => {}
+    }
+
+    KernelProcessTask::ProcessLike
+}
+
+fn pick_best_path_from_bytes(data: &[u8]) -> String {
+    let strings = extract_wide_strings(data);
+    pick_top_path(strings.into_iter()).unwrap_or_default()
+}
+
+fn pick_top_path<I>(values: I) -> Option<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    values
+        .into_iter()
+        .filter(|value| !value.trim().is_empty())
+        .max_by_key(|value| pick_best_path_score(value))
+}
+
+fn pick_best_path_score(path: &str) -> i32 {
+    let s = path.trim();
+    let mut score = 0i32;
+    if s.len() >= 2 && s.as_bytes()[1] == b':' {
+        score += 100;
+    }
+    if s.starts_with("\\Device\\") {
+        score += 80;
+    }
+    if s.contains('\\') {
+        score += 20;
+    }
+    let lower = s.to_ascii_lowercase();
+    if lower.ends_with(".exe") || lower.ends_with(".dll") || lower.ends_with(".sys") {
+        score += 40;
+    }
+    if lower.contains("\\windows\\")
+        || lower.contains("\\program files")
+        || lower.contains("\\users\\")
+    {
+        score += 10;
+    }
+    score
+}
+
+fn looks_like_image_path(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    (lower.contains('\\') || lower.contains('/'))
+        && (lower.ends_with(".dll") || lower.ends_with(".exe") || lower.ends_with(".sys"))
+}
+
+fn first_non_zero_pointer(data: &[u8]) -> Option<u64> {
+    if data.len() >= 8 {
+        for offset in (0..=data.len().saturating_sub(8)).step_by(8) {
+            let value = read_u64_le(data, offset)?;
+            if looks_like_user_pointer(value) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn likely_thread_start_address(data: &[u8]) -> Option<u64> {
+    if data.len() >= 24 {
+        for offset in (8..=data.len().saturating_sub(8)).step_by(8) {
+            let value = read_u64_le(data, offset)?;
+            if looks_like_user_pointer(value) {
+                return Some(value);
+            }
+        }
+    }
+    None
+}
+
+fn likely_image_size(data: &[u8]) -> Option<u64> {
+    if data.len() < 12 {
+        return None;
+    }
+    for offset in (4..=data.len().saturating_sub(4)).step_by(4) {
+        let value = read_u32_le(data, offset)? as u64;
+        if value >= 0x1000 && value <= 0x4000_0000 && value % 0x1000 == 0 {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn looks_like_user_pointer(value: u64) -> bool {
+    value >= 0x10_000 && value < 0x0000_8000_0000_0000
+}
+
+fn read_u32_le(data: &[u8], offset: usize) -> Option<u32> {
+    let bytes = data.get(offset..offset.checked_add(4)?)?;
+    Some(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn read_u64_le(data: &[u8], offset: usize) -> Option<u64> {
+    let bytes = data.get(offset..offset.checked_add(8)?)?;
+    Some(u64::from_le_bytes([
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+    ]))
 }
 
 fn parse_file_event(id: u16, data: &[u8]) -> (ProviderKind, String, String, String) {
@@ -259,27 +512,48 @@ fn is_private_ipv4(a0: u32, a1: u32, _a2: u32, _a3: u32) -> bool {
 /// 中文关键词：宽字符串提取，UTF-16，字节解析，字符串清洗
 /// English keywords: wide string extraction, UTF-16, byte parsing, string sanitization
 fn extract_wide_string(data: &[u8]) -> String {
+    extract_wide_strings(data)
+        .into_iter()
+        .next()
+        .unwrap_or_default()
+}
+
+fn extract_wide_strings(data: &[u8]) -> Vec<String> {
     if data.len() < 2 {
-        return String::new();
+        return Vec::new();
     }
     let wchar_count = data.len() / 2;
-    let mut utf16: Vec<u16> = Vec::with_capacity(wchar_count);
+    let mut strings = Vec::new();
+    let mut current: Vec<u16> = Vec::new();
     for i in 0..wchar_count {
         let lo = data[i * 2] as u16;
         let hi = data[i * 2 + 1] as u16;
         let ch = lo | (hi << 8);
-        utf16.push(ch);
+        if ch == 0 {
+            push_sanitized_wide_string(&mut strings, &current);
+            current.clear();
+        } else {
+            current.push(ch);
+        }
     }
-    // Find first null terminator
-    if let Some(pos) = utf16.iter().position(|&c| c == 0) {
-        utf16.truncate(pos);
+    push_sanitized_wide_string(&mut strings, &current);
+
+    strings
+}
+
+fn push_sanitized_wide_string(strings: &mut Vec<String>, utf16: &[u16]) {
+    if utf16.is_empty() {
+        return;
     }
     // Sanitize: remove non-printable chars
     let sanitized: String = String::from_utf16_lossy(&utf16)
         .chars()
         .filter(|c| !c.is_control() || *c == '\t' || *c == '\n' || *c == '\r')
         .collect();
-    sanitized.trim().to_string()
+    let sanitized = sanitized.trim();
+    if sanitized.len() >= 2 {
+        strings.push(sanitized.to_string());
+    }
 }
 
 /// 函数名称：pick_best_path
@@ -338,4 +612,62 @@ fn pick_best_path(raw: &str) -> String {
     }
 
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_kernel_process_image_load_as_image_provider() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x7ff7_0000_0000_u64.to_le_bytes());
+        data.extend_from_slice(&0x12000_u32.to_le_bytes());
+        data.extend_from_slice(&0_u32.to_le_bytes());
+        data.extend(
+            r"E:\Project\HTML\AnXinSecurity\native\file_hook\build-calc-probe-x64\Release\calc_probe_payload.dll"
+                .encode_utf16()
+                .flat_map(|ch| ch.to_le_bytes()),
+        );
+        data.extend_from_slice(&0_u16.to_le_bytes());
+
+        let event = parse_event_record(&PROCESS_GUID, 0, 5, 30056, 991, 1780000000000, &data);
+
+        assert_eq!(event.provider, ProviderKind::Image);
+        assert_eq!(event.op, "load");
+        assert!(event.target.ends_with("calc_probe_payload.dll"));
+        assert_eq!(event.image_base, Some(0x7ff7_0000_0000));
+        assert_eq!(event.image_size, Some(0x12000));
+        assert_eq!(event.raw_user_data_len, data.len());
+        assert!(event.raw_user_data_preview.starts_with("00 00 00 00"));
+    }
+
+    #[test]
+    fn parses_kernel_process_thread_start_as_thread_provider() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&30056_u32.to_le_bytes());
+        data.extend_from_slice(&777_u32.to_le_bytes());
+        data.extend_from_slice(&0_u64.to_le_bytes());
+        data.extend_from_slice(&0x7ff7_0000_1234_u64.to_le_bytes());
+
+        let event = parse_event_record(&PROCESS_GUID, 1, 3, 30056, 991, 1780000000001, &data);
+
+        assert_eq!(event.provider, ProviderKind::Thread);
+        assert_eq!(event.op, "start");
+        assert_eq!(event.target, "thread:777");
+        assert_eq!(event.start_address, Some(0x7ff7_0000_1234));
+        assert_eq!(event.raw_user_data_len, data.len());
+        assert!(event.raw_user_data_preview.contains("34 12 00 00 f7 7f"));
+    }
+
+    #[test]
+    fn raw_user_data_preview_is_bounded_hex() {
+        let data: Vec<u8> = (0..120).collect();
+        let event = parse_event_record(&PROCESS_GUID, 0, 5, 30056, 991, 1780000000000, &data);
+
+        assert_eq!(event.raw_user_data_len, 120);
+        assert!(event.raw_user_data_preview.starts_with("00 01 02 03"));
+        assert!(event.raw_user_data_preview.ends_with('…'));
+        assert!(!event.raw_user_data_preview.contains("61"));
+    }
 }

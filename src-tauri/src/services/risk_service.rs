@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Runtime};
 
+use crate::services::app_lifecycle_service::app_is_exiting;
 use crate::services::behavior_service::BehaviorService;
 use crate::services::interception_service::{InterceptionEntry, InterceptionService};
 use crate::services::trust_service::TrustService;
@@ -143,8 +144,16 @@ impl RiskService {
             }
         }
 
-        // 步骤3: 判断是否需要拦截 / Step 3: determine if interception is needed
-        let should_intercept = matches!(adjusted_level.as_str(), "high" | "medium");
+        // 步骤3: 判断是否需要自动拦截 / Step 3: determine if automatic interception is needed.
+        //
+        // 自动挂起是安全产品的“急刹车”，只能用于强证据。普通未签名、单个
+        // APIHook 观察事件或孤立远程线程入口都只适合记录、告警和补证；否则会把
+        // WebView、Node、浏览器扩展宿主等正常进程一起暂停，造成主页卡死。
+        let should_intercept = should_auto_intercept_event(
+            adjusted_level.as_str(),
+            &event.rule_id,
+            &event.threat_type,
+        );
 
         // 步骤4: 构建研判结果 / Step 4: build assessment result
         let assessment = RiskAssessment {
@@ -171,16 +180,17 @@ impl RiskService {
             let _ = behavior_svc.ingest_event(behavior_event).await;
         }
 
-        // 步骤6: 高风险和中等风险事件推入拦截队列 / Step 6: push high and medium risk events to interception queue
-        if should_intercept {
+        // 步骤6: 强证据事件推入拦截队列 / Step 6: push strong-evidence events to interception queue
+        if should_intercept && !app_is_exiting(app_handle) {
             // 对同一 PID 去重：同一天内不重复拦截 / Deduplicate same PID: don't re-intercept same day
-            {
+            let should_enqueue = {
                 let mut analyzed = self.analyzed_pids.lock().unwrap_or_else(|e| e.into_inner());
                 if analyzed.contains(&event.pid) {
                     eprintln!(
                         "[RiskService] PID {} already analyzed, skipping interception",
                         event.pid
                     );
+                    false
                 } else {
                     analyzed.insert(event.pid);
                     // 清理过期条目（简单策略：保留最近1000个）/ Clean expired (simple: keep last 1000)
@@ -191,7 +201,16 @@ impl RiskService {
                             analyzed.remove(key);
                         }
                     }
+                    true
                 }
+            };
+            if !should_enqueue {
+                if !app_is_exiting(app_handle) {
+                    let _ = app_handle.emit("etw-risk-event", &assessment);
+                }
+                let mut counter = self.event_counter.lock().unwrap_or_else(|e| e.into_inner());
+                *counter += 1;
+                return Ok(assessment);
             }
 
             let interception_guard = self.interception.lock().unwrap_or_else(|e| e.into_inner());
@@ -213,7 +232,9 @@ impl RiskService {
         }
 
         // 步骤7: 向前端发送风险事件 / Step 7: emit risk event to frontend
-        let _ = app_handle.emit("etw-risk-event", &assessment);
+        if !app_is_exiting(app_handle) {
+            let _ = app_handle.emit("etw-risk-event", &assessment);
+        }
 
         // 更新计数 / Update counter
         {
@@ -235,9 +256,31 @@ impl RiskService {
     }
 }
 
+fn is_observation_only_rule(rule_id: &str) -> bool {
+    matches!(rule_id, "remote_thread_start_outside_image")
+}
+
+fn should_auto_intercept_event(risk_level: &str, rule_id: &str, threat_type: &str) -> bool {
+    if risk_level != "high" {
+        return false;
+    }
+    if is_observation_only_rule(rule_id) || is_observation_only_threat_type(threat_type) {
+        return false;
+    }
+    true
+}
+
+fn is_observation_only_threat_type(threat_type: &str) -> bool {
+    matches!(
+        threat_type,
+        "unsigned_process" | "unsigned_module" | "api_hook_process_activity"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::interception_service::InterceptionDecision;
     use std::sync::Arc;
 
     #[test]
@@ -275,19 +318,28 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let result_low = service.analyze_event(event_low, None, None, &dummy_app.handle()).await.unwrap();
+            let result_low = service
+                .analyze_event(event_low, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
             assert_eq!(result_low.risk_level, "low");
 
-            let result_medium = service.analyze_event(event_medium, None, None, &dummy_app.handle()).await.unwrap();
+            let result_medium = service
+                .analyze_event(event_medium, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
             assert_eq!(result_medium.risk_level, "medium");
 
-            let result_high = service.analyze_event(event_high, None, None, &dummy_app.handle()).await.unwrap();
+            let result_high = service
+                .analyze_event(event_high, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
             assert_eq!(result_high.risk_level, "high");
         });
     }
 
     #[test]
-    fn should_intercept_for_medium_and_high_risk() {
+    fn should_intercept_only_for_high_strong_evidence() {
         let event_low = RiskEvent {
             pid: 123,
             process_name: "test.exe".to_string(),
@@ -315,14 +367,154 @@ mod tests {
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
-            let result_low = service.analyze_event(event_low, None, None, &dummy_app.handle()).await.unwrap();
+            let result_low = service
+                .analyze_event(event_low, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
             assert!(!result_low.should_intercept);
 
-            let result_medium = service.analyze_event(event_medium, None, None, &dummy_app.handle()).await.unwrap();
-            assert!(result_medium.should_intercept);
+            let result_medium = service
+                .analyze_event(event_medium, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
+            assert_eq!(result_medium.risk_level, "medium");
+            assert!(
+                !result_medium.should_intercept,
+                "medium-risk events should alert and be recorded, not automatically suspend processes"
+            );
 
-            let result_high = service.analyze_event(event_high, None, None, &dummy_app.handle()).await.unwrap();
+            let result_high = service
+                .analyze_event(event_high, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
             assert!(result_high.should_intercept);
+        });
+    }
+
+    #[test]
+    fn unsigned_and_single_hook_activity_are_observation_only() {
+        assert!(!should_auto_intercept_event(
+            "high",
+            "startup_unsigned_process",
+            "unsigned_process"
+        ));
+        assert!(!should_auto_intercept_event(
+            "high",
+            "startup_unsigned_module",
+            "unsigned_module"
+        ));
+        assert!(!should_auto_intercept_event(
+            "high",
+            "API_HOOK_PROCESS_ACTIVITY",
+            "api_hook_process_activity"
+        ));
+        assert!(should_auto_intercept_event(
+            "high",
+            "trusted_process_unsigned_image_load",
+            "trusted_process_unsigned_image_load"
+        ));
+    }
+
+    #[test]
+    fn medium_risk_event_does_not_enqueue_interception() {
+        let service = RiskService::new();
+        let interception = Arc::new(InterceptionService::new_for_tests());
+        service.set_interception_service(interception.clone());
+        let event = RiskEvent {
+            pid: 51001,
+            process_name: "normal-tool.exe".to_string(),
+            file_path: Some(r"C:\Tools\normal-tool.exe".to_string()),
+            threat_type: "unsigned_process".to_string(),
+            threat_name: None,
+            severity: 50,
+            rule_id: "startup_unsigned_process".to_string(),
+            description: "unsigned but not malicious".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let dummy_app = tauri::test::mock_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = service
+                .analyze_event(event, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
+            assert_eq!(result.risk_level, "medium");
+            assert!(!result.should_intercept);
+            assert!(interception.get_paused_pids().is_empty());
+        });
+    }
+
+    #[test]
+    fn high_risk_duplicate_pid_is_not_requeued_after_decision() {
+        let service = RiskService::new();
+        let interception = Arc::new(InterceptionService::new_for_tests());
+        service.set_interception_service(interception.clone());
+        let event = RiskEvent {
+            pid: 51002,
+            process_name: "strong-evidence.exe".to_string(),
+            file_path: Some(r"C:\Tools\strong-evidence.exe".to_string()),
+            threat_type: "trusted_process_unsigned_image_load".to_string(),
+            threat_name: None,
+            severity: 90,
+            rule_id: "trusted_process_unsigned_image_load".to_string(),
+            description: "strong evidence".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let dummy_app = tauri::test::mock_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let first = service
+                .analyze_event(event.clone(), None, None, &dummy_app.handle())
+                .await
+                .unwrap();
+            assert!(first.should_intercept);
+            assert_eq!(interception.get_paused_pids(), vec![51002]);
+
+            interception.mark_decision(51002, InterceptionDecision::Block);
+            assert!(interception.get_paused_pids().is_empty());
+
+            let second = service
+                .analyze_event(event, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
+            assert!(second.should_intercept);
+            assert!(
+                interception.get_paused_pids().is_empty(),
+                "deduplicated PID should not be requeued after the first risk-service interception"
+            );
+        });
+    }
+
+    #[test]
+    fn remote_thread_start_rule_is_observation_only_not_auto_intercept() {
+        let service = RiskService::new();
+        let event = RiskEvent {
+            pid: 43210,
+            process_name: "cmd.exe".to_string(),
+            file_path: Some(r"C:\Windows\System32\cmd.exe".to_string()),
+            threat_type: "可疑远程线程入口".to_string(),
+            threat_name: None,
+            severity: 75,
+            rule_id: "remote_thread_start_outside_image".to_string(),
+            description: "thread start outside image".to_string(),
+            timestamp: 1234567890,
+        };
+
+        let dummy_app = tauri::test::mock_app();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let result = service
+                .analyze_event(event, None, None, &dummy_app.handle())
+                .await
+                .unwrap();
+
+            assert_eq!(result.risk_level, "high");
+            assert!(
+                !result.should_intercept,
+                "isolated remote-thread entry evidence should alert and trigger follow-up scanning, not auto-suspend"
+            );
         });
     }
 
@@ -346,9 +538,13 @@ mod tests {
 
         rt.block_on(async {
             assert_eq!(service.get_event_count(), 0);
-            let _ = service.analyze_event(event.clone(), None, None, &dummy_app.handle()).await;
+            let _ = service
+                .analyze_event(event.clone(), None, None, &dummy_app.handle())
+                .await;
             assert_eq!(service.get_event_count(), 1);
-            let _ = service.analyze_event(event, None, None, &dummy_app.handle()).await;
+            let _ = service
+                .analyze_event(event, None, None, &dummy_app.handle())
+                .await;
             assert_eq!(service.get_event_count(), 2);
         });
     }
@@ -356,7 +552,7 @@ mod tests {
     #[test]
     fn set_interception_service_sets_correctly() {
         let service = RiskService::new();
-        let interception = Arc::new(InterceptionService::new());
+        let interception = Arc::new(InterceptionService::new_for_tests());
         service.set_interception_service(interception.clone());
     }
 }

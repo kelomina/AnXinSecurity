@@ -24,6 +24,34 @@
     ]
   },
   {
+    "ruleId": "calc_probe_payload_image_load",
+    "provider": "Image",
+    "op": "Load",
+    "severity": 4,
+    "threatType": "DLL 注入测试样本加载",
+    "recommendAction": "alert",
+    "description": "检测到进程加载了受控 calc_probe_payload.dll，用于验证远程线程 DLL 注入检测链路。",
+    "targetContains": [
+      "calc_probe_payload.dll"
+    ]
+  },
+  {
+    "ruleId": "temp_unsigned_image_load",
+    "provider": "Image",
+    "op": "Load",
+    "severity": 3,
+    "threatType": "可疑模块加载",
+    "recommendAction": "alert",
+    "description": "检测到进程加载来自临时目录的镜像模块，常见于落地后注入或旁加载验证场景。",
+    "targetContains": [
+      "\\\\temp\\\\"
+    ],
+    "targetPatterns": [
+      "*.dll",
+      "*.exe"
+    ]
+  },
+  {
     "ruleId": "test_rule_trigger",
     "provider": "File",
     "op": "Rename",

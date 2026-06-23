@@ -152,7 +152,7 @@ fn test_mixed_events_threats_separated_from_normals() {
 #[test]
 fn test_services_wired_enqueue_flow_works() {
     let risk = RiskService::new();
-    let inter = Arc::new(InterceptionService::new());
+    let inter = Arc::new(InterceptionService::new_for_tests());
     risk.set_interception_service(inter.clone());
 
     // 模拟 ETW 事件匹配后入队（这是 analyze_event 内部流程的简化版本）

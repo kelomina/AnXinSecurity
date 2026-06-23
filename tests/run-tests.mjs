@@ -25,9 +25,12 @@ async function runFrontendTests() {
     'frontend_stores_scanner.test.mjs',
     'frontend_stores_theme.test.mjs',
     'frontend_stores_toast.test.mjs',
+    'monitoring_runtime_control.test.mjs',
     'pure_logic_functions.test.mjs',
     'recent_fixes.test.mjs',
     'scan_page_threat_actions.test.mjs',
+    'startup_phase_screen.test.mjs',
+    'startup_snapshot_phase_split.test.mjs',
   ];
 
   for (const fileName of testFiles) {

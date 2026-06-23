@@ -1,9 +1,11 @@
 import { create } from 'zustand'
 import { getConfig, setBehaviorMonitoringEnabled, setProcessMonitoringEnabled, setFileMonitoringEnabled, AppConfig } from '../api/config'
+import { getMonitoringRuntimeStatus, type MonitoringRuntimeStatus } from '../api/behavior'
 import { ExclusionEntry, listExclusions, addExclusion, removeExclusion } from '../api/exclusions'
 import { AllowlistEntry, listAllowlist, addToAllowlist, removeFromAllowlist } from '../api/allowlist'
 
 type TrustItemSource = 'allowlist' | 'exclusion'
+type MonitoringControlKey = 'behavior' | 'process' | 'file'
 
 export interface TrustItemEntry {
   path: string
@@ -22,11 +24,15 @@ interface ConfigState {
   allowlist: AllowlistEntry[]
   trustItems: TrustItemEntry[]
   engineStatus: 'stopped' | 'running' | 'starting'
+  monitoringRuntimeStatus: MonitoringRuntimeStatus | null
+  monitoringControlPending: MonitoringControlKey | null
+  monitoringControlError: string | null
   loadConfig: () => Promise<void>
   setCurrentPage: (page: string) => void
-  setBehaviorMonitoring: (enabled: boolean) => void
-  setProcessMonitoring: (enabled: boolean) => void
-  setFileMonitoring: (enabled: boolean) => void
+  refreshMonitoringRuntimeStatus: () => Promise<void>
+  setBehaviorMonitoring: (enabled: boolean) => Promise<void>
+  setProcessMonitoring: (enabled: boolean) => Promise<void>
+  setFileMonitoring: (enabled: boolean) => Promise<void>
   setEngineStatus: (status: 'stopped' | 'running' | 'starting') => void
   loadExclusions: () => Promise<void>
   addExclusion: (path: string, entryType: 'file' | 'directory' | 'process', description?: string) => Promise<void>
@@ -40,6 +46,33 @@ interface ConfigState {
 }
 
 const normalizeTrustPath = (path: string) => path.trim().replace(/\//g, '\\').toLowerCase()
+
+const fallbackConfig = (
+  behaviorEnabled = false,
+  processEnabled = true,
+  fileEnabled = true
+): AppConfig => ({
+  brand: '',
+  themeColor: '',
+  defaultPage: '',
+  minimizeToTray: false,
+  behaviorMonitoring: { enabled: behaviorEnabled },
+  processMonitoring: { enabled: processEnabled },
+  fileMonitoring: { enabled: fileEnabled },
+  scanner: {
+    timeoutMs: 10000,
+    startupSnapshotSlowWarnMs: 30000,
+    startupModuleEnumerationTimeoutMs: 1000,
+    startupSignatureVerifyTimeoutMs: 1000,
+    startupSignatureVerifyConcurrency: 0,
+    startupRevocationCheckTimeoutMs: 5000,
+    startupRevocationCheckConcurrency: 4
+  },
+  ui: { themeMode: 'system', animations: true }
+})
+
+const monitoringErrorMessage = (label: string, error: unknown) =>
+  `${label}失败：${error instanceof Error ? error.message : String(error)}`
 
 /**
  * 函数名称：mergeTrustItems
@@ -117,6 +150,9 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   allowlist: [],
   trustItems: [],
   engineStatus: 'stopped',
+  monitoringRuntimeStatus: null,
+  monitoringControlPending: null,
+  monitoringControlError: null,
 
   loadConfig: async () => {
     try {
@@ -132,63 +168,146 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
     set({ currentPage: page })
   },
 
-  setBehaviorMonitoring: (enabled: boolean) => {
+  /**
+   * 函数名称：refreshMonitoringRuntimeStatus
+   * 函数作用：刷新前端可查询的真实监控运行态状态，当前包含 Hook 服务状态。
+   * Function name: refreshMonitoringRuntimeStatus
+   * Purpose: Refreshes queryable real monitoring runtime state, currently including Hook service status.
+   * 调用方：OverviewPage、SettingsPage 初始化、监控开关操作完成后。
+   * Called by: OverviewPage, SettingsPage initialization, after monitoring toggles complete.
+   * 被调用方：getMonitoringRuntimeStatus。
+   * Calls: getMonitoringRuntimeStatus.
+   * 错误处理：读取失败时记录错误并把 monitoringControlError 写入 Store，供页面展示。
+   * Error handling: Logs failures and writes monitoringControlError to the Store for page display.
+   * 中文关键词：运行态状态，Hook状态，设置页，概览页
+   * English keywords: runtime status, Hook status, settings page, overview page
+   */
+  refreshMonitoringRuntimeStatus: async () => {
+    try {
+      const monitoringRuntimeStatus = await getMonitoringRuntimeStatus()
+      set({ monitoringRuntimeStatus })
+    } catch (e) {
+      const message = monitoringErrorMessage('刷新监控运行状态', e)
+      console.error('[configStore] Failed to refresh monitoring runtime status:', e)
+      set({ monitoringControlError: message })
+    }
+  },
+
+  /**
+   * 函数名称：setBehaviorMonitoring
+   * 函数作用：切换 EDR 行为监控配置；后端配置命令同步控制 ETW resume/pause 运行态，失败时回滚 UI 配置。
+   * Function name: setBehaviorMonitoring
+   * Purpose: Toggles EDR behavior monitoring config; the backend config command controls ETW resume/pause runtime state and failures roll UI config back.
+   * 调用方：SettingsPage EDR 行为监控开关。
+   * Called by: SettingsPage EDR behavior monitoring toggle.
+   * 被调用方：setBehaviorMonitoringEnabled、refreshMonitoringRuntimeStatus。
+   * Calls: setBehaviorMonitoringEnabled, refreshMonitoringRuntimeStatus.
+   * 参数说明：enabled 为目标开关状态。
+   * Parameters: enabled is the target toggle state.
+   * 错误处理：任一后端调用失败都会恢复 previousConfig，写入 monitoringControlError，并继续向上抛出异常。
+   * Error handling: Any backend failure restores previousConfig, writes monitoringControlError, and rethrows.
+   * 中文关键词：EDR开关，ETW控制，配置保存，失败回滚
+   * English keywords: EDR toggle, ETW control, config persistence, rollback on failure
+   */
+  setBehaviorMonitoring: async (enabled: boolean) => {
+    const previousConfig = get().config
     set((state) => {
-      const cfg = state.config ?? {
-        brand: '',
-        themeColor: '',
-        defaultPage: '',
-        minimizeToTray: false,
-        behaviorMonitoring: { enabled },
-        processMonitoring: { enabled: true },
-        fileMonitoring: { enabled: true },
-        ui: { themeMode: 'system', animations: true }
-      }
+      const cfg = state.config ?? fallbackConfig(enabled)
       return {
-        config: { ...cfg, behaviorMonitoring: { enabled } }
+        config: { ...cfg, behaviorMonitoring: { enabled } },
+        monitoringControlPending: 'behavior',
+        monitoringControlError: null
       }
     })
-    setBehaviorMonitoringEnabled(enabled).catch((e) => {
-      console.error('[configStore] Failed to persist behavior monitoring:', e)
-    })
+    try {
+      await setBehaviorMonitoringEnabled(enabled)
+      await get().refreshMonitoringRuntimeStatus()
+    } catch (e) {
+      const message = monitoringErrorMessage(enabled ? '启动 EDR 行为监控' : '停止 EDR 行为监控', e)
+      console.error('[configStore] Failed to control behavior monitoring:', e)
+      set({ config: previousConfig, monitoringControlError: message })
+      throw e
+    } finally {
+      set({ monitoringControlPending: null })
+    }
   },
 
-  setProcessMonitoring: (enabled: boolean) => {
+  /**
+   * 函数名称：setProcessMonitoring
+   * 函数作用：切换进程监控配置；后端配置命令同步控制 start_process_watcher/stop_process_watcher 运行态，失败时回滚 UI 配置。
+   * Function name: setProcessMonitoring
+   * Purpose: Toggles process monitoring config; the backend config command controls start_process_watcher/stop_process_watcher runtime state and failures roll UI config back.
+   * 调用方：SettingsPage 进程监控开关。
+   * Called by: SettingsPage process monitoring toggle.
+   * 被调用方：setProcessMonitoringEnabled、refreshMonitoringRuntimeStatus。
+   * Calls: setProcessMonitoringEnabled, refreshMonitoringRuntimeStatus.
+   * 参数说明：enabled 为目标开关状态。
+   * Parameters: enabled is the target toggle state.
+   * 错误处理：资源路径解析或后端命令失败时恢复 previousConfig，写入 monitoringControlError，并继续向上抛出异常。
+   * Error handling: Resource resolution or backend command failures restore previousConfig, write monitoringControlError, and rethrow.
+   * 中文关键词：进程监控开关，start_process_watcher，stop_process_watcher，失败回滚
+   * English keywords: process monitoring toggle, start_process_watcher, stop_process_watcher, rollback on failure
+   */
+  setProcessMonitoring: async (enabled: boolean) => {
+    const previousConfig = get().config
     set((state) => {
-      const cfg = state.config ?? {
-        brand: '',
-        themeColor: '',
-        defaultPage: '',
-        minimizeToTray: false,
-        behaviorMonitoring: { enabled: false },
-        processMonitoring: { enabled },
-        fileMonitoring: { enabled: true },
-        ui: { themeMode: 'system', animations: true }
+      const cfg = state.config ?? fallbackConfig(false, enabled, true)
+      return {
+        config: { ...cfg, processMonitoring: { enabled } },
+        monitoringControlPending: 'process',
+        monitoringControlError: null
       }
-      return { config: { ...cfg, processMonitoring: { enabled } } }
     })
-    setProcessMonitoringEnabled(enabled).catch((e) => {
-      console.error('[configStore] Failed to persist process monitoring:', e)
-    })
+    try {
+      await setProcessMonitoringEnabled(enabled)
+      await get().refreshMonitoringRuntimeStatus()
+    } catch (e) {
+      const message = monitoringErrorMessage(enabled ? '启动进程监控' : '停止进程监控', e)
+      console.error('[configStore] Failed to control process monitoring:', e)
+      set({ config: previousConfig, monitoringControlError: message })
+      throw e
+    } finally {
+      set({ monitoringControlPending: null })
+    }
   },
 
-  setFileMonitoring: (enabled: boolean) => {
+  /**
+   * 函数名称：setFileMonitoring
+   * 函数作用：切换文件监控配置；后端配置命令同步控制 FileMonitor 与共享 Hook 命名管道，失败时回滚 UI 配置。
+   * Function name: setFileMonitoring
+   * Purpose: Toggles file monitoring config; the backend config command controls FileMonitor and the shared Hook named pipe, and failures roll UI config back.
+   * 调用方：SettingsPage 文件监控开关。
+   * Called by: SettingsPage file monitoring toggle.
+   * 被调用方：setFileMonitoringEnabled、refreshMonitoringRuntimeStatus。
+   * Calls: setFileMonitoringEnabled, refreshMonitoringRuntimeStatus.
+   * 参数说明：enabled 为目标开关状态。
+   * Parameters: enabled is the target toggle state.
+   * 错误处理：配置保存或 Hook 控制失败时恢复 previousConfig，写入 monitoringControlError，并继续向上抛出异常。
+   * Error handling: Config persistence or Hook control failures restore previousConfig, write monitoringControlError, and rethrow.
+   * 中文关键词：文件监控开关，Hook服务，file-hook-event，失败回滚
+   * English keywords: file monitoring toggle, Hook service, file-hook-event, rollback on failure
+   */
+  setFileMonitoring: async (enabled: boolean) => {
+    const previousConfig = get().config
     set((state) => {
-      const cfg = state.config ?? {
-        brand: '',
-        themeColor: '',
-        defaultPage: '',
-        minimizeToTray: false,
-        behaviorMonitoring: { enabled: false },
-        processMonitoring: { enabled: true },
-        fileMonitoring: { enabled },
-        ui: { themeMode: 'system', animations: true }
+      const cfg = state.config ?? fallbackConfig(false, true, enabled)
+      return {
+        config: { ...cfg, fileMonitoring: { enabled } },
+        monitoringControlPending: 'file',
+        monitoringControlError: null
       }
-      return { config: { ...cfg, fileMonitoring: { enabled } } }
     })
-    setFileMonitoringEnabled(enabled).catch((e) => {
-      console.error('[configStore] Failed to persist file monitoring:', e)
-    })
+    try {
+      await setFileMonitoringEnabled(enabled)
+      await get().refreshMonitoringRuntimeStatus()
+    } catch (e) {
+      const message = monitoringErrorMessage(enabled ? '启动文件监控' : '停止文件监控', e)
+      console.error('[configStore] Failed to control file monitoring:', e)
+      set({ config: previousConfig, monitoringControlError: message })
+      throw e
+    } finally {
+      set({ monitoringControlPending: null })
+    }
   },
 
   setEngineStatus: (status: 'stopped' | 'running' | 'starting') => {

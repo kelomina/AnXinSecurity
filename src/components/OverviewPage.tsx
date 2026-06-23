@@ -1,57 +1,164 @@
 /**
  * 概览页面
  * Overview page
- *
- * 显示引擎健康状态、系统信息、实时监控状态、隔离区文件数、
- * 实时ETW日志面板、快照扫描结果、风险分析统计等概览信息。
- * Displays engine health, system info, monitoring status, quarantine count,
- * real-time ETW log panel, snapshot results, risk stats, etc.
- *
- * 中文关键词：概览，引擎状态，系统信息，日志面板，快照结果
- * English keywords: overview, engine status, system info, log panel, snapshot result
  */
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import { useQuarantineStore } from '../stores/quarantineStore'
+import { useI18nStore } from '../stores/i18nStore'
 import { scannerHealth, startEngine, stopEngine } from '../api/scanner'
-import { getSystemInfo, type SystemInfo } from '../api/system'
-
-import { getRecentLogs, clearLogs } from '../api/logs'
+import { getRecentLogs, clearLogs, onLogEvent } from '../api/logs'
 import { getRiskStatus, onRiskEvent, type RiskAssessment } from '../api/risk'
-import { listen } from '@tauri-apps/api/event'
-import { Activity, Cpu, Database, HardDrive, ShieldCheck, ShieldAlert, Eye, FileWarning, Layers, Trash2, AlertTriangle, Power, PowerOff } from 'lucide-react'
+import { onFileHookEvent } from '../api/behavior'
+import { Activity, Database, ShieldCheck, ShieldAlert, Eye, FileWarning, Trash2, AlertTriangle, Power, PowerOff } from 'lucide-react'
+import { Button, makeStyles, shorthands, tokens } from '@fluentui/react-components'
+
+const useStyles = makeStyles({
+  page: {
+    paddingBottom: '24px',
+  },
+  pageTitle: {
+    fontSize: tokens.fontSizeBase600,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    marginBottom: '20px',
+  },
+  engineCard: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('16px', '20px'),
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: '16px',
+  },
+  engineCardRunning: {
+    ...shorthands.borderColor(tokens.colorPaletteGreenBorderActive),
+  },
+  engineLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+  },
+  engineIcon: {
+    width: '40px',
+    height: '40px',
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  engineLabel: {
+    fontWeight: tokens.fontWeightSemibold,
+    fontSize: tokens.fontSizeBase400,
+    color: tokens.colorNeutralForeground1,
+  },
+  engineSub: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+  },
+  infoGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, 1fr)',
+    ...shorthands.gap('12px'),
+    marginBottom: '16px',
+  },
+  infoCard: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('16px'),
+  },
+  infoCardIcon: {
+    width: '36px',
+    height: '36px',
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: tokens.colorBrandBackground2,
+    color: tokens.colorBrandForeground1,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: '10px',
+  },
+  infoCardLabel: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+    fontWeight: tokens.fontWeightSemibold,
+    marginBottom: '4px',
+  },
+  infoCardValue: {
+    fontSize: tokens.fontSizeBase600,
+    fontWeight: tokens.fontWeightBold,
+    color: tokens.colorNeutralForeground1,
+    lineHeight: '1.2',
+  },
+  infoCardSub: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+    marginTop: '4px',
+  },
+  logPanel: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    marginTop: '16px',
+    overflow: 'hidden',
+  },
+  logHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    ...shorthands.padding('14px', '20px'),
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+  logHeaderTitle: {
+    fontWeight: tokens.fontWeightSemibold,
+    fontSize: tokens.fontSizeBase300,
+    color: tokens.colorNeutralForeground1,
+  },
+  logBody: {
+    maxHeight: '280px',
+    overflowY: 'auto',
+    ...shorthands.padding('8px', '0'),
+    fontFamily: 'Consolas, "Courier New", monospace',
+    fontSize: tokens.fontSizeBase200,
+  },
+  logEmpty: {
+    ...shorthands.padding('20px'),
+    textAlign: 'center' as const,
+    color: tokens.colorNeutralForeground3,
+  },
+  logRow: {
+    ...shorthands.padding('4px', '20px'),
+    display: 'flex',
+    ...shorthands.gap('8px'),
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+})
 
 interface OverviewPageProps {
   onOpenLifecycle?: (pid: number, processName: string) => void
 }
 
 const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
+  const styles = useStyles()
   const config = useConfigStore((state) => state.config)
+  const refreshMonitoringRuntimeStatus = useConfigStore((state) => state.refreshMonitoringRuntimeStatus)
   const quarantineItems = useQuarantineStore((state) => state.items)
   const loadQuarantineItems = useQuarantineStore((state) => state.loadItems)
+  const { t } = useI18nStore()
   const [engineStatus, setEngineStatus] = useState<'running' | 'stopped' | 'error' | 'loading'>('loading')
   const [engineAction, setEngineAction] = useState<'start' | 'stop' | null>(null)
-  const [systemInfo, setSystemInfo] = useState<SystemInfo | null>(null)
   const [logs, setLogs] = useState<string[]>([])
-  const [snapshotResult, setSnapshotResult] = useState<Record<string, unknown> | null>(null)
   const [riskEventCount, setRiskEventCount] = useState<number>(0)
   const [lastRiskLevel, setLastRiskLevel] = useState<string | null>(null)
+  const [fileHookEventCount, setFileHookEventCount] = useState<number>(0)
 
-  // 组件顶层声明 refs
   const riskCleanupRef = useRef<(() => void) | null>(null)
   const riskMountedRef = useRef(true)
 
-  /**
-   * 函数名称：refreshEngineHealth
-   * 函数作用：读取后端扫描引擎健康状态，并按 running/stopped/error 映射为概览页状态。
-   * Purpose: Reads backend scan-engine health and maps it to overview running/stopped/error state.
-   * 调用方：OverviewPage 初始化轮询、handleToggleEngine。
-   * Called by: OverviewPage initial polling and handleToggleEngine.
-   * 被调用方：scannerHealth。
-   * Calls: scannerHealth.
-   * 中文关键词：引擎状态，健康检查，启动停止状态
-   * English keywords: engine state, health check, start stop status
-   */
   const refreshEngineHealth = useCallback(async () => {
     try {
       const health = await scannerHealth()
@@ -68,17 +175,6 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
     }
   }, [])
 
-  /**
-   * 函数名称：handleToggleEngine
-   * 函数作用：根据当前引擎状态调用真实 start_engine 或 stop_engine 命令，并刷新状态。
-   * Purpose: Calls the real start_engine or stop_engine command based on current engine state and refreshes status.
-   * 调用方：OverviewPage 引擎状态卡片按钮。
-   * Called by: OverviewPage engine status card button.
-   * 被调用方：startEngine、stopEngine、refreshEngineHealth。
-   * Calls: startEngine, stopEngine, refreshEngineHealth.
-   * 中文关键词：启动引擎，停止引擎，概览控制
-   * English keywords: start engine, stop engine, overview control
-   */
   const handleToggleEngine = async () => {
     const shouldStop = engineStatus === 'running'
     setEngineAction(shouldStop ? 'stop' : 'start')
@@ -97,50 +193,70 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
     }
   }
 
-  // 引擎健康检查 + 初始化加载
+  const formatRuntimeLogLine = useCallback((runtimeEvent: Record<string, unknown>) => {
+    const nestedEvent = runtimeEvent.event && typeof runtimeEvent.event === 'object'
+      ? runtimeEvent.event as Record<string, unknown>
+      : null
+    const nestedData = nestedEvent?.data && typeof nestedEvent.data === 'object'
+      ? nestedEvent.data as Record<string, unknown>
+      : null
+    const rawTimestamp = runtimeEvent.timestamp ?? runtimeEvent.timestampMs ?? nestedEvent?.timestamp
+    const timestamp = typeof rawTimestamp === 'number'
+      ? new Date(rawTimestamp)
+      : typeof rawTimestamp === 'string'
+        ? new Date(rawTimestamp)
+        : new Date()
+    const ts = Number.isNaN(timestamp.getTime())
+      ? new Date().toLocaleTimeString('zh-CN')
+      : timestamp.toLocaleTimeString('zh-CN')
+    const provider = String(runtimeEvent.provider || nestedEvent?.provider || 'ETW')
+    const op = String(runtimeEvent.operation || nestedData?.type || nestedData?.operation || runtimeEvent.type || '')
+    const path = String(runtimeEvent.path || nestedData?.fileName || nestedData?.keyName || nestedData?.processName || nestedData?.remoteAddress || '')
+    const pid = Number(runtimeEvent.pid || nestedEvent?.pid || 0)
+    return `[${ts}] PID:${pid} ${provider}/${op} ${path}`
+  }, [])
+
+  const formatLogLine = useCallback((line: string) => {
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>
+      return formatRuntimeLogLine(parsed)
+    } catch {
+      return line
+    }
+  }, [formatRuntimeLogLine])
+
   useEffect(() => {
     refreshEngineHealth()
+    refreshMonitoringRuntimeStatus()
     loadQuarantineItems()
-
-    // 加载系统信息
-    getSystemInfo().then(setSystemInfo).catch((e: unknown) => { console.error('[OverviewPage] Failed to load system info:', e) })
-    // 加载日志
-    getRecentLogs().then(setLogs).catch((e: unknown) => { console.error('[OverviewPage] Failed to load recent logs:', e) })
-    // 加载风险事件计数
+    getRecentLogs().then((recentLogs) => {
+      setLogs(recentLogs.map(formatLogLine).reverse().slice(0, 200))
+    }).catch((e: unknown) => { console.error('[OverviewPage] Failed to load recent logs:', e) })
     getRiskStatus().then((status) => { setRiskEventCount(status.eventCount) }).catch(() => {})
-
-    const interval = setInterval(refreshEngineHealth, 30000)
+    const interval = setInterval(() => {
+      refreshEngineHealth()
+      refreshMonitoringRuntimeStatus()
+    }, 30000)
     return () => clearInterval(interval)
-  }, [loadQuarantineItems, refreshEngineHealth])
+  }, [formatLogLine, loadQuarantineItems, refreshEngineHealth, refreshMonitoringRuntimeStatus])
 
-  // 监听实时日志事件
   useEffect(() => {
-    const unlisten = listen<Record<string, unknown>>('etw-event', (event) => {
-      const ts = new Date().toLocaleTimeString('zh-CN')
-      const provider = (event.payload.provider as string) || 'ETW'
-      const op = (event.payload.operation as string) || (event.payload.type as string) || ''
-      const path = (event.payload.path as string) || ''
-      const pid = event.payload.pid
-      const line = `[${ts}] PID:${pid} ${provider}/${op} ${path}`
-      setLogs((prev) => [line, ...prev].slice(0, 200))
+    const unlisten = onLogEvent((line) => {
+      setLogs((prev) => [formatLogLine(line), ...prev].slice(0, 200))
     })
-    return () => { unlisten.then((u) => u()) }
+    return () => { unlisten() }
+  }, [formatLogLine])
+
+  useEffect(() => {
+    const unlisten = onFileHookEvent(() => {
+      setFileHookEventCount((prev) => prev + 1)
+    })
+    return () => { unlisten() }
   }, [])
 
-  // 监听快照结果
   useEffect(() => {
-    const unlisten = listen<Record<string, unknown>>('snapshot-result', (event) => {
-      setSnapshotResult(event.payload as Record<string, unknown>)
-    })
-    return () => { unlisten.then((u) => u()) }
-  }, [])
-
-  // 监听实时风险事件
-  useEffect(() => {
-    // 每次挂载前重置状态
     riskMountedRef.current = true
     riskCleanupRef.current = null
-
     onRiskEvent((assessment: RiskAssessment) => {
       if (riskMountedRef.current) {
         setRiskEventCount((prev) => prev + 1)
@@ -150,11 +266,9 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
       if (riskMountedRef.current) {
         riskCleanupRef.current = unlisten
       } else {
-        // 组件已卸载，立即清理监听器
         unlisten()
       }
     })
-
     return () => {
       riskMountedRef.current = false
       if (riskCleanupRef.current) {
@@ -165,150 +279,161 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
 
   const quarantinedCount = quarantineItems.filter(i => i.status === 'quarantined').length
   const totalSize = quarantineItems.reduce((sum, i) => sum + i.fileSize, 0)
-  const themeLabel = config?.ui?.themeMode === 'system' ? '跟随系统' : config?.ui?.themeMode === 'light' ? '浅色' : '深色'
   const engineStatusLabel = engineStatus === 'loading'
-    ? '检查中...'
+    ? t('overview_engine_checking')
     : engineStatus === 'running'
-      ? '引擎运行正常'
+      ? t('overview_engine_running')
       : engineStatus === 'stopped'
-        ? '引擎已停止'
-        : '引擎异常 — 请检查引擎是否已启动'
+        ? t('overview_engine_stopped')
+        : t('overview_engine_error')
   const engineButtonLabel = engineAction
-    ? (engineAction === 'start' ? '启动中...' : '停止中...')
+    ? (engineAction === 'start' ? t('overview_engine_starting') : t('overview_engine_stopping'))
     : engineStatus === 'running'
-      ? '停止引擎'
-      : '启动引擎'
+      ? t('overview_engine_stop_btn')
+      : t('overview_engine_start_btn')
   const isEngineButtonDisabled = engineStatus === 'loading' || engineAction !== null
 
-  return (
-    <section id="page-overview" className="page">
-      <h1 className="page-title">{config?.brand || 'AnXin Security'}</h1>
+  const engineIconBg = engineStatus === 'running'
+    ? tokens.colorPaletteGreenBackground2
+    : engineStatus === 'error'
+      ? tokens.colorPaletteRedBackground2
+      : tokens.colorPaletteBlueBackground2
 
-      {/* 引擎状态 + 签名库版本 */}
-      <div className="status-card card" style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {engineStatus === 'running' ? <ShieldCheck size={20} color="var(--success)" /> : engineStatus === 'error' ? <ShieldAlert size={20} color="var(--danger)" /> : <Activity size={20} />}
-            <span>{engineStatusLabel}</span>
+  const riskCardBorderColor = lastRiskLevel === 'high'
+    ? tokens.colorPaletteRedBorderActive
+    : lastRiskLevel === 'medium'
+      ? tokens.colorPaletteYellowBorderActive
+      : undefined
+
+  const formatSize = (bytes: number) =>
+    bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`
+
+  return (
+    <section id="page-overview" className={styles.page}>
+      <h1 className={styles.pageTitle}>AnXin Security</h1>
+
+      {/* 引擎状态卡片 */}
+      <div className={`${styles.engineCard}${engineStatus === 'running' ? ` ${styles.engineCardRunning}` : ''}`}>
+        <div className={styles.engineLeft}>
+          <div className={styles.engineIcon} style={{ backgroundColor: engineIconBg }}>
+            {engineStatus === 'running'
+              ? <ShieldCheck size={20} color={tokens.colorPaletteGreenForeground2} />
+              : engineStatus === 'error'
+                ? <ShieldAlert size={20} color={tokens.colorPaletteRedForeground2} />
+                : <Activity size={20} color={tokens.colorPaletteBlueForeground2} />}
           </div>
-          <button
-            className={`btn btn-sm ${engineStatus === 'running' ? 'btn-outline-secondary' : 'btn-primary'}`}
-            onClick={handleToggleEngine}
-            disabled={isEngineButtonDisabled}
-            title={engineStatus === 'running' ? '释放扫描引擎句柄并暂停后续扫描' : '重新加载扫描引擎并恢复扫描能力'}
-          >
-            {engineAction ? <Activity size={16} className="spinning" /> : engineStatus === 'running' ? <PowerOff size={16} /> : <Power size={16} />}
-            {engineButtonLabel}
-          </button>
+          <div>
+            <div className={styles.engineLabel}>{engineStatusLabel}</div>
+            <div className={styles.engineSub}>
+              {engineStatus === 'running' ? t('overview_engine_all_modules') : t('overview_engine_status_desc')}
+            </div>
+          </div>
         </div>
+        <Button
+          appearance={engineStatus === 'running' ? 'outline' : 'primary'}
+          size="small"
+          onClick={handleToggleEngine}
+          disabled={isEngineButtonDisabled}
+          title={engineStatus === 'running' ? t('overview_engine_stop_title') : t('overview_engine_start_title')}
+          icon={engineAction
+            ? <Activity size={14} />
+            : engineStatus === 'running'
+              ? <PowerOff size={14} />
+              : <Power size={14} />}
+          style={engineStatus === 'running' ? { color: tokens.colorPaletteRedForeground2, borderColor: tokens.colorPaletteRedBorderActive } : undefined}
+        >
+          {engineButtonLabel}
+        </Button>
       </div>
 
       {/* 信息卡片网格 */}
-      <div className="info-cards-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '12px', marginBottom: '16px' }}>
-        {/* 系统信息卡片 */}
-        <div className="info-card card">
-          <div className="card-icon"><Cpu size={20} /></div>
-          <div className="card-content">
-            <h4>处理器</h4>
-            <p className="card-value" style={{ fontSize: '12px' }}>{systemInfo?.cpuName?.split('@')[0]?.trim() || '--'}</p>
-            <p style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>{systemInfo?.cpuCores || '--'} 核心</p>
+      <div className={styles.infoGrid}>
+        <div className={styles.infoCard}>
+          <div className={styles.infoCardIcon}>
+            <Eye size={20} />
+          </div>
+          <div className={styles.infoCardLabel}>{t('overview_realtime_monitoring')}</div>
+          <div className={styles.infoCardValue} style={{ fontSize: tokens.fontSizeBase400 }}>
+            {config?.behaviorMonitoring?.enabled ? t('overview_running') : t('overview_disabled')}
+          </div>
+          <div className={styles.infoCardSub}>
+            {config?.behaviorMonitoring?.enabled ? t('overview_monitoring_active') : t('overview_monitoring_off')}
           </div>
         </div>
 
-        <div className="info-card card">
-          <div className="card-icon"><Eye size={20} /></div>
-          <div className="card-content">
-            <h4>实时监控</h4>
-            <p className="card-value">{config?.behaviorMonitoring?.enabled ? '已启用' : '已禁用'}</p>
+        <div className={styles.infoCard}>
+          <div className={styles.infoCardIcon} style={{ backgroundColor: tokens.colorPaletteYellowBackground2, color: tokens.colorPaletteYellowForeground2 }}>
+            <FileWarning size={20} />
           </div>
+          <div className={styles.infoCardLabel}>{t('overview_event_log')}</div>
+          <div className={styles.infoCardValue}>{fileHookEventCount}</div>
+          <div className={styles.infoCardSub}>{t('overview_today')}</div>
         </div>
 
-        <div className="info-card card">
-          <div className="card-icon"><Database size={20} /></div>
-          <div className="card-content">
-            <h4>隔离文件数</h4>
-            <p className="card-value">{quarantinedCount}</p>
+        <div className={styles.infoCard}>
+          <div className={styles.infoCardIcon} style={{ backgroundColor: tokens.colorPaletteRedBackground2, color: tokens.colorPaletteRedForeground2 }}>
+            <Database size={20} />
           </div>
+          <div className={styles.infoCardLabel}>{t('overview_quarantine_files')}</div>
+          <div className={styles.infoCardValue}>{quarantinedCount}</div>
+          <div className={styles.infoCardSub}>{formatSize(totalSize)}</div>
         </div>
 
-        <div className="info-card card">
-          <div className="card-icon"><HardDrive size={20} /></div>
-          <div className="card-content">
-            <h4>隔离区占用</h4>
-            <p className="card-value">
-              {totalSize < 1024 ? `${totalSize} B` : totalSize < 1048576 ? `${(totalSize / 1024).toFixed(1)} KB` : `${(totalSize / 1048576).toFixed(1)} MB`}
-            </p>
+        <div className={styles.infoCard} style={riskCardBorderColor ? { borderColor: riskCardBorderColor } : undefined}>
+          <div className={styles.infoCardIcon} style={{ backgroundColor: tokens.colorPaletteRedBackground2, color: tokens.colorPaletteRedForeground2 }}>
+            <AlertTriangle size={20} />
           </div>
-        </div>
-
-        <div className="info-card card">
-          <div className="card-icon"><Layers size={20} /></div>
-          <div className="card-content">
-            <h4>主题</h4>
-            <p className="card-value">{themeLabel}</p>
+          <div className={styles.infoCardLabel}>{t('overview_risk_events')}</div>
+          <div className={styles.infoCardValue} style={
+            lastRiskLevel === 'high'
+              ? { color: tokens.colorPaletteRedForeground2 }
+              : lastRiskLevel === 'medium'
+                ? { color: tokens.colorPaletteYellowForeground2 }
+                : undefined
+          }>
+            {riskEventCount}
           </div>
-        </div>
-
-        {/* 快照结果卡片 */}
-        {snapshotResult && (
-          <div className="info-card card" style={{ borderColor: 'var(--warning)' }}>
-            <div className="card-icon"><FileWarning size={20} color="var(--warning)" /></div>
-            <div className="card-content">
-              <h4>启动快照</h4>
-              <p className="card-value" style={{ fontSize: '12px' }}>
-                {(snapshotResult.unsignedProcesses as number) || 0} 个未签名
-              </p>
-              <p style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                共 {(snapshotResult.totalProcesses as number) || 0} 进程
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* 风险事件卡片 */}
-        <div className="info-card card" style={lastRiskLevel === 'high' ? { borderColor: 'var(--danger)' } : lastRiskLevel === 'medium' ? { borderColor: 'var(--warning)' } : undefined}>
-          <div className="card-icon">
-            <AlertTriangle size={20} color={lastRiskLevel === 'high' ? 'var(--danger)' : lastRiskLevel === 'medium' ? 'var(--warning)' : 'var(--text-tertiary)'} />
-          </div>
-          <div className="card-content">
-            <h4>风险事件</h4>
-            <p className="card-value">{riskEventCount}</p>
-            {lastRiskLevel && (
-              <p style={{ fontSize: '11px' }}>
-                <span className={`risk-badge risk-${lastRiskLevel}`}>
-                  {lastRiskLevel === 'high' ? '高危' : lastRiskLevel === 'medium' ? '中危' : '低危'}
-                </span>
-              </p>
-            )}
+          <div className={styles.infoCardSub}>
+            {lastRiskLevel
+              ? `最近: ${lastRiskLevel === 'high' ? t('overview_risk_high') : lastRiskLevel === 'medium' ? t('overview_risk_medium') : t('overview_risk_low')}`
+              : t('overview_no_risk')}
           </div>
         </div>
       </div>
 
       {/* 实时日志面板 */}
-      <div className="card" style={{ marginBottom: '16px' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-          <h3 style={{ fontSize: '14px', fontWeight: 600, margin: 0 }}>实时事件日志</h3>
-          <button className="btn btn-outline-secondary btn-sm" onClick={() => { clearLogs(); setLogs([]) }}>
-            <Trash2 size={14} /> 清除
-          </button>
+      <div className={styles.logPanel}>
+        <div className={styles.logHeader}>
+          <span className={styles.logHeaderTitle}>{t('overview_realtime_event_log')}</span>
+          <Button
+            appearance="secondary"
+            size="small"
+            icon={<Trash2 size={14} />}
+            onClick={() => { clearLogs(); setLogs([]) }}
+          >
+            {t('overview_clear')}
+          </Button>
         </div>
-        <div style={{
-          maxHeight: '200px',
-          overflowY: 'auto',
-          fontFamily: 'monospace',
-          fontSize: '11px',
-          background: 'var(--bg-tertiary)',
-          borderRadius: '8px',
-          padding: '8px',
-          lineHeight: 1.6,
-          color: 'var(--text-secondary)',
-          wordBreak: 'break-all',
-        }}>
+        <div className={styles.logBody}>
           {logs.length === 0 ? (
-            <span style={{ color: 'var(--text-tertiary)' }}>等待事件...</span>
+            <div className={styles.logEmpty}>{t('overview_no_logs')}</div>
           ) : (
             logs.map((line, i) => (
-              <div key={i}>{line}</div>
+              <div key={i} className={styles.logRow}>
+                <span style={{ color: tokens.colorNeutralForeground4, minWidth: 28, textAlign: 'right' as const, opacity: 0.5 }}>{i + 1}</span>
+                <span style={{ color: tokens.colorNeutralForeground3 }}>
+                  {line.match(/^\[([^\]]+)\]/) ? `[${line.match(/^\[([^\]]+)\]/)![1]}]` : ''}
+                </span>
+                <span style={{ color: tokens.colorPaletteBlueForeground2 }}>
+                  {line.match(/PID:\d+/) ? line.match(/PID:\d+/)![0] : ''}
+                </span>
+                <span style={{ color: tokens.colorPaletteYellowForeground2, fontWeight: tokens.fontWeightSemibold }}>
+                  {line.match(/\] (.+?\/\S+)/) ? line.match(/\] (.+?\/\S+)/)![1] : ''}
+                </span>
+                <span style={{ color: tokens.colorNeutralForeground1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
+                  {line.replace(/^\[[^\]]+\]\s*PID:\d+\s*\S+\/\S+\s*/, '')}
+                </span>
+              </div>
             ))
           )}
         </div>

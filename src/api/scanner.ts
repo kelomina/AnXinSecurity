@@ -28,6 +28,8 @@ export interface BatchScanResult {
   results: ScanResult[]
   totalFiles: number
   threatsFound: number
+  scannedFiles?: number
+  cancelled?: boolean
 }
 
 /** 扫描进度事件载荷/Scan progress event payload */

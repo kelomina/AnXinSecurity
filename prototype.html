@@ -1,0 +1,1287 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AnXin Security - UI Prototype</title>
+<style>
+/* ============================================
+   Design Tokens
+   ============================================ */
+:root {
+  /* 阴影系统 */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,0.10), 0 0 1px rgba(0,0,0,0.06);
+  --shadow-md: 0 4px 8px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
+  --shadow-lg: 0 8px 16px rgba(0,0,0,0.14), 0 4px 8px rgba(0,0,0,0.10);
+  --shadow-xl: 0 16px 32px rgba(0,0,0,0.18), 0 8px 16px rgba(0,0,0,0.12);
+  --shadow-brand-glow: 0 0 0 1px rgba(76,162,255,0.3), 0 4px 12px rgba(76,162,255,0.25);
+
+  /* 圆角 */
+  --radius-small: 4px;
+  --radius-medium: 8px;
+  --radius-large: 12px;
+  --radius-xlarge: 16px;
+  --radius-circular: 999px;
+
+  /* 动画 */
+  --motion-dur-press: 200ms;
+  --motion-dur-enter: 250ms;
+  --motion-dur-page: 300ms;
+  --motion-ease-spring: cubic-bezier(0.68, -0.6, 0.32, 1.6);
+  --motion-ease-standard: ease;
+
+  /* 品牌色 */
+  --theme-color: #4CA2FF;
+  --color-danger: #ff4d4f;
+  --color-warning: #ffa940;
+  --color-success: #52c41a;
+  --color-info: #4ca2ff;
+
+  /* 字体 */
+  --font-stack: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'Cascadia Code', 'Fira Code', monospace;
+}
+
+/* 深色主题（默认） */
+[data-theme="dark"] {
+  --app-bg: rgba(15, 17, 21, 0.98);
+  --app-fg: #ffffff;
+  --muted-fg: #b0b8c4;
+  --sidebar-bg: rgba(11, 13, 16, 0.4);
+  --panel-bg: rgba(18, 22, 27, 0.5);
+  --panel-border: rgba(255, 255, 255, 0.15);
+  --panel-hover: rgba(26, 31, 36, 0.4);
+  --divider-color: rgba(255,255,255,0.08);
+  --acrylic-dark: rgba(15,17,21,0.75);
+  --acrylic-blur-bg: rgba(15,17,21,0.85);
+  --input-bg: rgba(255,255,255,0.06);
+  --scrollbar-thumb: rgba(255,255,255,0.15);
+}
+
+/* 浅色主题 */
+[data-theme="light"] {
+  --app-bg: rgba(248, 250, 252, 0.98);
+  --app-fg: #0f172a;
+  --muted-fg: #475569;
+  --sidebar-bg: rgba(255, 255, 255, 0.6);
+  --panel-bg: rgba(255, 255, 255, 0.7);
+  --panel-border: rgba(0, 0, 0, 0.15);
+  --panel-hover: rgba(0, 0, 0, 0.04);
+  --divider-color: rgba(0,0,0,0.08);
+  --acrylic-dark: rgba(255,255,255,0.75);
+  --acrylic-blur-bg: rgba(248,250,252,0.85);
+  --input-bg: rgba(0,0,0,0.04);
+  --scrollbar-thumb: rgba(0,0,0,0.15);
+}
+
+/* ============================================
+   Reset & Base
+   ============================================ */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font-stack);
+  font-size: 14px;
+  color: var(--app-fg);
+  background: var(--app-bg);
+  transition: background-color 200ms, color 200ms;
+}
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+a { color: var(--theme-color); text-decoration: none; }
+
+/* ============================================
+   Layout
+   ============================================ */
+.app-layout {
+  display: grid;
+  grid-template-rows: 32px 1fr;
+  grid-template-columns: 240px 1fr;
+  height: 100vh;
+  width: 100%;
+}
+.titlebar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 8px 0 16px;
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(20px);
+  -webkit-app-region: drag;
+  user-select: none;
+  border-bottom: 1px solid var(--divider-color);
+}
+.titlebar-left { display: flex; align-items: center; gap: 8px; }
+.titlebar-left svg { color: var(--theme-color); }
+.titlebar-left span { font-size: 13px; font-weight: 600; color: var(--app-fg); }
+.titlebar-right { display: flex; align-items: center; gap: 0; -webkit-app-region: no-drag; }
+.titlebar-btn {
+  width: 36px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--muted-fg);
+  cursor: pointer; transition: background 150ms, color 150ms;
+  border-radius: 0;
+}
+.titlebar-btn:hover { background: var(--panel-hover); color: var(--app-fg); }
+.titlebar-btn.close:hover { background: #e81123; color: #fff; }
+.theme-toggle-btn {
+  width: 36px; height: 32px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--muted-fg);
+  cursor: pointer; transition: background 150ms, color 150ms;
+}
+.theme-toggle-btn:hover { background: var(--panel-hover); color: var(--theme-color); }
+
+/* Sidebar */
+.sidebar {
+  grid-row: 2;
+  grid-column: 1;
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(20px) saturate(1.15);
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--divider-color);
+  padding: 8px 0;
+  overflow-y: auto;
+}
+.nav-list { list-style: none; flex: 1; padding: 8px 0; }
+.nav-item {
+  height: 44px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 16px;
+  margin: 2px 8px;
+  border-radius: var(--radius-medium);
+  cursor: pointer;
+  color: var(--muted-fg);
+  font-size: 14px;
+  font-weight: 400;
+  transition: all 150ms ease;
+  position: relative;
+}
+.nav-item:hover { background: var(--panel-hover); color: var(--app-fg); }
+.nav-item.active {
+  background: rgba(76,162,255,0.12);
+  color: var(--theme-color);
+  font-weight: 500;
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: -8px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 24px;
+  background: var(--theme-color);
+  border-radius: 0 2px 2px 0;
+}
+.nav-item svg { flex-shrink: 0; }
+.sidebar-footer {
+  padding: 12px 24px;
+  font-size: 11px;
+  color: var(--muted-fg);
+  opacity: 0.6;
+}
+
+/* Main content */
+.main-content {
+  grid-row: 2;
+  grid-column: 2;
+  overflow-y: auto;
+  padding: 24px;
+  background: var(--app-bg);
+}
+.page { display: none; max-width: 1200px; margin: 0 auto; animation: pageFadeIn var(--motion-dur-page) ease; }
+.page.active { display: block; }
+@keyframes pageFadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+.page-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--theme-color);
+  margin-bottom: 24px;
+}
+
+/* ============================================
+   Components
+   ============================================ */
+
+/* Cards */
+.card {
+  background: var(--acrylic-dark);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-large);
+  padding: 20px;
+  box-shadow: var(--shadow-md);
+  backdrop-filter: blur(20px) saturate(1.15);
+  transition: transform var(--motion-dur-press) ease, box-shadow var(--motion-dur-press) ease;
+}
+.card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg), var(--shadow-brand-glow);
+}
+.card-no-hover:hover { transform: none; box-shadow: var(--shadow-md); }
+
+.card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--muted-fg);
+  margin-bottom: 8px;
+}
+
+/* Info grid */
+.info-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-top: 16px;
+}
+
+/* Info card */
+.info-card {
+  background: var(--acrylic-dark);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-large);
+  padding: 16px;
+  backdrop-filter: blur(20px) saturate(1.15);
+  transition: transform var(--motion-dur-press) ease, box-shadow var(--motion-dur-press) ease;
+}
+.info-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg), var(--shadow-brand-glow);
+}
+.info-card-icon {
+  width: 40px; height: 40px;
+  border-radius: var(--radius-medium);
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(76,162,255,0.10);
+  color: var(--theme-color);
+  margin-bottom: 12px;
+}
+.info-card-label { font-size: 11px; font-weight: 500; color: var(--muted-fg); text-transform: uppercase; letter-spacing: 0.5px; }
+.info-card-value { font-size: 24px; font-weight: 700; color: var(--app-fg); margin: 4px 0; }
+.info-card-sub { font-size: 12px; color: var(--muted-fg); }
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 10px 20px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-medium);
+  font-size: 14px; font-weight: 500; font-family: inherit;
+  cursor: pointer;
+  transition: all var(--motion-dur-press) ease;
+  user-select: none;
+}
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0) scale(0.98); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+.btn-sm { padding: 6px 12px; font-size: 12px; }
+.btn-primary { background: var(--theme-color); color: #fff; }
+.btn-primary:hover { box-shadow: var(--shadow-brand-glow); }
+.btn-danger { background: var(--color-danger); color: #fff; }
+.btn-danger:hover { box-shadow: 0 0 0 1px rgba(255,77,79,0.3), 0 4px 12px rgba(255,77,79,0.25); }
+.btn-success { background: var(--color-success); color: #fff; }
+.btn-outline-primary { background: transparent; border-color: var(--theme-color); color: var(--theme-color); }
+.btn-outline-primary:hover { background: rgba(76,162,255,0.1); box-shadow: var(--shadow-brand-glow); }
+.btn-outline-danger { background: transparent; border-color: var(--color-danger); color: var(--color-danger); }
+.btn-outline-danger:hover { background: rgba(255,77,79,0.1); }
+.btn-outline-secondary { background: transparent; border-color: var(--panel-border); color: var(--muted-fg); }
+.btn-outline-secondary:hover { background: var(--panel-hover); color: var(--app-fg); }
+
+/* Badges */
+.badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px;
+  border-radius: var(--radius-small);
+  font-size: 12px; font-weight: 500;
+}
+.severity-high { background: rgba(255,77,79,0.15); color: #ff4d4f; }
+.severity-medium { background: rgba(255,169,64,0.15); color: #ffa940; }
+.severity-low { background: rgba(76,162,255,0.15); color: #4ca2ff; }
+.severity-safe { background: rgba(82,196,26,0.15); color: #52c41a; }
+
+/* Tables */
+.table-container {
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-large);
+  overflow: hidden;
+  background: var(--acrylic-dark);
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.table-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px;
+  background: var(--panel-bg);
+  border-bottom: 1px solid var(--divider-color);
+}
+.table-scroll { max-height: 400px; overflow-y: auto; }
+table { width: 100%; border-collapse: collapse; }
+thead { position: sticky; top: 0; z-index: 2; }
+th {
+  padding: 10px 12px;
+  text-align: left;
+  font-size: 12px; font-weight: 600; color: var(--muted-fg);
+  background: var(--panel-bg);
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+td {
+  padding: 12px;
+  font-size: 13px;
+  color: var(--app-fg);
+  border-bottom: 1px solid var(--divider-color);
+}
+tr:hover td { background: var(--panel-hover); }
+tr.selected td { box-shadow: inset 3px 0 0 var(--theme-color); }
+
+/* Toggle Switch */
+.toggle {
+  width: 44px; height: 24px;
+  background: var(--muted-fg);
+  border-radius: var(--radius-circular);
+  position: relative;
+  cursor: pointer;
+  transition: background 200ms;
+  flex-shrink: 0;
+}
+.toggle.on { background: var(--theme-color); }
+.toggle-knob {
+  width: 18px; height: 18px;
+  background: #fff;
+  border-radius: 50%;
+  position: absolute;
+  top: 3px; left: 3px;
+  transition: transform 200ms var(--motion-ease-spring);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.toggle.on .toggle-knob { transform: translateX(20px); }
+
+/* Progress bar */
+.progress-bar {
+  height: 8px;
+  background: var(--input-bg);
+  border-radius: var(--radius-circular);
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--theme-color), #7ec8ff, var(--theme-color));
+  background-size: 200% 100%;
+  border-radius: var(--radius-circular);
+  transition: width 0.4s ease;
+  animation: shimmer 2s linear infinite;
+}
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* Modal */
+.modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.58);
+  backdrop-filter: blur(8px);
+  z-index: 9000;
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none;
+  transition: opacity 250ms ease;
+}
+.modal-overlay.visible { opacity: 1; pointer-events: auto; }
+.modal-body {
+  width: min(480px, calc(100vw - 40px));
+  border-radius: var(--radius-large);
+  background: var(--acrylic-dark);
+  border: 1px solid var(--panel-border);
+  padding: 24px;
+  box-shadow: var(--shadow-xl);
+  transform: scale(0.95);
+  transition: transform 250ms ease;
+  backdrop-filter: blur(20px) saturate(1.15);
+}
+.modal-overlay.visible .modal-body { transform: scale(1); }
+.modal-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.modal-header h3 { font-size: 16px; font-weight: 600; }
+.modal-close {
+  width: 28px; height: 28px;
+  display: flex; align-items: center; justify-content: center;
+  background: none; border: none; color: var(--muted-fg);
+  cursor: pointer; border-radius: var(--radius-small);
+}
+.modal-close:hover { background: var(--panel-hover); color: var(--app-fg); }
+.modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+
+/* Toast */
+.toast-container {
+  position: fixed; bottom: 24px; right: 24px;
+  z-index: 10000; display: flex; flex-direction: column; gap: 8px;
+}
+.toast {
+  padding: 12px 16px;
+  border-radius: var(--radius-medium);
+  background: var(--acrylic-dark);
+  border: 1px solid var(--panel-border);
+  box-shadow: var(--shadow-lg);
+  backdrop-filter: blur(20px);
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px;
+  animation: toastIn 300ms ease;
+  min-width: 260px;
+}
+.toast.removing { animation: toastOut 250ms ease forwards; }
+@keyframes toastIn { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toastOut { to { opacity: 0; transform: translateX(40px); } }
+.toast-info svg { color: var(--color-info); }
+.toast-success svg { color: var(--color-success); }
+.toast-warning svg { color: var(--color-warning); }
+.toast-error svg { color: var(--color-danger); }
+
+/* Breathing animation */
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(82,196,26,0); }
+  50% { box-shadow: 0 0 12px 4px rgba(82,196,26,0.3); }
+}
+.breathe { animation: breathe 2.5s ease-in-out infinite; }
+
+/* Log slide-in */
+@keyframes logSlideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.log-entry-new { animation: logSlideIn 300ms ease; }
+
+/* Event flash */
+@keyframes eventFlash {
+  0% { background: rgba(76,162,255,0.15); }
+  100% { background: transparent; }
+}
+.event-flash { animation: eventFlash 1s ease; }
+
+/* Checkbox */
+.checkbox-wrapper { display: flex; align-items: center; }
+.checkbox-wrapper input[type="checkbox"] {
+  width: 16px; height: 16px;
+  accent-color: var(--theme-color);
+  cursor: pointer;
+}
+
+/* Status indicator */
+.status-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.status-dot.green { background: var(--color-success); }
+.status-dot.red { background: var(--color-danger); }
+.status-dot.yellow { background: var(--color-warning); }
+
+/* Settings specific */
+.settings-group { margin-bottom: 16px; }
+.settings-group-title {
+  font-size: 16px; font-weight: 600; color: var(--theme-color);
+  padding: 12px 0 8px; margin-bottom: 0;
+}
+.settings-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--divider-color);
+}
+.settings-item:last-child { border-bottom: none; }
+.settings-item-icon {
+  width: 36px; height: 36px;
+  border-radius: var(--radius-medium);
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(76,162,255,0.10);
+  color: var(--theme-color);
+  flex-shrink: 0;
+}
+.settings-item-text { flex: 1; }
+.settings-item-title { font-size: 14px; font-weight: 500; color: var(--app-fg); }
+.settings-item-desc { font-size: 12px; color: var(--muted-fg); margin-top: 2px; }
+.settings-item-control { flex-shrink: 0; }
+
+/* Theme selector cards */
+.theme-selector { display: flex; gap: 12px; margin-top: 8px; }
+.theme-option {
+  flex: 1; padding: 16px;
+  border: 2px solid var(--panel-border);
+  border-radius: var(--radius-large);
+  cursor: pointer;
+  text-align: center;
+  transition: all 200ms;
+  background: var(--input-bg);
+}
+.theme-option:hover { border-color: var(--theme-color); }
+.theme-option.selected { border-color: var(--theme-color); background: rgba(76,162,255,0.08); }
+.theme-option-icon { font-size: 24px; margin-bottom: 4px; }
+.theme-option-label { font-size: 13px; font-weight: 500; }
+
+/* Select dropdown */
+.custom-select {
+  padding: 6px 12px;
+  background: var(--input-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-medium);
+  color: var(--app-fg);
+  font-size: 13px;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+.custom-select:focus { border-color: var(--theme-color); }
+
+/* Reduce motion — 全局关闭动效 */
+html.reduce-motion,
+html.reduce-motion *,
+html.reduce-motion *::before,
+html.reduce-motion *::after {
+  animation-duration: 0s !important;
+  animation-delay: 0s !important;
+  transition-duration: 0s !important;
+  transition-delay: 0s !important;
+}
+html.reduce-motion .card:hover,
+html.reduce-motion .card:active,
+html.reduce-motion .info-card:hover,
+html.reduce-motion .info-card:active,
+html.reduce-motion .btn:hover,
+html.reduce-motion .btn:active {
+  transform: none !important;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+  .app-layout { grid-template-columns: 64px 1fr; }
+  .sidebar { width: 64px; }
+  .nav-label { display: none; }
+  .sidebar-header h2 { display: none; }
+  .sidebar-footer { display: none; }
+  .scan-actions { grid-template-columns: 1fr; }
+  .info-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Utility */
+.flex { display: flex; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-8 { gap: 8px; }
+.gap-12 { gap: 12px; }
+.gap-16 { gap: 16px; }
+.mt-8 { margin-top: 8px; }
+.mt-16 { margin-top: 16px; }
+.mt-24 { margin-top: 24px; }
+.text-mono { font-family: var(--font-mono); font-size: 12px; }
+.text-danger { color: var(--color-danger); }
+.text-warning { color: var(--color-warning); }
+.text-success { color: var(--color-success); }
+.text-info { color: var(--color-info); }
+.text-muted { color: var(--muted-fg); }
+.text-sm { font-size: 12px; }
+.text-lg { font-size: 20px; font-weight: 700; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+</style>
+</head>
+<body>
+<div class="app-layout">
+  <!-- ========== TitleBar ========== -->
+  <header class="titlebar">
+    <div class="titlebar-left">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+      <span>AnXin Security</span>
+    </div>
+    <div class="titlebar-right">
+      <button class="theme-toggle-btn" id="themeToggle" title="切换主题">
+        <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+      </button>
+      <button class="titlebar-btn" title="最小化"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button class="titlebar-btn" title="最大化"><svg width="12" height="12" viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9" stroke="currentColor" stroke-width="1.2" fill="none"/></svg></button>
+      <button class="titlebar-btn close" title="关闭"><svg width="12" height="12" viewBox="0 0 12 12"><line x1="1" y1="1" x2="11" y2="11" stroke="currentColor" stroke-width="1.2"/><line x1="11" y1="1" x2="1" y2="11" stroke="currentColor" stroke-width="1.2"/></svg></button>
+    </div>
+  </header>
+
+  <!-- ========== Sidebar ========== -->
+  <nav class="sidebar">
+    <ul class="nav-list">
+      <li class="nav-item active" data-page="overview">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <span class="nav-label">概览</span>
+      </li>
+      <li class="nav-item" data-page="scan">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <span class="nav-label">扫描</span>
+      </li>
+      <li class="nav-item" data-page="quarantine">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+        <span class="nav-label">隔离区</span>
+      </li>
+      <li class="nav-item" data-page="behavior">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        <span class="nav-label">进程监控</span>
+      </li>
+      <li class="nav-item" data-page="settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></svg>
+        <span class="nav-label">设置</span>
+      </li>
+    </ul>
+    <div class="sidebar-footer">v1.0.0 (Prototype)</div>
+  </nav>
+
+  <!-- ========== Main Content ========== -->
+  <main class="main-content">
+    <!-- PAGE: Overview -->
+    <div class="page active" id="page-overview">
+      <h1 class="page-title">AnXin Security</h1>
+      <!-- Engine status card -->
+      <div class="card card-no-hover breathe" id="engineStatusCard" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <div class="flex items-center gap-12">
+          <div style="width:40px;height:40px;border-radius:var(--radius-medium);display:flex;align-items:center;justify-content:center;background:rgba(82,196,26,0.12);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#52c41a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          </div>
+          <div>
+            <div style="font-weight:600;font-size:15px;">引擎运行正常</div>
+            <div style="font-size:12px;color:var(--muted-fg);">所有安全模块已启动</div>
+          </div>
+        </div>
+        <button class="btn btn-outline-danger btn-sm" id="btnStopEngine">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+          停止引擎
+        </button>
+      </div>
+
+      <!-- Info cards grid -->
+      <div class="info-grid">
+        <div class="info-card">
+          <div class="info-card-icon"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></div>
+          <div class="info-card-label">实时监控</div>
+          <div class="info-card-value" style="font-size:16px;">运行中</div>
+          <div class="info-card-sub">持续监控中</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon" style="background:rgba(255,169,64,0.10);color:var(--color-warning);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></div>
+          <div class="info-card-label">事件记录</div>
+          <div class="info-card-value">1,247</div>
+          <div class="info-card-sub">今日</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon" style="background:rgba(255,77,79,0.10);color:var(--color-danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></div>
+          <div class="info-card-label">隔离文件</div>
+          <div class="info-card-value">3</div>
+          <div class="info-card-sub">2.4 MB</div>
+        </div>
+        <div class="info-card">
+          <div class="info-card-icon" style="background:rgba(255,77,79,0.10);color:var(--color-danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
+          <div class="info-card-label">风险事件</div>
+          <div class="info-card-value text-warning">5</div>
+          <div class="info-card-sub">最近: 中危</div>
+        </div>
+      </div>
+
+      <!-- Log panel -->
+      <div class="card card-no-hover mt-16" style="padding:0;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid var(--divider-color);">
+          <span style="font-weight:600;font-size:14px;">实时事件日志</span>
+          <button class="btn btn-outline-secondary btn-sm" onclick="clearLogs()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            清除
+          </button>
+        </div>
+        <div id="logPanel" style="max-height:280px;overflow-y:auto;padding:8px 0;font-family:var(--font-mono);font-size:12px;">
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: Scan -->
+    <div class="page" id="page-scan">
+      <h1 class="page-title">文件扫描</h1>
+      <!-- Scan control buttons -->
+      <div class="card card-no-hover" style="margin-bottom:16px;">
+        <div class="scan-actions" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">
+          <button class="btn btn-outline-primary" onclick="showToast('info','已选择目录 (模拟)')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
+            选择目录
+          </button>
+          <button class="btn btn-outline-primary" onclick="showToast('info','已选择文件 (模拟)')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>
+            选择文件
+          </button>
+          <button class="btn btn-primary" onclick="showToast('success','扫描已启动')">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            开始扫描
+          </button>
+        </div>
+      </div>
+      <!-- Selected files -->
+      <div class="card card-no-hover" style="margin-bottom:16px;">
+        <div class="flex items-center justify-between" style="margin-bottom:12px;">
+          <span style="font-weight:600;font-size:14px;">已选择文件 (5)</span>
+          <button class="btn btn-outline-secondary btn-sm" onclick="showToast('info','已清除选择')">清除选择</button>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:12px;color:var(--muted-fg);display:flex;flex-direction:column;gap:4px;">
+          <div>C:\Users\test\Downloads\setup.exe</div>
+          <div>C:\Users\test\Documents\script.ps1</div>
+          <div>C:\Users\test\Desktop\tool.bat</div>
+          <div>C:\Users\test\Downloads\installer.msi</div>
+          <div>C:\Users\test\Documents\macro.vbs</div>
+        </div>
+      </div>
+      <!-- Progress -->
+      <div class="card card-no-hover" style="margin-bottom:16px;">
+        <div class="flex items-center justify-between" style="margin-bottom:8px;">
+          <span style="font-weight:600;font-size:14px;">扫描进度</span>
+          <span style="font-size:20px;font-weight:700;color:var(--theme-color);">67%</span>
+        </div>
+        <div class="progress-bar"><div class="progress-fill" style="width:67%"></div></div>
+        <div class="text-sm text-muted mt-8 truncate">正在扫描: C:\Users\test\Downloads\installer.msi</div>
+      </div>
+      <!-- Stats cards -->
+      <div class="info-grid" style="margin-bottom:16px;">
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">扫描文件</div>
+          <div class="info-card-value">128</div>
+        </div>
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">发现威胁</div>
+          <div class="info-card-value text-danger">3</div>
+        </div>
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">安全文件</div>
+          <div class="info-card-value text-success">125</div>
+        </div>
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">耗时</div>
+          <div class="info-card-value">12s</div>
+        </div>
+      </div>
+      <!-- Results table -->
+      <div class="table-container">
+        <div class="table-toolbar">
+          <div class="flex items-center gap-8">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--color-warning)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+            <span style="font-weight:600;font-size:14px;">已检测到 3 个威胁</span>
+            <span class="badge severity-medium">已选 <span id="scanSelected">0</span></span>
+          </div>
+          <div class="flex gap-8">
+            <button class="btn btn-danger btn-sm" onclick="showToast('success','威胁已清除')">清除威胁</button>
+            <button class="btn btn-outline-secondary btn-sm" onclick="showToast('info','已添加信任')">添加信任</button>
+          </div>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th style="width:36px;"></th><th>文件路径</th><th>检测结果</th><th>威胁类型</th><th style="width:80px;">严重程度</th></tr></thead>
+            <tbody id="scanTableBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: Quarantine -->
+    <div class="page" id="page-quarantine">
+      <h1 class="page-title">隔离区</h1>
+      <!-- Stats -->
+      <div class="info-grid" style="margin-bottom:16px;">
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">隔离文件</div>
+          <div class="info-card-value">3</div>
+        </div>
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">总大小</div>
+          <div class="info-card-value" style="font-size:20px;">2.4 MB</div>
+        </div>
+        <div class="info-card" style="text-align:center;">
+          <div class="info-card-label">总记录数</div>
+          <div class="info-card-value">5</div>
+        </div>
+      </div>
+      <!-- Toolbar + Table -->
+      <div class="table-container">
+        <div class="table-toolbar">
+          <div class="flex items-center gap-8">
+            <button class="btn btn-outline-secondary btn-sm" onclick="showToast('info','已刷新')">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+              刷新
+            </button>
+            <select class="custom-select" id="quarantineFilter" onchange="filterQuarantine()">
+              <option value="all">全部</option>
+              <option value="quarantined">隔离中</option>
+              <option value="restored">已恢复</option>
+            </select>
+          </div>
+          <button class="btn btn-outline-danger btn-sm" onclick="showToast('success','已批量删除')">批量删除 (<span id="quarantineSelected">0</span>)</button>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th style="width:36px;"></th><th style="width:220px;">文件名</th><th>原始路径</th><th>威胁类型</th><th style="width:70px;">大小</th><th style="width:70px;">状态</th><th style="width:140px;">操作</th></tr></thead>
+            <tbody id="quarantineTableBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: Behavior -->
+    <div class="page" id="page-behavior">
+      <h1 class="page-title">EDR 行为监控</h1>
+      <!-- Control bar -->
+      <div class="card card-no-hover" style="margin-bottom:16px;">
+        <div class="flex items-center gap-8">
+          <button class="btn btn-primary btn-sm" onclick="showToast('success','监控已启动')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            启动监控
+          </button>
+          <button class="btn btn-outline-secondary btn-sm" onclick="showToast('warning','监控已暂停')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+            暂停
+          </button>
+          <button class="btn btn-outline-danger btn-sm" onclick="showToast('info','日志已清除')">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+            清除日志
+          </button>
+        </div>
+      </div>
+      <!-- Event stats -->
+      <div class="card card-no-hover" style="margin-bottom:16px;">
+        <div style="font-weight:600;font-size:14px;margin-bottom:12px;">事件统计</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;">
+          <div style="text-align:center;padding:12px;background:var(--input-bg);border-radius:var(--radius-medium);">
+            <div class="text-sm text-muted">总计</div>
+            <div class="text-lg">247</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:rgba(76,162,255,0.06);border-radius:var(--radius-medium);">
+            <div class="text-sm text-info">进程</div>
+            <div class="text-lg text-info">89</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:rgba(255,169,64,0.06);border-radius:var(--radius-medium);">
+            <div class="text-sm text-warning">文件</div>
+            <div class="text-lg text-warning">112</div>
+          </div>
+          <div style="text-align:center;padding:12px;background:rgba(168,85,247,0.06);border-radius:var(--radius-medium);">
+            <div class="text-sm" style="color:#a855f7;">注册表</div>
+            <div class="text-lg" style="color:#a855f7;">46</div>
+          </div>
+        </div>
+      </div>
+      <!-- Event table -->
+      <div class="table-container">
+        <div class="table-toolbar">
+          <span style="font-weight:600;font-size:14px;">实时事件流</span>
+          <span class="badge severity-low">247 条</span>
+        </div>
+        <div class="table-scroll" style="max-height:500px;">
+          <table>
+            <thead><tr><th>时间</th><th>PID</th><th>类型</th><th>提供者</th><th>操作</th><th>路径</th></tr></thead>
+            <tbody id="eventTableBody">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- PAGE: Settings -->
+    <div class="page" id="page-settings">
+      <h1 class="page-title">设置</h1>
+      <!-- Appearance group -->
+      <div class="settings-group">
+        <div class="settings-group-title">外观</div>
+        <div class="card card-no-hover">
+          <div style="font-weight:500;font-size:14px;margin-bottom:8px;">主题模式</div>
+          <div class="theme-selector">
+            <div class="theme-option selected" data-theme-val="dark" onclick="selectThemeOption(this,'dark')">
+              <div class="theme-option-icon">🌙</div>
+              <div class="theme-option-label">深色</div>
+            </div>
+            <div class="theme-option" data-theme-val="light" onclick="selectThemeOption(this,'light')">
+              <div class="theme-option-icon">☀️</div>
+              <div class="theme-option-label">浅色</div>
+            </div>
+            <div class="theme-option" data-theme-val="system" onclick="selectThemeOption(this,'system')">
+              <div class="theme-option-icon">💻</div>
+              <div class="theme-option-label">系统</div>
+            </div>
+          </div>
+          <!-- 关闭动效 -->
+          <div class="settings-item" style="margin-top:8px;">
+            <div class="settings-item-icon" style="background:rgba(255,169,64,0.10);color:var(--color-warning);">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            </div>
+            <div class="settings-item-text">
+              <div class="settings-item-title">关闭动效</div>
+              <div class="settings-item-desc">启用后所有页面过渡动画和微交互将被关闭</div>
+            </div>
+            <div class="settings-item-control">
+              <div class="toggle" id="reduceMotionToggle" onclick="toggleReduceMotion(this)">
+                <div class="toggle-knob"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- Security group -->
+      <div class="settings-group">
+        <div class="settings-group-title">安全配置</div>
+        <div class="card card-no-hover" style="padding:4px 20px;">
+          <div class="settings-item">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">实时行为监控</div><div class="settings-item-desc">监控进程创建、文件访问、注册表修改等行为</div></div>
+            <div class="settings-item-control"><div class="toggle on" onclick="toggleSwitch(this)"><div class="toggle-knob"></div></div></div>
+          </div>
+          <div class="settings-item">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">ETW 事件采集</div><div class="settings-item-desc">启用 Windows ETW 事件追踪，采集系统级行为数据</div></div>
+            <div class="settings-item-control"><div class="toggle on" onclick="toggleSwitch(this)"><div class="toggle-knob"></div></div></div>
+          </div>
+          <div class="settings-item">
+            <div class="settings-item-icon" style="background:rgba(255,169,64,0.10);color:var(--color-warning);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">文件 Hook 监控</div><div class="settings-item-desc">通过 Detours 注入监控文件读写操作</div></div>
+            <div class="settings-item-control"><div class="toggle on" onclick="toggleSwitch(this)"><div class="toggle-knob"></div></div></div>
+          </div>
+          <div class="settings-item">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">进程监控</div><div class="settings-item-desc">监控进程启动和终止，生成进程树视图</div></div>
+            <div class="settings-item-control"><div class="toggle on" onclick="toggleSwitch(this)"><div class="toggle-knob"></div></div></div>
+          </div>
+        </div>
+      </div>
+      <!-- Scan config group -->
+      <div class="settings-group">
+        <div class="settings-group-title">扫描配置</div>
+        <div class="card card-no-hover" style="padding:4px 20px;">
+          <div class="settings-item" style="cursor:pointer;" onclick="showToast('info','打开扫描规则管理')">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">快速扫描规则</div><div class="settings-item-desc">管理文件签名和哈希规则</div></div>
+            <div class="settings-item-control"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted-fg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></div>
+          </div>
+          <div class="settings-item" style="cursor:pointer;" onclick="showToast('info','打开排除项管理')">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">排除项</div><div class="settings-item-desc">配置扫描排除的目录和文件</div></div>
+            <div class="settings-item-control"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--muted-fg)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg></div>
+          </div>
+        </div>
+      </div>
+      <!-- System group -->
+      <div class="settings-group">
+        <div class="settings-group-title">系统</div>
+        <div class="card card-no-hover" style="padding:4px 20px;">
+          <div class="settings-item">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">语言</div><div class="settings-item-desc">选择界面显示语言</div></div>
+            <div class="settings-item-control">
+              <select class="custom-select"><option selected>中文</option><option>English</option></select>
+            </div>
+          </div>
+          <div class="settings-item">
+            <div class="settings-item-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg></div>
+            <div class="settings-item-text"><div class="settings-item-title">版本</div><div class="settings-item-desc">当前应用版本号</div></div>
+            <div class="settings-item-control"><span style="font-size:13px;color:var(--muted-fg);">v1.0.0</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<!-- Restore Confirmation Modal -->
+<div class="modal-overlay" id="restoreModal" aria-hidden="true">
+  <div class="modal-body">
+    <div class="modal-header">
+      <h3>确认恢复</h3>
+      <button class="modal-close" onclick="closeModal('restoreModal')">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+      </button>
+    </div>
+    <p style="font-size:14px;margin-bottom:12px;">确定要恢复文件 <strong id="restoreFileName"></strong> 到原始位置吗？</p>
+    <div style="padding:12px;background:rgba(255,169,64,0.1);border-radius:var(--radius-medium);border:1px solid rgba(255,169,64,0.2);">
+      <p style="font-size:13px;color:var(--color-warning);display:flex;align-items:center;gap:6px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+        注意：如果原文件位置存在同名文件，可能会被覆盖。
+      </p>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-outline-secondary btn-sm" onclick="closeModal('restoreModal')">取消</button>
+      <button class="btn btn-primary btn-sm" onclick="confirmRestore()">确认恢复</button>
+    </div>
+  </div>
+</div>
+
+<!-- Toast container -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+/* ============================================
+   Data
+   ============================================ */
+const logData = [
+  { time: '20:35:12', pid: 4832, type: 'ETW', op: 'CreateProcess', path: 'C:\\Windows\\explorer.exe' },
+  { time: '20:35:11', pid: 1204, type: 'Hook', op: 'WriteFile', path: 'C:\\Users\\test\\document.docx' },
+  { time: '20:35:10', pid: 7728, type: 'ETW', op: 'RegSetValue', path: 'HKLM\\SOFTWARE\\...' },
+  { time: '20:35:09', pid: 4832, type: 'Hook', op: 'ReadFile', path: 'C:\\Windows\\System32\\ntdll.dll' },
+  { time: '20:35:08', pid: 9012, type: 'ETW', op: 'CreateProcess', path: 'C:\\Temp\\installer.exe' },
+  { time: '20:35:07', pid: 3456, type: 'Hook', op: 'DeleteFile', path: 'C:\\Users\\test\\Downloads\\temp.exe' },
+  { time: '20:35:06', pid: 5678, type: 'Hook', op: 'CreateFile', path: 'C:\\Windows\\System32\\drivers\\etc\\hosts' },
+  { time: '20:35:05', pid: 2345, type: 'ETW', op: 'RegCreateKey', path: 'HKCU\\SOFTWARE\\TestApp' },
+  { time: '20:35:04', pid: 6789, type: 'ETW', op: 'CreateProcess', path: 'C:\\Program Files\\Browser\\browser.exe' },
+  { time: '20:35:03', pid: 1204, type: 'Hook', op: 'WriteFile', path: 'C:\\Users\\test\\AppData\\Local\\cache.dat' },
+];
+
+const scanResults = [
+  { path: 'C:\\Users\\test\\Downloads\\trojan.exe', verdict: 'MALWARE', threat: 'Trojan.Win32.Generic', severity: 'high', selected: false },
+  { path: 'C:\\Users\\test\\Documents\\suspicious.dll', verdict: 'SUSPICIOUS', threat: 'Suspicious.Behavior', severity: 'medium', selected: false },
+  { path: 'C:\\Users\\test\\Desktop\\risky.bat', verdict: 'SUSPICIOUS', threat: 'Riskware.Script', severity: 'medium', selected: false },
+];
+
+const quarantineItems = [
+  { id: 'q-001', name: 'trojan.exe', path: 'C:\\Users\\test\\Downloads\\trojan.exe', threat: 'Trojan.Win32.Generic', size: 1258291, date: '2026-06-14', status: 'quarantined' },
+  { id: 'q-002', name: 'suspicious.dll', path: 'C:\\Users\\test\\Documents\\suspicious.dll', threat: 'Suspicious.Behavior', size: 892416, date: '2026-06-13', status: 'quarantined' },
+  { id: 'q-003', name: 'risky.bat', path: 'C:\\Users\\test\\Desktop\\risky.bat', threat: 'Riskware.Script', size: 348160, date: '2026-06-12', status: 'quarantined' },
+  { id: 'q-004', name: 'old_malware.exe', path: 'C:\\Temp\\old_malware.exe', threat: 'Malware.Gen', size: 2097152, date: '2026-06-10', status: 'restored' },
+  { id: 'q-005', name: 'adware.exe', path: 'C:\\Users\\test\\AppData\\local\\adware.exe', threat: 'Adware', size: 524288, date: '2026-06-09', status: 'restored' },
+];
+
+const events = [
+  { ts: '20:35:12', pid: 4832, type: 'Process', provider: 'ETW', op: 'CreateProcess', path: 'C:\\Windows\\explorer.exe' },
+  { ts: '20:35:11', pid: 1204, type: 'File', provider: 'Hook', op: 'WriteFile', path: 'C:\\Users\\test\\document.docx' },
+  { ts: '20:35:10', pid: 7728, type: 'Registry', provider: 'ETW', op: 'RegSetValue', path: 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run' },
+  { ts: '20:35:09', pid: 4832, type: 'Network', provider: 'ETW', op: 'Connect', path: '192.168.1.100:443' },
+  { ts: '20:35:08', pid: 9012, type: 'Process', provider: 'ETW', op: 'TerminateProcess', path: 'C:\\Temp\\installer.exe' },
+  { ts: '20:35:07', pid: 3456, type: 'File', provider: 'Hook', op: 'DeleteFile', path: 'C:\\Users\\test\\Downloads\\temp.exe' },
+  { ts: '20:35:06', pid: 5678, type: 'File', provider: 'Hook', op: 'CreateFile', path: 'C:\\Windows\\System32\\drivers\\etc\\hosts' },
+  { ts: '20:35:05', pid: 2345, type: 'Registry', provider: 'ETW', op: 'RegCreateKey', path: 'HKCU\\SOFTWARE\\TestApp' },
+  { ts: '20:35:04', pid: 6789, type: 'Process', provider: 'ETW', op: 'CreateProcess', path: 'C:\\Program Files\\Browser\\browser.exe' },
+  { ts: '20:35:03', pid: 1204, type: 'File', provider: 'Hook', op: 'WriteFile', path: 'C:\\Users\\test\\AppData\\Local\\cache.dat' },
+  { ts: '20:35:02', pid: 8901, type: 'Network', provider: 'ETW', op: 'Listen', path: '0.0.0.0:8080' },
+  { ts: '20:35:01', pid: 4832, type: 'Process', provider: 'ETW', op: 'CreateThread', path: 'C:\\Windows\\explorer.exe' },
+  { ts: '20:35:00', pid: 3456, type: 'File', provider: 'Hook', op: 'RenameFile', path: 'C:\\Users\\test\\Desktop\\old.txt → new.txt' },
+  { ts: '20:34:59', pid: 7728, type: 'Registry', provider: 'ETW', op: 'RegDeleteValue', path: 'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run\\TestApp' },
+  { ts: '20:34:58', pid: 5678, type: 'File', provider: 'Hook', op: 'ReadFile', path: 'C:\\Windows\\System32\\config\\SAM' },
+];
+
+/* ============================================
+   Helpers
+   ============================================ */
+function formatSize(bytes) {
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function severityBadge(s) {
+  const map = { high: 'severity-high', medium: 'severity-medium', low: 'severity-low' };
+  const label = { high: '高危', medium: '中危', low: '低危' };
+  return `<span class="badge ${map[s]}">${label[s]}</span>`;
+}
+
+function typeBadgeColor(type) {
+  const map = { Process: 'severity-low', File: 'severity-medium', Registry: '', Network: 'severity-safe' };
+  const cls = map[type] || 'severity-low';
+  const style = type === 'Registry' ? 'background:rgba(168,85,247,0.15);color:#a855f7;' : '';
+  return `<span class="badge ${cls}" ${style ? `style="${style}"` : ''}>${type}</span>`;
+}
+
+function providerBadge(p) {
+  const style = p === 'Hook' ? 'background:rgba(255,169,64,0.15);color:#ffa940;' : 'background:rgba(76,162,255,0.15);color:#4ca2ff;';
+  return `<span class="badge" style="${style}">${p}</span>`;
+}
+
+function statusBadge(s) {
+  if (s === 'quarantined') return '<span class="badge severity-high">隔离中</span>';
+  return '<span class="badge severity-safe">已恢复</span>';
+}
+
+/* ============================================
+   Render functions
+   ============================================ */
+function renderLogs() {
+  const panel = document.getElementById('logPanel');
+  panel.innerHTML = logData.map((l, i) => {
+    const typeColor = l.type === 'ETW' ? 'var(--color-info)' : 'var(--color-warning)';
+    return `<div class="log-entry-new" style="padding:4px 20px;display:flex;gap:8px;border-bottom:1px solid var(--divider-color);">
+      <span style="color:var(--muted-fg);min-width:28px;text-align:right;opacity:0.5;">${i + 1}</span>
+      <span style="color:var(--muted-fg);">[${l.time}]</span>
+      <span style="color:var(--color-info);">PID:${l.pid}</span>
+      <span style="color:${typeColor};font-weight:500;">${l.type}/${l.op}</span>
+      <span style="color:var(--app-fg);" class="truncate">${l.path}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderScanTable() {
+  const tbody = document.getElementById('scanTableBody');
+  tbody.innerHTML = scanResults.map((r, i) => `
+    <tr class="${r.selected ? 'selected' : ''}" data-idx="${i}">
+      <td><div class="checkbox-wrapper"><input type="checkbox" ${r.selected ? 'checked' : ''} onchange="toggleScanRow(${i}, this.checked)"></div></td>
+      <td class="text-mono truncate" style="max-width:300px;" title="${r.path}">${r.path}</td>
+      <td><span class="badge ${r.severity === 'high' ? 'severity-high' : 'severity-medium'}">${r.verdict}</span></td>
+      <td style="font-size:12px;color:var(--muted-fg);">${r.threat}</td>
+      <td>${severityBadge(r.severity)}</td>
+    </tr>
+  `).join('');
+}
+
+function renderQuarantineTable(filter) {
+  const tbody = document.getElementById('quarantineTableBody');
+  const filtered = filter && filter !== 'all' ? quarantineItems.filter(q => q.status === filter) : quarantineItems;
+  tbody.innerHTML = filtered.map((q, i) => `
+    <tr>
+      <td><div class="checkbox-wrapper"><input type="checkbox" onchange="updateQuarantineSelected()"></div></td>
+      <td class="text-mono" style="font-size:12px;">${q.name}</td>
+      <td class="text-mono truncate" style="max-width:260px;font-size:12px;" title="${q.path}">${q.path}</td>
+      <td style="font-size:12px;color:var(--muted-fg);white-space:nowrap;">${q.threat}</td>
+      <td style="font-size:12px;">${formatSize(q.size)}</td>
+      <td>${statusBadge(q.status)}</td>
+      <td>
+        <div class="flex gap-8">
+          ${q.status === 'quarantined' ? `
+            <button class="btn btn-outline-primary btn-sm" style="padding:4px 8px;font-size:11px;" onclick="openRestoreModal('${q.name}')">恢复</button>
+            <button class="btn btn-outline-danger btn-sm" style="padding:4px 8px;font-size:11px;" onclick="showToast('success','文件已删除')">删除</button>
+          ` : `<span class="text-sm text-muted">—</span>`}
+        </div>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function renderEventTable() {
+  const tbody = document.getElementById('eventTableBody');
+  tbody.innerHTML = events.map((e, i) => `
+    <tr class="${i === 0 ? 'event-flash' : ''}">
+      <td class="text-mono" style="white-space:nowrap;">${e.ts}</td>
+      <td class="text-mono">${e.pid}</td>
+      <td>${typeBadgeColor(e.type)}</td>
+      <td>${providerBadge(e.provider)}</td>
+      <td style="font-size:12px;">${e.op}</td>
+      <td class="text-mono truncate" style="max-width:260px;font-size:12px;" title="${e.path}">${e.path}</td>
+    </tr>
+  `).join('');
+}
+
+/* ============================================
+   Interactions
+   ============================================ */
+// Page navigation
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', () => {
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+    const page = item.dataset.page;
+    document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+    document.getElementById('page-' + page).classList.add('active');
+  });
+});
+
+// Theme toggle
+let currentTheme = 'dark';
+document.getElementById('themeToggle').addEventListener('click', () => {
+  currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  applyTheme(currentTheme);
+});
+
+function applyTheme(theme) {
+  if (theme === 'system') {
+    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    theme = prefersDark ? 'dark' : 'light';
+  }
+  currentTheme = theme;
+  document.documentElement.setAttribute('data-theme', theme);
+  document.getElementById('themeDisplay').textContent = theme === 'dark' ? '深色' : '浅色';
+  // Update theme selector
+  document.querySelectorAll('.theme-option').forEach(o => {
+    o.classList.toggle('selected', o.dataset.themeVal === theme || (o.dataset.themeVal === 'system' && theme === 'system'));
+  });
+}
+
+function selectThemeOption(el, theme) {
+  document.querySelectorAll('.theme-option').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  applyTheme(theme);
+}
+
+// Toggle switch
+function toggleSwitch(el) {
+  el.classList.toggle('on');
+}
+
+// Reduce motion toggle
+function toggleReduceMotion(el) {
+  el.classList.toggle('on');
+  document.documentElement.classList.toggle('reduce-motion', el.classList.contains('on'));
+}
+
+// Scan checkbox
+function toggleScanRow(idx, checked) {
+  scanResults[idx].selected = checked;
+  document.getElementById('scanSelected').textContent = scanResults.filter(r => r.selected).length;
+  const row = document.querySelector(`#scanTableBody tr[data-idx="${idx}"]`);
+  if (row) row.classList.toggle('selected', checked);
+}
+
+// Quarantine
+function updateQuarantineSelected() {
+  const count = document.querySelectorAll('#quarantineTableBody input[type=checkbox]:checked').length;
+  document.getElementById('quarantineSelected').textContent = count;
+}
+
+function filterQuarantine() {
+  const val = document.getElementById('quarantineFilter').value;
+  renderQuarantineTable(val);
+}
+
+// Modal
+let restoreTarget = '';
+function openRestoreModal(name) {
+  restoreTarget = name;
+  document.getElementById('restoreFileName').textContent = name;
+  const m = document.getElementById('restoreModal');
+  m.classList.add('visible');
+  m.setAttribute('aria-hidden', 'false');
+}
+function closeModal(id) {
+  const m = document.getElementById(id);
+  m.classList.remove('visible');
+  m.setAttribute('aria-hidden', 'true');
+}
+function confirmRestore() {
+  closeModal('restoreModal');
+  showToast('success', `文件 ${restoreTarget} 已恢复`);
+}
+
+// Click overlay to close modal
+document.getElementById('restoreModal').addEventListener('click', function(e) {
+  if (e.target === this) closeModal('restoreModal');
+});
+
+// Toast
+function showToast(type, message) {
+  const container = document.getElementById('toastContainer');
+  const icons = {
+    info: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>',
+    success: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>',
+    warning: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>',
+    error: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>'
+  };
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.innerHTML = `${icons[type]}<span>${message}</span>`;
+  container.appendChild(toast);
+  setTimeout(() => {
+    toast.classList.add('removing');
+    setTimeout(() => toast.remove(), 250);
+  }, 3000);
+}
+
+// Clear logs
+function clearLogs() {
+  document.getElementById('logPanel').innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted-fg);">暂无日志</div>';
+  showToast('info', '日志已清除');
+}
+
+/* ============================================
+   Init
+   ============================================ */
+renderLogs();
+renderScanTable();
+renderQuarantineTable();
+renderEventTable();
+</script>
+</body>
+</html>

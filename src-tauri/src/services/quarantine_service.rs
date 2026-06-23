@@ -479,16 +479,14 @@ mod tests {
 
     #[test]
     fn get_encryption_key_returns_16_bytes() {
-        let _env_guard =
-            QuarantineKeyEnvGuard::set("00112233445566778899aabbccddeeff");
+        let _env_guard = QuarantineKeyEnvGuard::set("00112233445566778899aabbccddeeff");
         let key = QuarantineService::get_encryption_key().expect("valid env key should load");
         assert_eq!(key.len(), 16, "encryption key must be 16 bytes for AES-128");
     }
 
     #[test]
     fn get_encryption_key_with_valid_env_var() {
-        let _env_guard =
-            QuarantineKeyEnvGuard::set("00112233445566778899aabbccddeeff");
+        let _env_guard = QuarantineKeyEnvGuard::set("00112233445566778899aabbccddeeff");
         let key = QuarantineService::get_encryption_key().expect("valid env key should load");
         assert_eq!(key[0], 0x00);
         assert_eq!(key[1], 0x11);
@@ -499,15 +497,20 @@ mod tests {
     fn get_encryption_key_with_short_env_var_returns_error() {
         let _env_guard = QuarantineKeyEnvGuard::set("tooshort");
         let result = QuarantineService::get_encryption_key();
-        assert!(result.is_err(), "short env var must not use a built-in static key");
+        assert!(
+            result.is_err(),
+            "short env var must not use a built-in static key"
+        );
     }
 
     #[test]
     fn get_encryption_key_with_invalid_hex_env_var_returns_error() {
-        let _env_guard =
-            QuarantineKeyEnvGuard::set("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+        let _env_guard = QuarantineKeyEnvGuard::set("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
         let result = QuarantineService::get_encryption_key();
-        assert!(result.is_err(), "invalid env var must not use a built-in static key");
+        assert!(
+            result.is_err(),
+            "invalid env var must not use a built-in static key"
+        );
     }
 
     #[test]

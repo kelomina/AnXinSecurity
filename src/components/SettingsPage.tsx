@@ -1,85 +1,248 @@
 /**
- * 设置页面
- * Settings page
+ * 设置页面 - Fluent 2版本
+ * Settings page - Fluent 2 version
  *
- * 提供通用设置、信任项目和开发者设置。
- * Provides general settings, unified trust item management, and dev settings.
- *
- * 中文关键词：设置，信任项目，排除项合并，允许项目合并
- * English keywords: settings, trust items, merged exclusions, merged allowlist
+ * 提供通用设置、信任项目和开发者设置。使用 Fluent 2 组件库。
+ * Provides general settings, unified trust item management, and dev settings using Fluent 2 components.
  */
 import React, { useEffect, useState } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore, ThemeMode } from '../stores/themeStore'
-import { Moon, Sun, Monitor, Zap, FolderOpen, FilePlus, Trash2, Shield, Plus, Key } from 'lucide-react'
+import { useI18nStore } from '../stores/i18nStore'
+import { FolderOpen, FilePlus, Trash2, Shield, Plus, Key, Moon, Sun, Monitor } from 'lucide-react'
 import { open } from '@tauri-apps/plugin-dialog'
-
+import {
+  Button,
+  Switch,
+  Input,
+  Textarea,
+  Radio,
+  RadioGroup,
+  Text,
+  makeStyles,
+  shorthands,
+  tokens,
+} from '@fluentui/react-components'
 import { devSettingsUnlock, devSettingsSave } from '../api/devSettings'
 
-/**
- * 函数名称：SettingsPage
- * 函数作用：渲染设置页；在单个“信任项目”入口下统一管理允许项目和扫描排除项，并保留通用和开发者设置。
- * Function name: SettingsPage
- * Purpose: Renders the settings page; manages allowed items and scan exclusions through one trust item workflow while keeping general and dev settings.
- * 调用方：应用路由/页面容器间接渲染本组件；当前仅确认 SettingsPage 作为默认导出被页面注册逻辑使用。
- * Called by: The app route/page container renders this component indirectly; currently confirmed as the default SettingsPage export.
- * 被调用方：useConfigStore 的 loadTrustItems/addTrustItem/removeTrustItem、useThemeStore、Tauri dialog open、devSettingsUnlock、devSettingsSave。
- * Calls: useConfigStore loadTrustItems/addTrustItem/removeTrustItem, useThemeStore, Tauri dialog open, devSettingsUnlock, devSettingsSave.
- * 参数说明：无 React props。
- * Parameters: No React props.
- * 返回值说明：React.FC 渲染结果；空状态由各列表的 empty-state 分支表达。
- * Returns: React.FC render output; empty list states are rendered by the empty-state branches.
- * 错误处理：设置命令失败时以 alert 或页面消息反馈；不吞掉 Promise 异常。
- * Error handling: Command failures are shown through alerts or page messages; Promise errors are not silently swallowed.
- * 副作用：通过统一信任项目 store action 写入运行时允许项目/排除项和监控配置；不直接写配置文件。
- * Side effects: Uses unified trust item store actions to persist runtime allowed items/exclusions and monitoring settings; does not write config files directly.
- * 中文关键词：设置页，信任项目，功能合并，允许项目，排除项，扫描生效，监控生效，运行时列表，配置页
- * English keywords: settings page, trust items, function merge, allowed items, exclusions, scan effective, monitor effective, runtime lists, config page
- */
+const useStyles = makeStyles({
+  page: {
+    maxWidth: '1200px',
+    margin: '0 auto',
+  },
+  pageTitle: {
+    fontSize: tokens.fontSizeHero800,
+    fontWeight: tokens.fontWeightBold,
+    color: tokens.colorBrandForeground1,
+    marginBottom: '24px',
+  },
+  settingsGroup: {
+    marginBottom: '16px',
+  },
+  settingsGroupTitle: {
+    fontSize: tokens.fontSizeBase400,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorBrandForeground1,
+    ...shorthands.padding('12px', '0', '8px'),
+    marginBottom: '0',
+  },
+  card: {
+    backgroundColor: tokens.colorNeutralBackground1,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('20px'),
+    boxShadow: tokens.shadow8,
+  },
+  cardNoPadding: {
+    ...shorthands.padding('4px', '20px'),
+  },
+  settingsItem: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+    ...shorthands.padding('14px', '0'),
+    ...shorthands.borderBottom('1px', 'solid', tokens.colorNeutralStroke2),
+    ':last-child': {
+      borderBottomStyle: 'none',
+    },
+  },
+  settingsItemIcon: {
+    width: '36px',
+    height: '36px',
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: tokens.colorBrandBackground2,
+    color: tokens.colorBrandForeground1,
+    flexShrink: 0,
+  },
+  settingsItemText: {
+    flex: 1,
+  },
+  settingsItemTitle: {
+    fontSize: tokens.fontSizeBase300,
+    fontWeight: tokens.fontWeightMedium,
+    color: tokens.colorNeutralForeground1,
+  },
+  settingsItemDesc: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    marginTop: '2px',
+  },
+  settingsItemControl: {
+    flexShrink: 0,
+  },
+  themeSelector: {
+    display: 'flex',
+    ...shorthands.gap('12px'),
+    marginTop: '8px',
+  },
+  themeOption: {
+    flex: 1,
+    ...shorthands.padding('16px'),
+    ...shorthands.border('2px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    cursor: 'pointer',
+    textAlign: 'center' as const,
+    transitionProperty: 'all',
+    transitionDuration: tokens.durationNormal,
+    backgroundColor: tokens.colorNeutralBackground2,
+    ':hover': {
+      borderColor: tokens.colorBrandStroke1 as any,
+    },
+  },
+  themeOptionSelected: {
+    borderColor: tokens.colorBrandStroke1 as any,
+    backgroundColor: tokens.colorBrandBackground2,
+  },
+  themeOptionIcon: {
+    fontSize: '24px',
+    marginBottom: '4px',
+  },
+  themeOptionLabel: {
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightMedium,
+  },
+  monitoringStatus: {
+    ...shorthands.padding('12px'),
+    marginBottom: '12px',
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+  },
+  errorMessage: {
+    ...shorthands.padding('12px'),
+    marginBottom: '12px',
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: tokens.colorPaletteRedBackground2,
+    color: tokens.colorPaletteRedForeground2,
+    fontSize: tokens.fontSizeBase300,
+  },
+  trustItemsContainer: {
+    display: 'flex',
+    flexDirection: 'column',
+    ...shorthands.gap('12px'),
+  },
+  trustItem: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('16px'),
+    ...shorthands.padding('16px'),
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke2),
+  },
+  trustItemInfo: {
+    flex: 1,
+    minWidth: 0,
+  },
+  trustItemPath: {
+    fontSize: tokens.fontSizeBase300,
+    fontWeight: tokens.fontWeightMedium,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    marginBottom: '4px',
+  },
+  trustItemMeta: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+  },
+  emptyState: {
+    textAlign: 'center',
+    ...shorthands.padding('48px', '24px'),
+    color: tokens.colorNeutralForeground3,
+  },
+  inputField: {
+    width: '100%',
+  },
+  flexRow: {
+    display: 'flex',
+    ...shorthands.gap('12px'),
+    marginBottom: '12px',
+  },
+  flexGrow: {
+    flex: 1,
+  },
+})
+
 const SettingsPage: React.FC = () => {
   const {
-    config, setBehaviorMonitoring, setProcessMonitoring, setFileMonitoring,
+    config,
+    setBehaviorMonitoring,
+    setProcessMonitoring,
+    setFileMonitoring,
+    monitoringRuntimeStatus,
+    monitoringControlPending,
+    monitoringControlError,
+    refreshMonitoringRuntimeStatus,
     trustItems,
-    loadTrustItems, addTrustItem, removeTrustItem
+    loadTrustItems,
+    addTrustItem,
+    removeTrustItem,
   } = useConfigStore()
   const { themeMode, setThemeMode, animationsEnabled, toggleAnimations } = useThemeStore()
+  const { locale, setLocale, t } = useI18nStore()
+  const styles = useStyles()
 
-  const [activeTab, setActiveTab] = useState<'general'|'trust'|'dev'>('general')
-  const [confirmDeleteTrustIndex, setConfirmDeleteTrustIndex] = useState<number | null>(null)
-
-  // 信任项目表单
   const [newTrustPath, setNewTrustPath] = useState('')
   const [newTrustType, setNewTrustType] = useState<'file' | 'directory'>('file')
   const [newTrustDesc, setNewTrustDesc] = useState('')
-
-  // 开发者设置
   const [devPassword, setDevPassword] = useState('')
   const [devData, setDevData] = useState('')
   const [devUnlocked, setDevUnlocked] = useState(false)
   const [devMessage, setDevMessage] = useState('')
-  useEffect(() => { loadTrustItems() }, [loadTrustItems])
+  const [devMessageIsError, setDevMessageIsError] = useState(false)
 
-  const themeOptions: { value: ThemeMode; label: string; icon: React.ElementType }[] = [
-    { value: 'system', label: '跟随系统', icon: Monitor },
-    { value: 'light', label: '浅色模式', icon: Sun },
-    { value: 'dark', label: '深色模式', icon: Moon },
+  useEffect(() => {
+    loadTrustItems()
+    refreshMonitoringRuntimeStatus()
+  }, [loadTrustItems, refreshMonitoringRuntimeStatus])
+
+  const themeOptions: { value: ThemeMode; icon: React.ReactNode; labelKey: string }[] = [
+    { value: 'dark', icon: <Moon size={20} />, labelKey: 'settings_theme_dark' },
+    { value: 'light', icon: <Sun size={20} />, labelKey: 'settings_theme_light' },
+    { value: 'system', icon: <Monitor size={20} />, labelKey: 'settings_theme_system' },
   ]
 
-  // 信任项目操作
   const handleSelectTrustDir = async () => {
-    const selected = await open({ directory: true, multiple: false, title: '选择要信任的目录' })
+    const selected = await open({ directory: true, multiple: false, title: t('settings_trust_type_directory') })
     if (selected) {
       setNewTrustPath(selected as string)
       setNewTrustType('directory')
     }
   }
+
   const handleSelectTrustFile = async () => {
-    const selected = await open({ multiple: false, title: '选择要信任的文件或程序' })
+    const selected = await open({ multiple: false, title: t('settings_trust_type_file') })
     if (selected) {
       setNewTrustPath(selected as string)
       setNewTrustType('file')
     }
   }
+
   const handleAddTrustItem = async () => {
     if (!newTrustPath.trim()) return
     try {
@@ -88,262 +251,377 @@ const SettingsPage: React.FC = () => {
       setNewTrustDesc('')
       setNewTrustType('file')
     } catch (e) {
-      alert(`添加失败: ${e}`)
-    }
-  }
-  const handleRemoveTrustItem = async (index: number) => {
-    const entry = trustItems[index]; if (!entry) return
-    try {
-      await removeTrustItem(entry.path)
-      setConfirmDeleteTrustIndex(null)
-    } catch (e) {
-      alert(`删除失败: ${e}`)
+      alert(`${t('settings_dev_save_failed')}: ${e}`)
     }
   }
 
-  // 开发者设置操作
-  const handleDevUnlock = async () => {
-    try { const result = await devSettingsUnlock(devPassword); setDevData(JSON.stringify(result, null, 2)); setDevUnlocked(true); setDevMessage('解锁成功') }
-    catch (e) { setDevMessage(`解锁失败: ${e}`) }
+  const handleRemoveTrustItem = async (index: number) => {
+    const entry = trustItems[index]
+    if (!entry) return
+    if (!confirm(t('settings_confirm_delete_trust').replace('{path}', entry.path))) return
+    try {
+      await removeTrustItem(entry.path)
+    } catch (e) {
+      alert(`${t('delete_failed')}: ${e}`)
+    }
   }
+
+  const handleMonitoringToggle = async (kind: 'behavior' | 'process' | 'file', enabled: boolean) => {
+    try {
+      if (kind === 'behavior') {
+        await setBehaviorMonitoring(enabled)
+      } else if (kind === 'process') {
+        await setProcessMonitoring(enabled)
+      } else {
+        await setFileMonitoring(enabled)
+      }
+    } catch (e) {
+      console.error(`[SettingsPage] ${kind} monitoring toggle failed:`, e)
+    }
+  }
+
+  const handleDevUnlock = async () => {
+    try {
+      const result = await devSettingsUnlock(devPassword)
+      setDevData(JSON.stringify(result, null, 2))
+      setDevUnlocked(true)
+      setDevMessage(t('settings_dev_unlock_success'))
+      setDevMessageIsError(false)
+    } catch (e) {
+      setDevMessage(`${t('settings_dev_unlock_failed')}: ${e}`)
+      setDevMessageIsError(true)
+    }
+  }
+
   const handleDevSave = async () => {
     try {
       await devSettingsSave(devPassword, JSON.parse(devData))
-      setDevMessage('保存成功')
+      setDevMessage(t('settings_dev_save_success'))
+      setDevMessageIsError(false)
+    } catch (e) {
+      setDevMessage(`${t('settings_dev_save_failed')}: ${e}`)
+      setDevMessageIsError(true)
     }
-    catch (e) { setDevMessage(`保存失败: ${e}`) }
   }
 
-  const tabs = [
-    { id: 'general' as const, label: '通用设置' },
-    { id: 'trust' as const, label: `信任项目 (${trustItems.length})` },
-    { id: 'dev' as const, label: '开发者' },
-  ]
-
   return (
-    <section id="page-settings" className="page">
-      <h1 className="page-title">设置</h1>
+    <section id="page-settings" className={styles.page}>
+      <h1 className={styles.pageTitle}>{t('settings_title')}</h1>
 
-      {/* 选项卡导航 */}
-      <div className="settings-tabs card" style={{ marginBottom: '16px', padding: '8px' }}>
-        <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
-          {tabs.map(t => (
-            <button key={t.id}
-              className={`btn btn-sm ${activeTab === t.id ? 'btn-primary' : 'btn-outline-secondary'}`}
-              onClick={() => setActiveTab(t.id)}>
-              {t.label}
-            </button>
-          ))}
+      {/* 外观组 */}
+      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroupTitle}>{t('settings_group_appearance')}</div>
+        <div className={styles.card}>
+          <Text weight="medium" size={300} style={{ marginBottom: 8 }}>
+            {t('settings_theme_mode')}
+          </Text>
+          <div className={styles.themeSelector}>
+            {themeOptions.map((o) => (
+              <div
+                key={o.value}
+                className={`${styles.themeOption} ${themeMode === o.value ? styles.themeOptionSelected : ''}`}
+                onClick={() => setThemeMode(o.value)}
+              >
+                <div className={styles.themeOptionIcon}>{o.icon}</div>
+                <div className={styles.themeOptionLabel}>{t(o.labelKey)}</div>
+              </div>
+            ))}
+          </div>
+          <div className={styles.settingsItem} style={{ marginTop: 8 }}>
+            <div className={styles.settingsItemIcon} style={{ backgroundColor: 'rgba(199,146,85,0.09)', color: 'var(--color-warning)' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 6v6l4 2" />
+              </svg>
+            </div>
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_disable_animations')}</div>
+              <div className={styles.settingsItemDesc}>{t('settings_disable_animations_desc')}</div>
+            </div>
+            <div className={styles.settingsItemControl}>
+              <Switch checked={!animationsEnabled} onChange={toggleAnimations} />
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* 通用设置 */}
-      {activeTab === 'general' && (<>
-        <div className="settings-section card">
-          <h3>监控设置</h3>
-          <div className="toggle-setting">
-            <div className="toggle-info">
-              <span className="toggle-label">EDR 行为监控</span>
-              <span className="toggle-description">
-                实时监控系统进程行为，消耗较多系统资源，非必要不建议开启
-              </span>
+      {/* 安全配置组 */}
+      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroupTitle}>{t('settings_group_security')}</div>
+        <div className={`${styles.card} ${styles.cardNoPadding}`}>
+          {monitoringControlError && <div className={styles.errorMessage}>{monitoringControlError}</div>}
+          <div className={styles.monitoringStatus}>
+            {t('settings_monitoring_status')}
+            <strong style={{ marginLeft: '6px', color: monitoringRuntimeStatus?.etwCollecting ? tokens.colorPaletteGreenForeground2 : tokens.colorPaletteYellowForeground2 }}>
+              ETW {monitoringRuntimeStatus ? (monitoringRuntimeStatus.etwCollecting ? t('settings_monitoring_collecting') : t('settings_monitoring_stopped')) : t('settings_monitoring_loading')}
+            </strong>
+            <strong style={{ marginLeft: '10px', color: monitoringRuntimeStatus?.processWatcherRunning ? tokens.colorPaletteGreenForeground2 : tokens.colorPaletteYellowForeground2 }}>
+              APIHook {monitoringRuntimeStatus ? (monitoringRuntimeStatus.processWatcherRunning ? t('settings_monitoring_running') : t('settings_monitoring_stopped')) : t('settings_monitoring_loading')}
+            </strong>
+            <strong style={{ marginLeft: '10px', color: monitoringRuntimeStatus?.hookRunning ? tokens.colorPaletteGreenForeground2 : tokens.colorPaletteYellowForeground2 }}>
+              Hook {monitoringRuntimeStatus ? (monitoringRuntimeStatus.hookRunning ? t('settings_monitoring_running') : t('settings_monitoring_stopped')) : t('settings_monitoring_loading')}
+            </strong>
+          </div>
+          <div className={styles.settingsItem}>
+            <div className={styles.settingsItemIcon}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+              </svg>
             </div>
-            <div
-              className={`toggle-switch ${config?.behaviorMonitoring?.enabled ? 'toggle-active' : ''}`}
-              onClick={() => {
-                setBehaviorMonitoring(!(config?.behaviorMonitoring?.enabled || false))
-              }}
-              role="switch"
-              aria-checked={config?.behaviorMonitoring?.enabled || false}
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setBehaviorMonitoring(!(config?.behaviorMonitoring?.enabled || false))
-                }
-              }}
-            >
-              <span className="toggle-slider" />
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_behavior_monitoring')}</div>
+              <div className={styles.settingsItemDesc}>{t('settings_behavior_monitoring_desc')}</div>
+            </div>
+            <div className={styles.settingsItemControl}>
+              <Switch
+                checked={config?.behaviorMonitoring?.enabled || false}
+                onChange={(_, data) => {
+                  if (monitoringControlPending === null) {
+                    void handleMonitoringToggle('behavior', data.checked)
+                  }
+                }}
+                disabled={monitoringControlPending !== null}
+              />
             </div>
           </div>
-
-          <div className="toggle-setting" style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
-            <div className="toggle-info">
-              <span className="toggle-label">进程监控</span>
-              <span className="toggle-description">
-                遍历系统进程并对新创建的进程调用扫描引擎进行检测
-              </span>
+          <div className={styles.settingsItem}>
+            <div className={styles.settingsItemIcon}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="4" y="4" width="16" height="16" rx="2" />
+                <rect x="9" y="9" width="6" height="6" />
+                <path d="M15 2v2" />
+                <path d="M15 20v2" />
+                <path d="M2 15h2" />
+                <path d="M2 9h2" />
+                <path d="M20 15h2" />
+                <path d="M20 9h2" />
+                <path d="M9 2v2" />
+                <path d="M9 20v2" />
+              </svg>
             </div>
-            <div
-              className={`toggle-switch ${config?.processMonitoring?.enabled ? 'toggle-active' : ''}`}
-              onClick={() => {
-                setProcessMonitoring(!(config?.processMonitoring?.enabled || false))
-              }}
-              role="switch"
-              aria-checked={config?.processMonitoring?.enabled || false}
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setProcessMonitoring(!(config?.processMonitoring?.enabled || false))
-                }
-              }}
-            >
-              <span className="toggle-slider" />
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_process_monitoring')}</div>
+              <div className={styles.settingsItemDesc}>{t('settings_process_monitoring_desc')}</div>
             </div>
-          </div>
-
-          <div className="toggle-setting" style={{ borderTop: '1px solid var(--panel-border)', paddingTop: '12px' }}>
-            <div className="toggle-info">
-              <span className="toggle-label">文件监控</span>
-              <span className="toggle-description">
-                从 ETW 中读取文件创建和修改事件，对这些事件中的文件调用扫描引擎进行检测
-              </span>
-            </div>
-            <div
-              className={`toggle-switch ${config?.fileMonitoring?.enabled ? 'toggle-active' : ''}`}
-              onClick={() => {
-                setFileMonitoring(!(config?.fileMonitoring?.enabled || false))
-              }}
-              role="switch"
-              aria-checked={config?.fileMonitoring?.enabled || false}
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  setFileMonitoring(!(config?.fileMonitoring?.enabled || false))
-                }
-              }}
-            >
-              <span className="toggle-slider" />
+            <div className={styles.settingsItemControl}>
+              <Switch
+                checked={config?.processMonitoring?.enabled || false}
+                onChange={(_, data) => {
+                  if (monitoringControlPending === null) {
+                    void handleMonitoringToggle('process', data.checked)
+                  }
+                }}
+                disabled={monitoringControlPending !== null}
+              />
             </div>
           </div>
-        </div>
-        <div className="settings-section card">
-          <h3>界面设置</h3>
-          <div className="setting-group">
-            <label className="setting-label">主题模式</label>
-            <div className="theme-selector">
-              {themeOptions.map(o => {
-                const Icon = o.icon
-                return (
-                  <button key={o.value} className={`theme-option ${themeMode === o.value ? 'active' : ''}`} onClick={() => setThemeMode(o.value)}>
-                    <Icon size={20} /><span>{o.label}</span>
-                  </button>
-                )
-              })}
+          <div className={styles.settingsItem}>
+            <div className={styles.settingsItemIcon} style={{ backgroundColor: 'rgba(199,146,85,0.09)', color: 'var(--color-warning)' }}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M15 3h6v6" />
+                <path d="M10 14 21 3" />
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+              </svg>
             </div>
-          </div>
-          <div className="toggle-setting">
-            <div className="toggle-info">
-              <div className="toggle-label-row"><Zap size={18} /><span className="toggle-label">启用动画效果</span></div>
-              <span className="toggle-description">页面切换和交互动画</span>
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_file_hook')}</div>
+              <div className={styles.settingsItemDesc}>{t('settings_file_hook_desc')}</div>
             </div>
-            <div
-              className={`toggle-switch ${animationsEnabled ? 'toggle-active' : ''}`}
-              onClick={toggleAnimations}
-              role="switch"
-              aria-checked={animationsEnabled}
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault()
-                  toggleAnimations()
-                }
-              }}
-            >
-              <span className="toggle-slider" />
+            <div className={styles.settingsItemControl}>
+              <Switch
+                checked={config?.fileMonitoring?.enabled || false}
+                onChange={(_, data) => {
+                  if (monitoringControlPending === null) {
+                    void handleMonitoringToggle('file', data.checked)
+                  }
+                }}
+                disabled={monitoringControlPending !== null}
+              />
             </div>
           </div>
         </div>
-      </>)}
+      </div>
+
+      {/* 系统组 */}
+      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroupTitle}>{t('settings_group_system')}</div>
+        <div className={`${styles.card} ${styles.cardNoPadding}`}>
+          <div className={styles.settingsItem}>
+            <div className={styles.settingsItemIcon}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
+                <path d="M2 12h20" />
+              </svg>
+            </div>
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_language')}</div>
+              <div className={styles.settingsItemDesc}>{t('settings_language_desc')}</div>
+            </div>
+            <div className={styles.settingsItemControl}>
+              <select
+                className="custom-select"
+                value={locale}
+                onChange={(e) => void setLocale(e.target.value)}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: tokens.colorNeutralBackground2,
+                  border: `1px solid ${tokens.colorNeutralStroke1}`,
+                  borderRadius: tokens.borderRadiusMedium,
+                  color: tokens.colorNeutralForeground1,
+                  fontSize: tokens.fontSizeBase200,
+                }}
+              >
+                <option value="zh-CN">{t('locale_zh_CN')}</option>
+                <option value="en-US">{t('locale_en_US')}</option>
+              </select>
+            </div>
+          </div>
+          <div className={styles.settingsItem}>
+            <div className={styles.settingsItemIcon}>
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" />
+                <path d="M12 16v-4" />
+                <path d="M12 8h.01" />
+              </svg>
+            </div>
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_version')}</div>
+              <div className={styles.settingsItemDesc}>{t('settings_version_desc')}</div>
+            </div>
+            <div className={styles.settingsItemControl}>
+              <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+                v1.0.0
+              </Text>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* 信任项目 */}
-      {activeTab === 'trust' && (
-        <div className="settings-section card">
-          <h3>信任项目</h3>
-          <p style={{ color: 'var(--muted-fg)', fontSize: '14px', marginBottom: '16px' }}>信任项目会在扫描和实时保护中跳过；文件项目会同时加入启动允许列表。</p>
-          <div className="setting-group">
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-              <input type="text" value={newTrustPath} onChange={(e) => setNewTrustPath(e.target.value)} placeholder="输入路径或点击右侧按钮选择"
-                style={{ flex: 1, padding: '10px 12px', borderRadius: 'var(--radius-medium)', border: '1px solid var(--panel-border)', background: 'var(--panel-bg)', color: 'var(--app-fg)' }} />
-              <button className="btn btn-outline-secondary" onClick={handleSelectTrustDir}><FolderOpen size={18} /></button>
-              <button className="btn btn-outline-secondary" onClick={handleSelectTrustFile}><FilePlus size={18} /></button>
-            </div>
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-              <input type="text" value={newTrustDesc} onChange={(e) => setNewTrustDesc(e.target.value)} placeholder="描述（可选）"
-                style={{ flex: 1, padding: '10px 12px', borderRadius: 'var(--radius-medium)', border: '1px solid var(--panel-border)', background: 'var(--panel-bg)', color: 'var(--app-fg)', fontSize: '13px' }} />
-            </div>
-            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-              <label style={{ fontSize: '14px', color: 'var(--muted-fg)' }}><input type="radio" checked={newTrustType === 'file'} onChange={() => setNewTrustType('file')} style={{ marginRight: '4px' }} />文件</label>
-              <label style={{ fontSize: '14px', color: 'var(--muted-fg)' }}><input type="radio" checked={newTrustType === 'directory'} onChange={() => setNewTrustType('directory')} style={{ marginRight: '4px' }} />目录</label>
-              <button className="btn btn-primary" onClick={handleAddTrustItem} disabled={!newTrustPath.trim()} style={{ marginLeft: 'auto' }}><Plus size={16} />添加信任项目</button>
-            </div>
+      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroupTitle}>{t('settings_group_trust')}</div>
+        <div className={styles.card}>
+          <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: '16px', display: 'block' }}>
+            {t('settings_trust_desc')}
+          </Text>
+          <div className={styles.flexRow}>
+            <Input
+              className={styles.flexGrow}
+              value={newTrustPath}
+              onChange={(_, data) => setNewTrustPath(data.value)}
+              placeholder={t('settings_trust_path_placeholder')}
+            />
+            <Button appearance="secondary" icon={<FolderOpen size={18} />} onClick={handleSelectTrustDir} />
+            <Button appearance="secondary" icon={<FilePlus size={18} />} onClick={handleSelectTrustFile} />
+          </div>
+          <div className={styles.flexRow}>
+            <Input
+              className={styles.flexGrow}
+              value={newTrustDesc}
+              onChange={(_, data) => setNewTrustDesc(data.value)}
+              placeholder={t('settings_trust_desc_placeholder')}
+            />
+          </div>
+          <div className={styles.flexRow} style={{ alignItems: 'center' }}>
+            <RadioGroup value={newTrustType} onChange={(_, data) => setNewTrustType(data.value as 'file' | 'directory')}>
+              <Radio value="file" label={t('settings_trust_type_file')} />
+              <Radio value="directory" label={t('settings_trust_type_directory')} />
+            </RadioGroup>
+            <Button appearance="primary" icon={<Plus size={16} />} onClick={handleAddTrustItem} disabled={!newTrustPath.trim()} style={{ marginLeft: 'auto' }}>
+              {t('settings_trust_add')}
+            </Button>
           </div>
           <div style={{ marginTop: '16px' }}>
             {trustItems.length === 0 ? (
-              <div className="empty-state" style={{ padding: '32px' }}><Shield size={48} /><p>暂无信任项目</p></div>
+              <div className={styles.emptyState}>
+                <Shield size={48} />
+                <p>{t('settings_trust_empty')}</p>
+              </div>
             ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <div className={styles.trustItemsContainer}>
                 {trustItems.map((entry, index) => (
-                  <div key={index} style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '12px', background: 'var(--panel-bg)', borderRadius: 'var(--radius-medium)', border: '1px solid var(--panel-border)' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: '14px', fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{entry.path}</div>
-                      <div style={{ fontSize: '12px', color: 'var(--muted-fg)', marginTop: '2px' }}>
-                        {entry.entry_type === 'directory' ? '目录' : '文件'}
+                  <div key={index} className={styles.trustItem}>
+                    <div className={styles.trustItemInfo}>
+                      <div className={styles.trustItemPath}>{entry.path}</div>
+                      <div className={styles.trustItemMeta}>
+                        {entry.entry_type === 'directory' ? t('settings_trust_type_directory') : t('settings_trust_type_file')}
                         {' · '}
-                        {entry.sources.includes('allowlist') ? '启动允许' : '扫描排除'}
+                        {entry.sources.includes('allowlist') ? t('settings_trust_source_allowlist') : t('settings_trust_source_exclusion')}
                         {entry.hash && ` · SHA256: ${entry.hash.substring(0, 16)}...`}
                         {entry.description && ` · ${entry.description}`}
                       </div>
                     </div>
-                    <button className="btn btn-outline-danger btn-sm" onClick={() => setConfirmDeleteTrustIndex(index)}><Trash2 size={16} /></button>
+                    <Button appearance="subtle" icon={<Trash2 size={16} />} onClick={() => handleRemoveTrustItem(index)} />
                   </div>
                 ))}
               </div>
             )}
           </div>
-          {confirmDeleteTrustIndex !== null && trustItems[confirmDeleteTrustIndex] && (
-            <div className="modal-overlay" onClick={() => setConfirmDeleteTrustIndex(null)}>
-              <div className="modal-surface" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '400px' }}>
-                <h3>确认删除</h3>
-                <p style={{ marginTop: '8px', color: 'var(--muted-fg)' }}>确定要移除 <strong>{trustItems[confirmDeleteTrustIndex].path}</strong> 吗？</p>
-                <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end', marginTop: '16px' }}>
-                  <button className="btn btn-outline-secondary" onClick={() => setConfirmDeleteTrustIndex(null)}>取消</button>
-                  <button className="btn btn-danger" onClick={() => handleRemoveTrustItem(confirmDeleteTrustIndex)}>确认删除</button>
-                </div>
-              </div>
-            </div>
-          )}
         </div>
-      )}
+      </div>
 
       {/* 开发者设置 */}
-      {activeTab === 'dev' && (
-        <div className="settings-section card">
-          <h3>开发者设置</h3>
-          <p style={{ color: 'var(--muted-fg)', fontSize: '14px', marginBottom: '16px' }}>密码保护的加密配置。修改前请确认了解各项配置的作用。</p>
-          {devMessage && <div style={{ padding: '8px 12px', marginBottom: '12px', borderRadius: '8px', background: devMessage.includes('失败') ? 'rgba(255,77,79,0.1)' : 'rgba(82,196,26,0.1)', color: devMessage.includes('失败') ? 'var(--danger)' : 'var(--success)', fontSize: '14px' }}>{devMessage}</div>}
+      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroupTitle}>{t('settings_group_developer')}</div>
+        <div className={styles.card}>
+          <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: '16px', display: 'block' }}>
+            {t('settings_dev_desc')}
+          </Text>
+          {devMessage && (
+            <div
+              style={{
+                padding: '12px',
+                marginBottom: '12px',
+                borderRadius: tokens.borderRadiusMedium,
+                background: devMessageIsError ? tokens.colorPaletteRedBackground2 : tokens.colorPaletteGreenBackground2,
+                color: devMessageIsError ? tokens.colorPaletteRedForeground2 : tokens.colorPaletteGreenForeground2,
+                fontSize: tokens.fontSizeBase300,
+              }}
+            >
+              {devMessage}
+            </div>
+          )}
           {!devUnlocked ? (
-            <div>
-              <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
-                <input type="password" value={devPassword} onChange={(e) => setDevPassword(e.target.value)} placeholder="输入开发者密码"
-                  style={{ flex: 1, padding: '10px 12px', borderRadius: 'var(--radius-medium)', border: '1px solid var(--panel-border)', background: 'var(--panel-bg)', color: 'var(--app-fg)' }} />
-                <button className="btn btn-primary" onClick={handleDevUnlock} disabled={!devPassword}><Key size={16} />解锁</button>
-              </div>
+            <div className={styles.flexRow}>
+              <Input
+                type="password"
+                className={styles.flexGrow}
+                value={devPassword}
+                onChange={(_, data) => setDevPassword(data.value)}
+                placeholder={t('settings_dev_password_placeholder')}
+              />
+              <Button appearance="primary" icon={<Key size={16} />} onClick={handleDevUnlock} disabled={!devPassword}>
+                {t('settings_dev_unlock_btn')}
+              </Button>
             </div>
           ) : (
             <div>
-              <textarea value={devData} onChange={(e) => setDevData(e.target.value)}
-                style={{ width: '100%', minHeight: '300px', padding: '12px', borderRadius: 'var(--radius-medium)', border: '1px solid var(--panel-border)', background: 'var(--panel-bg)', color: 'var(--app-fg)', fontFamily: 'monospace', fontSize: '12px', resize: 'vertical' }} />
-              <div style={{ display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end' }}>
-                <button className="btn btn-outline-secondary" onClick={() => { setDevUnlocked(false); setDevMessage('') }}>锁定</button>
-                <button className="btn btn-primary" onClick={handleDevSave}>保存</button>
+              <Textarea
+                value={devData}
+                onChange={(_, data) => setDevData(data.value)}
+                rows={15}
+                style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: '13px' }}
+              />
+              <div className={styles.flexRow} style={{ justifyContent: 'flex-end', marginTop: '16px' }}>
+                <Button
+                  appearance="secondary"
+                  onClick={() => {
+                    setDevUnlocked(false)
+                    setDevMessage('')
+                    setDevMessageIsError(false)
+                  }}
+                >
+                  {t('settings_dev_lock_btn')}
+                </Button>
+                <Button appearance="primary" onClick={handleDevSave}>
+                  {t('settings_dev_save_btn')}
+                </Button>
               </div>
             </div>
           )}
         </div>
-      )}
+      </div>
     </section>
   )
 }

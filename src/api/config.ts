@@ -22,6 +22,15 @@ export interface AppConfig {
   fileMonitoring: {
     enabled: boolean
   }
+  scanner: {
+    timeoutMs: number
+    startupSnapshotSlowWarnMs: number
+    startupModuleEnumerationTimeoutMs: number
+    startupSignatureVerifyTimeoutMs: number
+    startupSignatureVerifyConcurrency: number
+    startupRevocationCheckTimeoutMs: number
+    startupRevocationCheckConcurrency: number
+  }
   ui: {
     themeMode: string
     animations: boolean

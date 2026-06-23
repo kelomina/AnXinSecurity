@@ -58,7 +58,7 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 
 | Token 类别 | 说明 | 值 / 示例 |
 |------------|------|-----------|
-| **品牌色** | 主色调配套 fill/stroke 系列变量 | `#4CA2FF` / `--fill-accent` |
+| **品牌色** | 主色调配套 fill/stroke 系列变量 | `#5E95C6` / `--fill-accent` |
 | **阴影系统** | 5 级阴影 Token | `--shadow-tooltip` → `--shadow-window` |
 | **焦点环** | 双层焦点环设计 | `--focus-ring-accent` + `--focus-ring-high-contrast` |
 | **圆角规范** | 三级圆角体系 | small 4px / medium 6px / large 8px |
@@ -135,12 +135,9 @@ AnXinSecurity/
 │   │   └── utils/                # 工具函数（加密、路径、缓存、过滤）
 │   ├── Cargo.toml                # Rust 依赖清单
 │   └── tauri.conf.json           # Tauri 应用配置
-├── native/                       # C++ 原生模块
-│   ├── etw_bridge/               # ETW 监控桥接 DLL
-│   ├── process_watcher/          # 进程监控 DLL
+├── native/                       # 仍需 C++ 的原生文件钩子模块
 │   ├── file_hook/                # 文件钩子 (Detours 4.0.1, MIT)
-│   ├── raven_engine/             # Raven 扫描引擎
-│   └── trust_bridge/             # 可信证书桥接
+│   └── raven_engine/             # Raven 扫描引擎构建产物
 ├── Engine/                       # 已编译扫描引擎（gitignored，本地构建生成）
 ├── config/                       # 运行时配置
 │   ├── app.json                  # 主应用配置

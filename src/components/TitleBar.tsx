@@ -14,12 +14,75 @@
  * English keywords: title bar, window controls, minimize, maximize, close, drag region
  */
 import React, { useEffect, useState } from 'react'
-import { Minus, Square, Maximize, X } from 'lucide-react'
+import { Moon, Sun } from 'lucide-react'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useThemeStore } from '../stores/themeStore'
+import { useI18nStore } from '../stores/i18nStore'
+import { Button, makeStyles, shorthands, tokens } from '@fluentui/react-components'
+
+const useStyles = makeStyles({
+  titlebar: {
+    gridColumn: '1 / -1',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    height: '32px',
+    ...shorthands.padding('0', '8px', '0', '16px'),
+    backgroundColor: tokens.colorNeutralBackground2,
+    WebkitAppRegion: 'drag',
+    userSelect: 'none',
+    ...shorthands.borderBottom('1px', 'solid', tokens.colorNeutralStroke2),
+  },
+  titlebarLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+  },
+  titlebarIcon: {
+    color: tokens.colorBrandForeground1,
+  },
+  titlebarText: {
+    fontSize: '13px',
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+  },
+  titlebarRight: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('0'),
+    WebkitAppRegion: 'no-drag',
+  },
+  titlebarBtn: {
+    width: '36px',
+    height: '32px',
+    minWidth: '36px',
+    ...shorthands.borderRadius('0'),
+    ...shorthands.padding('0'),
+    ':hover': {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+    },
+  },
+  closeBtn: {
+    ':hover': {
+      backgroundColor: '#C84F5A',
+      color: '#fff',
+    },
+  },
+  themeToggleBtn: {
+    width: '36px',
+    height: '32px',
+    minWidth: '36px',
+    ...shorthands.borderRadius('0'),
+    ...shorthands.padding('0'),
+  },
+})
 
 const TitleBar: React.FC = () => {
   const appWindow = getCurrentWindow()
   const [isMaximized, setIsMaximized] = useState(false)
+  const { themeMode, setThemeMode } = useThemeStore()
+  const { t } = useI18nStore()
+  const styles = useStyles()
 
   /**
    * 初始化：检查窗口是否已最大化
@@ -66,21 +129,59 @@ const TitleBar: React.FC = () => {
     }
   }
 
+  /**
+   * 切换主题 / Toggle theme
+   */
+  const handleToggleTheme = () => {
+    const newTheme = themeMode === 'dark' ? 'light' : 'dark'
+    setThemeMode(newTheme)
+  }
+
   return (
-    <header className="titlebar">
-      <div className="titlebar-drag-region">
-        <span className="titlebar-title">AnXin Security</span>
+    <header className={styles.titlebar}>
+      <div className={styles.titlebarLeft}>
+        <img src="/favicon.ico" alt="AnXin Security" width="18" height="18" className={styles.titlebarIcon} />
+        <span className={styles.titlebarText}>AnXin Security</span>
       </div>
-      <div className="titlebar-controls">
-        <button className="titlebar-btn" onClick={handleMinimize} title="最小化/Minimize">
-          <Minus size={16} />
-        </button>
-        <button className="titlebar-btn" onClick={handleMaximize} title={isMaximized ? '还原/Restore' : '最大化/Maximize'}>
-          {isMaximized ? <Maximize size={14} /> : <Square size={14} />}
-        </button>
-        <button className="titlebar-btn titlebar-close" onClick={handleClose} title="关闭/Close">
-          <X size={16} />
-        </button>
+      <div className={styles.titlebarRight}>
+        <Button
+          appearance="subtle"
+          icon={themeMode === 'dark' ? <Moon size={16} /> : <Sun size={16} />}
+          className={styles.themeToggleBtn}
+          onClick={handleToggleTheme}
+          title={t('titlebar_toggle_theme')}
+        />
+        <Button
+          appearance="subtle"
+          className={styles.titlebarBtn}
+          onClick={handleMinimize}
+          title={t('titlebar_minimize')}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12">
+            <line x1="1" y1="6" x2="11" y2="6" stroke="currentColor" strokeWidth="1.2"/>
+          </svg>
+        </Button>
+        <Button
+          appearance="subtle"
+          className={styles.titlebarBtn}
+          onClick={handleMaximize}
+          title={isMaximized ? t('titlebar_restore') : t('titlebar_maximize')}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12">
+            <rect x="1.5" y="1.5" width="9" height="9" stroke="currentColor" strokeWidth="1.2" fill="none"/>
+          </svg>
+        </Button>
+        <Button
+          appearance="subtle"
+          className={`${styles.titlebarBtn} ${styles.closeBtn}`}
+          onClick={handleClose}
+          title={t('titlebar_close')}
+        >
+          <svg width="12" height="12" viewBox="0 0 12 12">
+            <line x1="1" y1="1" x2="11" y2="11" stroke="currentColor" strokeWidth="1.2"/>
+            <line x1="11" y1="1" x2="1" y2="11" stroke="currentColor" strokeWidth="1.2"/>
+          </svg>
+        </Button>
       </div>
     </header>
   )

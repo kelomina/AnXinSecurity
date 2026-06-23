@@ -1,0 +1,16 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClCompile Include="E:\Project\HTML\AnXinSecurity\native\file_hook\src\peb_unlink_real_dll.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <CustomBuild Include="E:\Project\HTML\AnXinSecurity\native\file_hook\CMakeLists.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{24129D56-E0FB-32C1-8D7D-608E80C51AE6}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

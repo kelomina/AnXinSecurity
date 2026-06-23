@@ -9,13 +9,14 @@
     }
   },
   "behaviorMonitoring": {
-    "enabled": false
+    "enabled": true
   },
   "brand": "AnXin Security",
   "defaultPage": "overview",
   "fileMonitoring": {
     "enabled": true
   },
+  "locale": "zh-CN",
   "minimizeToTray": true,
   "processMonitoring": {
     "enabled": true
@@ -34,9 +35,15 @@
       "timeoutMs": 10000
     },
     "maxFileSizeMB": 500,
+    "startupModuleEnumerationTimeoutMs": 1000,
+    "startupRevocationCheckConcurrency": 4,
+    "startupRevocationCheckTimeoutMs": 5000,
+    "startupSignatureVerifyConcurrency": 0,
+    "startupSignatureVerifyTimeoutMs": 1000,
+    "startupSnapshotSlowWarnMs": 30000,
     "timeoutMs": 10000
   },
-  "themeColor": "#4CA2FF",
+  "themeColor": "#5E95C6",
   "tray": {
     "exitKeepScannerServiceDefault": true,
     "exitKeepScannerServicePrompt": true

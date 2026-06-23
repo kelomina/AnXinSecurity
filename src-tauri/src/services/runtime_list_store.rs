@@ -71,7 +71,7 @@ fn runtime_directory() -> PathBuf {
 /// Concurrency and idempotency: Repeated resolution for the same name is stable.
 /// 中文关键词：运行时文件，JSON路径，信任列表文件，排除项文件，路径拼接，APPDATA，配置拆分，本地状态，文件名，运行目录
 /// English keywords: runtime file, JSON path, allowlist file, exclusions file, path join, APPDATA, config split, local state, file name, runtime directory
-fn runtime_file_path(file_name: &str) -> PathBuf {
+pub(crate) fn runtime_file_path(file_name: &str) -> PathBuf {
     runtime_directory().join(file_name)
 }
 

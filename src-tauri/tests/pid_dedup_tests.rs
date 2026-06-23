@@ -26,7 +26,7 @@ fn make_entry(pid: u32) -> InterceptionEntry {
 
 #[test]
 fn test_same_pid_different_entries_only_enqueues_once() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
     svc.enqueue(make_entry(42));
     svc.enqueue(make_entry(42)); // 相同 PID
     svc.enqueue(make_entry(42)); // 再次相同 PID
@@ -35,7 +35,7 @@ fn test_same_pid_different_entries_only_enqueues_once() {
 
 #[test]
 fn test_different_pids_each_enqueue_once() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
     for pid in 1..=10u32 {
         svc.enqueue(make_entry(pid));
     }
@@ -44,7 +44,7 @@ fn test_different_pids_each_enqueue_once() {
 
 #[test]
 fn test_interleaved_pid_enqueue_still_dedup() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
     svc.enqueue(make_entry(1));
     svc.enqueue(make_entry(2));
     svc.enqueue(make_entry(1)); // 重复
@@ -56,7 +56,7 @@ fn test_interleaved_pid_enqueue_still_dedup() {
 
 #[test]
 fn test_dedup_applies_to_high_medium_low_all_levels() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
 
     let mut e1 = make_entry(100);
     e1.risk_level = "high".to_string();
@@ -75,7 +75,7 @@ fn test_dedup_applies_to_high_medium_low_all_levels() {
 
 #[test]
 fn test_pid_dedup_across_clear_and_re_enqueue() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
     svc.enqueue(make_entry(500));
     assert_eq!(svc.get_queue_size(), 1);
 
@@ -93,7 +93,7 @@ fn test_pid_dedup_across_clear_and_re_enqueue() {
 
 #[test]
 fn test_many_duplicate_pids_still_works() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
     // 同 PID 入队 100 次 / Enqueue same PID 100 times
     for _ in 0..100 {
         svc.enqueue(make_entry(42));
@@ -103,7 +103,7 @@ fn test_many_duplicate_pids_still_works() {
 
 #[test]
 fn test_many_unique_pids_no_issue() {
-    let svc = InterceptionService::new();
+    let svc = InterceptionService::new_for_tests();
     // 1000 个不同 PID / 1000 different PIDs
     for pid in 0..1000u32 {
         svc.enqueue(make_entry(pid));

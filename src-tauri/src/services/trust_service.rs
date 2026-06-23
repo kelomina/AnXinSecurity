@@ -6,6 +6,18 @@ use std::time::Instant;
 
 use libloading::{Library, Symbol};
 use sha2::{Digest, Sha256};
+use windows::core::PCWSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Security::Cryptography::Catalog::{
+    CryptCATAdminAcquireContext2, CryptCATAdminCalcHashFromFileHandle2,
+    CryptCATAdminEnumCatalogFromHash, CryptCATAdminReleaseCatalogContext,
+    CryptCATAdminReleaseContext, CryptCATCatalogInfoFromContext, CATALOG_INFO,
+};
+use windows::Win32::Security::WinTrust::WINTRUST_CATALOG_INFO;
+use windows::Win32::Storage::FileSystem::{
+    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_GENERIC_READ, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING,
+};
 
 const DEFAULT_MAX_ENTRIES: usize = 4096;
 const DEFAULT_TTL_MS: u64 = 600_000;
@@ -54,10 +66,16 @@ pub const ACTION_VERIFY_V2: Guid = Guid {
 // WinVerifyTrust 常量 (pub for process_monitor_service reuse)
 pub const WTD_UI_NONE: u32 = 2;
 pub const WTD_REVOKE_NONE: u32 = 0;
+pub const WTD_REVOKE_WHOLECHAIN: u32 = 1;
 pub const WTD_CHOICE_FILE: u32 = 1;
+const WTD_CHOICE_CATALOG: u32 = 2;
 pub const WTD_STATEACTION_VERIFY: u32 = 1;
 pub const WTD_STATEACTION_CLOSE: u32 = 2;
-pub const WTD_CACHE_ONLY_URL_RETRIEVAL: u32 = 0x00000010;
+pub const WTD_CACHE_ONLY_URL_RETRIEVAL: u32 = 0x00001000;
+pub const WTD_REVOCATION_CHECK_CHAIN: u32 = 0x00000040;
+const TRUST_E_PROVIDER_UNKNOWN: i32 = 0x800B0001u32 as i32;
+const TRUST_E_SUBJECT_FORM_UNKNOWN: i32 = 0x800B0003u32 as i32;
+const TRUST_E_NOSIGNATURE: i32 = 0x800B0100u32 as i32;
 
 #[repr(C)]
 pub struct WinTrustFileInfo {
@@ -82,6 +100,23 @@ pub struct WinTrustData {
     pub prov_flags: u32,
     pub ui_context: u32,
     pub p_signature_settings: *const u8,
+}
+
+#[repr(C)]
+struct WinTrustCatalogData {
+    cb_struct: u32,
+    policy_callback_data: *const u8,
+    sip_client_data: *const u8,
+    ui_choice: u32,
+    revocation_checks: u32,
+    union_choice: u32,
+    union_data: *const WINTRUST_CATALOG_INFO,
+    state_action: u32,
+    h_wvt_state_data: isize,
+    pwsz_url_reference: *const u16,
+    prov_flags: u32,
+    ui_context: u32,
+    p_signature_settings: *const u8,
 }
 
 #[repr(C)]
@@ -206,8 +241,28 @@ impl TrustService {
     /// 中文关键词：数字签名验证，WinVerifyTrust，可信验证，签名校验
     /// English keywords: digital signature verification, WinVerifyTrust, trust verification, signature check
     pub fn verify_file(&self, file_path: &str) -> Result<SignatureVerdict, String> {
+        self.verify_file_with_revocation_mode(file_path, false)
+    }
+
+    /// 函数名称：verify_file_with_revocation
+    /// 函数作用：执行带吊销检查语义的签名验证；缓存键与普通签名验证隔离。
+    /// Purpose: Verifies a file signature with revocation-check semantics; cache key is isolated from normal signature verification.
+    /// 调用方：后续启动快照异步吊销检查。
+    /// Called by: Future asynchronous startup revocation checks.
+    /// 中文关键词：证书吊销，签名验证，缓存隔离，WinVerifyTrust
+    /// English keywords: certificate revocation, signature verification, cache isolation, WinVerifyTrust
+    #[allow(dead_code)]
+    pub fn verify_file_with_revocation(&self, file_path: &str) -> Result<SignatureVerdict, String> {
+        self.verify_file_with_revocation_mode(file_path, true)
+    }
+
+    fn verify_file_with_revocation_mode(
+        &self,
+        file_path: &str,
+        check_revocation: bool,
+    ) -> Result<SignatureVerdict, String> {
         let write_time = file_write_time(file_path).unwrap_or(0);
-        let norm = normalize_path(file_path);
+        let norm = signature_cache_key(file_path, check_revocation);
         let now_ms = monotonic_ms();
 
         // 先检查缓存
@@ -230,7 +285,7 @@ impl TrustService {
             }
         }
 
-        let result = verify_file_no_cache(file_path);
+        let result = verify_file_no_cache(file_path, check_revocation);
 
         {
             let mut cache = self.cache.lock().unwrap();
@@ -403,6 +458,14 @@ fn normalize_path(s: &str) -> String {
     out
 }
 
+fn signature_cache_key(file_path: &str, check_revocation: bool) -> String {
+    format!(
+        "{}|revocation={}",
+        normalize_path(file_path),
+        if check_revocation { "chain" } else { "none" }
+    )
+}
+
 /// 函数名称：to_wide
 /// 函数作用：将 Rust 字符串转为宽字符 null 结尾数组，用于 Windows API 调用。
 /// Purpose: Converts Rust string to null-terminated wide char array for Windows API.
@@ -449,16 +512,41 @@ fn monotonic_ms() -> u64 {
 /// 函数名称：verify_file_no_cache
 /// 函数作用：调用 WinVerifyTrust 验证文件数字签名（不经过缓存）。
 /// Purpose: Calls WinVerifyTrust to verify file digital signature (bypasses cache).
-/// 被调用方：verify_file
+/// 被调用方：verify_file、verify_file_with_revocation
 /// Calls: WinVerifyTrust (wintrust.dll libloading)
 /// 参数：file_path — 文件绝对路径
+/// 参数：check_revocation — 是否启用吊销链检查
 /// 返回值：SignatureVerdict（包含 trusted 状态和原始 WinVerifyTrust 状态码）
 /// 错误处理：DLL 加载失败返回兼容的失败结果（status=-1, trusted=false）
 /// Error handling: Returns compatible failure result on DLL load error
 /// 副作用：调用 WinVerifyTrust (WTD_STATEACTION_CLOSE 清理状态)
 /// 中文关键词：无缓存签名验证，WinVerifyTrust，原始API，直接调用
 /// English keywords: uncached signature verify, WinVerifyTrust, raw API, direct call
-fn verify_file_no_cache(file_path: &str) -> SignatureVerdict {
+fn verify_file_no_cache(file_path: &str, check_revocation: bool) -> SignatureVerdict {
+    let embedded = verify_file_embedded_signature(file_path, check_revocation);
+    if embedded.trusted {
+        return embedded;
+    }
+
+    if should_try_catalog_signature(embedded.status) {
+        if let Some(catalog) = verify_file_catalog_signature(file_path, check_revocation) {
+            if catalog.trusted {
+                return catalog;
+            }
+        }
+    }
+
+    embedded
+}
+
+fn should_try_catalog_signature(status: i32) -> bool {
+    matches!(
+        status,
+        TRUST_E_PROVIDER_UNKNOWN | TRUST_E_SUBJECT_FORM_UNKNOWN | TRUST_E_NOSIGNATURE
+    )
+}
+
+fn verify_file_embedded_signature(file_path: &str, check_revocation: bool) -> SignatureVerdict {
     let wide = to_wide(file_path);
     let status = unsafe {
         match Library::new("wintrust.dll") {
@@ -481,13 +569,21 @@ fn verify_file_no_cache(file_path: &str) -> SignatureVerdict {
                         policy_callback_data: std::ptr::null(),
                         sip_client_data: std::ptr::null(),
                         ui_choice: WTD_UI_NONE,
-                        revocation_checks: WTD_REVOKE_NONE,
+                        revocation_checks: if check_revocation {
+                            WTD_REVOKE_WHOLECHAIN
+                        } else {
+                            WTD_REVOKE_NONE
+                        },
                         union_choice: WTD_CHOICE_FILE,
                         union_data: &file_info,
                         state_action: WTD_STATEACTION_VERIFY,
                         h_wvt_state_data: 0,
                         pwsz_url_reference: std::ptr::null(),
-                        prov_flags: WTD_CACHE_ONLY_URL_RETRIEVAL,
+                        prov_flags: if check_revocation {
+                            WTD_REVOCATION_CHECK_CHAIN
+                        } else {
+                            WTD_CACHE_ONLY_URL_RETRIEVAL
+                        },
                         ui_context: 0,
                         p_signature_settings: std::ptr::null(),
                     };
@@ -507,6 +603,165 @@ fn verify_file_no_cache(file_path: &str) -> SignatureVerdict {
         trusted: status == 0,
         status,
     }
+}
+
+fn verify_file_catalog_signature(
+    file_path: &str,
+    check_revocation: bool,
+) -> Option<SignatureVerdict> {
+    let wide = to_wide(file_path);
+    let mut cat_admin: isize = 0;
+
+    let status = unsafe {
+        if CryptCATAdminAcquireContext2(&mut cat_admin, None, PCWSTR::null(), None, 0).is_err() {
+            return None;
+        }
+
+        let file_handle = match CreateFileW(
+            PCWSTR(wide.as_ptr()),
+            FILE_GENERIC_READ.0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            None,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            HANDLE::default(),
+        ) {
+            Ok(handle) => handle,
+            Err(_) => {
+                release_catalog_context(cat_admin);
+                return None;
+            }
+        };
+
+        let mut hash_len: u32 = 0;
+        if CryptCATAdminCalcHashFromFileHandle2(cat_admin, file_handle, &mut hash_len, None, 0)
+            .is_err()
+            || hash_len == 0
+        {
+            close_handle(file_handle);
+            release_catalog_context(cat_admin);
+            return None;
+        }
+
+        let mut hash = vec![0u8; hash_len as usize];
+        if CryptCATAdminCalcHashFromFileHandle2(
+            cat_admin,
+            file_handle,
+            &mut hash_len,
+            Some(hash.as_mut_ptr()),
+            0,
+        )
+        .is_err()
+        {
+            close_handle(file_handle);
+            release_catalog_context(cat_admin);
+            return None;
+        }
+        hash.truncate(hash_len as usize);
+
+        let mut previous_catalog: isize = 0;
+        let cat_info =
+            CryptCATAdminEnumCatalogFromHash(cat_admin, &hash, 0, Some(&mut previous_catalog));
+        if cat_info == 0 {
+            close_handle(file_handle);
+            release_catalog_context(cat_admin);
+            return None;
+        }
+
+        let mut catalog_info = CATALOG_INFO {
+            cbStruct: std::mem::size_of::<CATALOG_INFO>() as u32,
+            wszCatalogFile: [0; 260],
+        };
+        if CryptCATCatalogInfoFromContext(cat_info, &mut catalog_info, 0).is_err() {
+            release_catalog(cat_admin, cat_info);
+            close_handle(file_handle);
+            release_catalog_context(cat_admin);
+            return None;
+        }
+
+        let member_tag = catalog_member_tag(&hash);
+        let catalog = WINTRUST_CATALOG_INFO {
+            cbStruct: std::mem::size_of::<WINTRUST_CATALOG_INFO>() as u32,
+            dwCatalogVersion: 0,
+            pcwszCatalogFilePath: PCWSTR(catalog_info.wszCatalogFile.as_ptr()),
+            pcwszMemberTag: PCWSTR(member_tag.as_ptr()),
+            pcwszMemberFilePath: PCWSTR(wide.as_ptr()),
+            hMemberFile: file_handle,
+            pbCalculatedFileHash: hash.as_mut_ptr(),
+            cbCalculatedFileHash: hash.len() as u32,
+            pcCatalogContext: std::ptr::null_mut(),
+            hCatAdmin: cat_admin,
+        };
+
+        let mut data = WinTrustCatalogData {
+            cb_struct: std::mem::size_of::<WinTrustCatalogData>() as u32,
+            policy_callback_data: std::ptr::null(),
+            sip_client_data: std::ptr::null(),
+            ui_choice: WTD_UI_NONE,
+            revocation_checks: if check_revocation {
+                WTD_REVOKE_WHOLECHAIN
+            } else {
+                WTD_REVOKE_NONE
+            },
+            union_choice: WTD_CHOICE_CATALOG,
+            union_data: &catalog,
+            state_action: WTD_STATEACTION_VERIFY,
+            h_wvt_state_data: 0,
+            pwsz_url_reference: std::ptr::null(),
+            prov_flags: if check_revocation {
+                WTD_REVOCATION_CHECK_CHAIN
+            } else {
+                WTD_CACHE_ONLY_URL_RETRIEVAL
+            },
+            ui_context: 0,
+            p_signature_settings: std::ptr::null(),
+        };
+
+        let status = match Library::new("wintrust.dll") {
+            Ok(wintrust) => match wintrust.get::<unsafe extern "system" fn(
+                isize,
+                *const Guid,
+                *const WinTrustCatalogData,
+            ) -> i32>(b"WinVerifyTrust")
+            {
+                Ok(verify) => {
+                    let status = verify(0, &ACTION_VERIFY_V2, &data);
+                    data.state_action = WTD_STATEACTION_CLOSE;
+                    verify(0, &ACTION_VERIFY_V2, &data);
+                    status
+                }
+                Err(_) => -1,
+            },
+            Err(_) => -1,
+        };
+
+        release_catalog(cat_admin, cat_info);
+        close_handle(file_handle);
+        release_catalog_context(cat_admin);
+        status
+    };
+
+    Some(SignatureVerdict {
+        trusted: status == 0,
+        status,
+    })
+}
+
+fn catalog_member_tag(hash: &[u8]) -> Vec<u16> {
+    let hex: String = hash.iter().map(|byte| format!("{:02X}", byte)).collect();
+    to_wide(&hex)
+}
+
+unsafe fn release_catalog_context(cat_admin: isize) {
+    let _ = CryptCATAdminReleaseContext(cat_admin, 0);
+}
+
+unsafe fn release_catalog(cat_admin: isize, cat_info: isize) {
+    let _ = CryptCATAdminReleaseCatalogContext(cat_admin, cat_info, 0);
+}
+
+unsafe fn close_handle(handle: HANDLE) {
+    CloseHandle(handle).ok();
 }
 
 unsafe fn get_signer_info_impl(file_path: &str) -> Result<SignerInfo, String> {
@@ -865,4 +1120,30 @@ fn is_hex_lower_64(s: &str) -> bool {
         return false;
     }
     s.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f'))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{signature_cache_key, TrustService};
+
+    #[test]
+    fn signature_cache_key_separates_revocation_modes() {
+        let normal = signature_cache_key(r"\\?\C:/Windows/System32/app.exe", false);
+        let revocation = signature_cache_key(r"c:\windows\system32\APP.EXE", true);
+
+        assert_eq!(normal, r"c:\windows\system32\app.exe|revocation=none");
+        assert_eq!(revocation, r"c:\windows\system32\app.exe|revocation=chain");
+        assert_ne!(normal, revocation);
+    }
+
+    #[test]
+    fn verify_file_with_revocation_entrypoint_exists_and_isolated_from_default() {
+        let svc = TrustService::new();
+        svc.set_cache_config(8, 60_000);
+
+        let normal_key = signature_cache_key(r"C:\Windows\System32\kernel32.dll", false);
+        let revocation_key = signature_cache_key(r"C:\Windows\System32\kernel32.dll", true);
+
+        assert_ne!(normal_key, revocation_key);
+    }
 }

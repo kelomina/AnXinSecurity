@@ -13,6 +13,64 @@
  */
 import { Component, ErrorInfo, ReactNode } from 'react'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { useI18nStore } from '../stores/i18nStore'
+import { makeStyles, shorthands, tokens, Button } from '@fluentui/react-components'
+
+const useErrorStyles = () => makeStyles({
+  container: {
+    display: 'grid',
+    gridTemplateRows: '32px 1fr',
+    gridTemplateColumns: '240px 1fr',
+    height: '100vh',
+    width: '100%',
+  },
+  content: {
+    gridRow: '2',
+    gridColumn: '2',
+    overflowY: 'auto',
+    ...shorthands.padding('24px'),
+    backgroundColor: tokens.colorNeutralBackground1,
+  },
+  card: {
+    maxWidth: '480px',
+    margin: '80px auto',
+    textAlign: 'center' as const,
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('32px'),
+    boxShadow: tokens.shadow16,
+  },
+  icon: {
+    marginBottom: '16px',
+  },
+  title: {
+    marginBottom: '12px',
+    fontSize: tokens.fontSizeBase500,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+  },
+  description: {
+    color: tokens.colorNeutralForeground3,
+    marginBottom: '16px',
+    fontSize: tokens.fontSizeBase300,
+  },
+  errorBox: {
+    backgroundColor: tokens.colorNeutralBackground3,
+    ...shorthands.border('1px', 'solid', tokens.colorPaletteRedBorder1),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ...shorthands.padding('12px'),
+    marginBottom: '16px',
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorPaletteRedForeground2,
+    textAlign: 'left' as const,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-all',
+    maxHeight: '120px',
+    overflowY: 'auto',
+    fontFamily: 'Consolas, "Courier New", monospace',
+  },
+})()
 
 interface ErrorBoundaryProps {
   children: ReactNode
@@ -69,41 +127,32 @@ class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
 
   render(): ReactNode {
     if (this.state.hasError) {
+      const { t } = useI18nStore.getState()
+      const styles = useErrorStyles()
+
       return (
-        <div className="app">
-          <div className="content">
-            <div className="error-boundary">
-              <div className="card" style={{ maxWidth: '480px', margin: '80px auto', textAlign: 'center' }}>
-                <div className="empty-icon">
-                  <AlertTriangle size={48} style={{ color: 'var(--color-danger)' }} />
-                </div>
-                <h2 style={{ marginBottom: '12px' }}>应用发生错误</h2>
-                <p style={{ color: 'var(--muted-fg)', marginBottom: '8px', fontSize: '14px' }}>
-                  AnXin Security 遇到了意外错误，您可以尝试刷新恢复。
-                </p>
-                {this.state.error && (
-                  <pre style={{
-                    background: 'var(--panel-bg)',
-                    border: '1px solid var(--panel-border)',
-                    borderRadius: 'var(--radius-medium)',
-                    padding: '12px',
-                    marginBottom: '16px',
-                    fontSize: '12px',
-                    color: 'var(--color-danger)',
-                    textAlign: 'left',
-                    whiteSpace: 'pre-wrap',
-                    wordBreak: 'break-all',
-                    maxHeight: '120px',
-                    overflowY: 'auto',
-                  }}>
-                    {this.state.error.message}
-                  </pre>
-                )}
-                <button className="btn btn-primary" onClick={this.handleReload}>
-                  <RefreshCw size={16} />
-                  重新加载
-                </button>
+        <div className={styles.container}>
+          <div className={styles.content}>
+            <div className={styles.card}>
+              <div className={styles.icon}>
+                <AlertTriangle size={48} color={tokens.colorPaletteRedForeground2} />
               </div>
+              <h2 className={styles.title}>{t('error_boundary_title')}</h2>
+              <p className={styles.description}>
+                {t('error_boundary_desc')}
+              </p>
+              {this.state.error && (
+                <pre className={styles.errorBox}>
+                  {this.state.error.message}
+                </pre>
+              )}
+              <Button
+                appearance="primary"
+                icon={<RefreshCw size={16} />}
+                onClick={this.handleReload}
+              >
+                {t('error_boundary_reload')}
+              </Button>
             </div>
           </div>
         </div>

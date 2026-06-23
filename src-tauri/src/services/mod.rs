@@ -1,12 +1,17 @@
+pub mod app_lifecycle_service;
 pub mod behavior_service;
 pub mod engine_service;
 pub mod etw;
 pub mod etw_service;
 pub mod file_monitor_service;
 pub mod hook_service;
+pub mod interception_diagnostics_service;
+pub mod interception_recovery_service;
 pub mod interception_service;
+pub mod interception_window_service;
 pub mod native_engine_service;
 pub mod path_policy_service;
+pub mod process_control_service;
 pub mod process_monitor_service;
 pub mod process_scanner_service;
 pub mod quarantine_service;

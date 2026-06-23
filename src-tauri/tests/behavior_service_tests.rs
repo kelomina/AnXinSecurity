@@ -385,9 +385,11 @@ mod list_events_tests {
         let result = service.list_events(Some(100), 10).await.unwrap();
         assert_eq!(result.len(), 2);
         for event in &result {
-            assert!(event.as_object().unwrap().contains_key("type") ||
-                   event.as_object().unwrap().contains_key("details") ||
-                   event.get("processName").is_some());
+            assert!(
+                event.as_object().unwrap().contains_key("type")
+                    || event.as_object().unwrap().contains_key("details")
+                    || event.get("processName").is_some()
+            );
         }
     }
 }

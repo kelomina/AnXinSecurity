@@ -1,9 +1,245 @@
 import React, { useEffect, useState } from 'react'
 import { useQuarantineStore } from '../stores/quarantineStore'
-import { RefreshCw, Shield, AlertTriangle, CheckCircle, XCircle, Trash2, RotateCcw } from 'lucide-react'
-import { formatFileSize, formatDate } from '../api/quarantine'
+import { useI18nStore } from '../stores/i18nStore'
+import { RefreshCw, Shield, AlertTriangle, XCircle, Trash2, RotateCcw } from 'lucide-react'
+import { formatFileSize } from '../api/quarantine'
+import { Button, Checkbox, makeStyles, shorthands, tokens } from '@fluentui/react-components'
+
+const useStyles = makeStyles({
+  page: {
+    paddingBottom: '24px',
+  },
+  pageTitle: {
+    fontSize: tokens.fontSizeBase600,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    marginBottom: '20px',
+  },
+  infoGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    ...shorthands.gap('12px'),
+    marginBottom: '16px',
+  },
+  infoCard: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('16px'),
+    textAlign: 'center' as const,
+  },
+  infoCardLabel: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+  },
+  infoCardValue: {
+    fontSize: tokens.fontSizeBase600,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+  },
+  errorCard: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorPaletteRedBorderActive),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.padding('16px'),
+    marginBottom: '16px',
+  },
+  errorContent: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+    color: tokens.colorPaletteRedForeground2,
+  },
+  tableContainer: {
+    backgroundColor: tokens.colorNeutralBackground2,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    overflow: 'hidden',
+  },
+  tableToolbar: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    ...shorthands.padding('14px', '20px'),
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+  toolbarLeft: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+  },
+  tableScroll: {
+    overflowX: 'auto',
+    overflowY: 'auto',
+  },
+  table: {
+    width: '100%',
+    borderCollapse: 'collapse' as const,
+    fontSize: tokens.fontSizeBase300,
+    '& thead': {
+      backgroundColor: tokens.colorNeutralBackground3,
+      position: 'sticky' as const,
+      top: 0,
+      zIndex: 1,
+    },
+    '& th': {
+      ...shorthands.padding('12px', '16px'),
+      textAlign: 'left' as const,
+      fontWeight: tokens.fontWeightSemibold,
+      color: tokens.colorNeutralForeground2,
+      borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+    },
+    '& td': {
+      ...shorthands.padding('12px', '16px'),
+      borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+    },
+    '& tbody tr': {
+      ':hover': {
+        backgroundColor: tokens.colorNeutralBackground1Hover,
+      },
+    },
+  },
+  checkboxCell: {
+    width: '36px',
+  },
+  pathCell: {
+    fontFamily: 'Consolas, "Courier New", monospace',
+    fontSize: tokens.fontSizeBase200,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  badge: {
+    display: 'inline-block',
+    ...shorthands.padding('4px', '8px'),
+    ...shorthands.borderRadius(tokens.borderRadiusSmall),
+    fontSize: tokens.fontSizeBase200,
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  badgeHigh: {
+    backgroundColor: tokens.colorPaletteRedBackground2,
+    color: tokens.colorPaletteRedForeground2,
+  },
+  badgeMedium: {
+    backgroundColor: tokens.colorPaletteYellowBackground2,
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  badgeSafe: {
+    backgroundColor: tokens.colorPaletteGreenBackground2,
+    color: tokens.colorPaletteGreenForeground2,
+  },
+  emptyState: {
+    ...shorthands.padding('40px', '20px'),
+    textAlign: 'center' as const,
+  },
+  emptyIcon: {
+    color: tokens.colorNeutralForeground3,
+    marginBottom: '16px',
+  },
+  emptyText: {
+    color: tokens.colorNeutralForeground3,
+  },
+  skeletonTable: {
+    ...shorthands.padding('20px'),
+    display: 'flex',
+    flexDirection: 'column',
+    ...shorthands.gap('12px'),
+  },
+  skeletonRow: {
+    height: '48px',
+    backgroundColor: tokens.colorNeutralBackground3,
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    animation: 'pulse 1.5s ease-in-out infinite',
+  },
+  actionButtons: {
+    display: 'flex',
+    ...shorthands.gap('8px'),
+  },
+  overlay: {
+    position: 'fixed',
+    inset: 0,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 9999,
+    backdropFilter: 'blur(4px)',
+  },
+  modalSurface: {
+    backgroundColor: tokens.colorNeutralBackground1,
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    boxShadow: tokens.shadow28,
+    width: '480px',
+    maxWidth: '90vw',
+    overflow: 'hidden',
+  },
+  modalHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    ...shorthands.padding('20px', '24px'),
+    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+  modalTitle: {
+    fontSize: tokens.fontSizeBase400,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    margin: 0,
+  },
+  modalClose: {
+    width: '32px',
+    height: '32px',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shorthands.border('none'),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: 'transparent',
+    color: tokens.colorNeutralForeground2,
+    cursor: 'pointer',
+    ':hover': {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+    },
+  },
+  modalBody: {
+    ...shorthands.padding('16px', '24px'),
+  },
+  modalMessage: {
+    fontSize: tokens.fontSizeBase300,
+    color: tokens.colorNeutralForeground2,
+    marginBottom: '12px',
+  },
+  warningBox: {
+    ...shorthands.padding('12px'),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ...shorthands.border('1px', 'solid'),
+  },
+  warningBoxRestore: {
+    backgroundColor: 'rgba(199,146,85,0.09)',
+    ...shorthands.borderColor('rgba(199,146,85,0.16)'),
+  },
+  warningBoxDelete: {
+    backgroundColor: 'rgba(214,107,109,0.09)',
+    ...shorthands.borderColor('rgba(214,107,109,0.16)'),
+  },
+  warningText: {
+    fontSize: tokens.fontSizeBase200,
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('6px'),
+  },
+  modalFooter: {
+    display: 'flex',
+    justifyContent: 'flex-end',
+    ...shorthands.gap('8px'),
+    ...shorthands.padding('12px', '24px', '20px'),
+    borderTop: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+})
 
 const QuarantinePage: React.FC = () => {
+  const styles = useStyles()
   const {
     items,
     loading,
@@ -15,6 +251,7 @@ const QuarantinePage: React.FC = () => {
     toggleSelection,
     clearSelection,
   } = useQuarantineStore()
+  const { t } = useI18nStore()
 
   const [filter, setFilter] = useState<'all' | 'quarantined' | 'restored'>('all')
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -75,121 +312,120 @@ const QuarantinePage: React.FC = () => {
     switch (status) {
       case 'quarantined':
         return (
-          <span className="severity-badge severity-high">
-            <Shield size={14} />
-            隔离中
+          <span className={`${styles.badge} ${styles.badgeHigh}`}>
+            {t('quarantine_filter_quarantined')}
           </span>
         )
       case 'restored':
         return (
-          <span className="severity-badge severity-low">
-            <CheckCircle size={14} />
-            已恢复
+          <span className={`${styles.badge} ${styles.badgeSafe}`}>
+            {t('quarantine_filter_restored')}
           </span>
         )
       default:
-        return <span className="severity-badge">{status}</span>
+        return <span className={styles.badge}>{status}</span>
     }
   }
 
   return (
-    <section id="page-quarantine" className="page">
-      <h1 className="page-title">隔离区</h1>
+    <section id="page-quarantine" className={styles.page}>
+      <h1 className={styles.pageTitle}>{t('quarantine_title')}</h1>
 
       {/* 统计卡片 */}
-      <div className="scan-stats card" style={{ marginBottom: '1rem' }}>
-        <div className="stat-item">
-          <span className="stat-label">隔离文件数</span>
-          <span className="stat-value">{quarantinedCount}</span>
+      <div className={styles.infoGrid}>
+        <div className={styles.infoCard}>
+          <div className={styles.infoCardLabel}>{t('quarantine_label_files')}</div>
+          <div className={styles.infoCardValue}>{quarantinedCount}</div>
         </div>
-        <div className="stat-item">
-          <span className="stat-label">总大小</span>
-          <span className="stat-value">{formatFileSize(totalSize)}</span>
+        <div className={styles.infoCard}>
+          <div className={styles.infoCardLabel}>{t('quarantine_total_size')}</div>
+          <div className={styles.infoCardValue} style={{ fontSize: tokens.fontSizeBase500 }}>{formatFileSize(totalSize)}</div>
         </div>
-        <div className="stat-item">
-          <span className="stat-label">总计录数</span>
-          <span className="stat-value">{items.length}</span>
-        </div>
-      </div>
-
-      {/* 工具栏 */}
-      <div className="card" style={{ marginBottom: '1rem' }}>
-        <div className="section-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-            <button
-              onClick={() => loadItems()}
-              disabled={loading}
-              className="btn btn-outline-secondary"
-              style={{ padding: '0.5rem' }}
-            >
-              <RefreshCw size={18} className={loading ? 'spinning' : ''} />
-            </button>
-            <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as any)}
-              className="btn btn-outline-secondary"
-              style={{ cursor: 'pointer' }}
-            >
-              <option value="all">全部</option>
-              <option value="quarantined">隔离中</option>
-              <option value="restored">已恢复</option>
-            </select>
-          </div>
-          {selectedIds.length > 0 && (
-            <button
-              onClick={handleBatchDelete}
-              className="btn btn-danger"
-            >
-              <Trash2 size={16} />
-              批量删除 ({selectedIds.length})
-            </button>
-          )}
+        <div className={styles.infoCard}>
+          <div className={styles.infoCardLabel}>{t('quarantine_total_records')}</div>
+          <div className={styles.infoCardValue}>{items.length}</div>
         </div>
       </div>
 
       {/* 错误提示 */}
       {error && (
-        <div className="card" style={{ marginBottom: '1rem', borderColor: 'var(--color-danger)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: 'var(--color-danger)' }}>
+        <div className={styles.errorCard}>
+          <div className={styles.errorContent}>
             <AlertTriangle size={20} />
-            <span>{error}</span>
-            <button
+            <span style={{ flex: 1 }}>{error}</span>
+            <Button
+              appearance="secondary"
+              size="small"
+              icon={<XCircle size={18} />}
               onClick={() => useQuarantineStore.setState({ error: null })}
-              className="btn-icon"
-              style={{ marginLeft: 'auto' }}
-            >
-              <XCircle size={18} />
-            </button>
+            />
           </div>
         </div>
       )}
 
       {/* 数据表格 */}
-      <div className="threat-list quarantine-list card">
-        <h3>隔离文件列表</h3>
+      <div className={styles.tableContainer}>
+        <div className={styles.tableToolbar}>
+          <div className={styles.toolbarLeft}>
+            <Button
+              appearance="secondary"
+              size="small"
+              onClick={() => loadItems()}
+              disabled={loading}
+              icon={<RefreshCw size={14} className={loading ? 'spinning' : ''} />}
+            >
+              {t('quarantine_refresh')}
+            </Button>
+            <select
+              value={filter}
+              onChange={(e) => setFilter(e.target.value as any)}
+              style={{
+                padding: '6px 10px',
+                borderRadius: tokens.borderRadiusMedium,
+                border: `1px solid ${tokens.colorNeutralStroke1}`,
+                backgroundColor: tokens.colorNeutralBackground3,
+                color: tokens.colorNeutralForeground1,
+                fontSize: tokens.fontSizeBase300,
+                cursor: 'pointer',
+              }}
+            >
+              <option value="all">{t('quarantine_filter_all')}</option>
+              <option value="quarantined">{t('quarantine_filter_quarantined')}</option>
+              <option value="restored">{t('quarantine_filter_restored')}</option>
+            </select>
+          </div>
+          <Button
+            appearance="outline"
+            size="small"
+            onClick={handleBatchDelete}
+            disabled={selectedIds.length === 0}
+            style={{ color: tokens.colorPaletteRedForeground2, borderColor: tokens.colorPaletteRedBorderActive }}
+          >
+            {t('quarantine_batch_delete').replace('{count}', String(selectedIds.length))}
+          </Button>
+        </div>
 
-        {loading ? (
-          <div className="skeleton-table">
-            {[1, 2, 3, 4, 5].map((i) => (
-              <div key={i} className="skeleton-row skeleton" />
-            ))}
-          </div>
-        ) : filteredItems.length === 0 ? (
-          <div className="empty-state">
-            <Shield size={48} className="empty-icon" />
-            <p>{items.length === 0 ? '暂无隔离文件' : '没有符合筛选条件的记录'}</p>
-          </div>
-        ) : (
-          <div className="threat-scroll">
-            <table>
+        <div className={styles.tableScroll}>
+          {loading ? (
+            <div className={styles.skeletonTable}>
+              {[1, 2, 3, 4, 5].map((i) => (
+                <div key={i} className={styles.skeletonRow} />
+              ))}
+            </div>
+          ) : filteredItems.length === 0 ? (
+            <div className={styles.emptyState}>
+              <Shield size={48} className={styles.emptyIcon} />
+              <p className={styles.emptyText}>{items.length === 0 ? t('quarantine_empty') : t('quarantine_no_match')}</p>
+            </div>
+          ) : (
+            <table className={styles.table}>
               <thead>
                 <tr>
-                  <th className="select-col">
-                    <input
-                      type="checkbox"
+                  <th className={styles.checkboxCell}>
+                    <Checkbox
                       checked={selectedIds.length === filteredItems.length && filteredItems.length > 0}
-                      onChange={(e) => {
-                        if (e.target.checked) {
+                      onChange={(_, data) => {
+                        if (data.checked) {
                           filteredItems.forEach(item => {
                             if (!selectedIds.includes(item.id)) {
                               toggleSelection(item.id)
@@ -199,121 +435,139 @@ const QuarantinePage: React.FC = () => {
                           clearSelection()
                         }
                       }}
+                      aria-label={t('quarantine_aria_select_all')}
                     />
                   </th>
-                  <th className="quarantine-file-col">文件名</th>
-                  <th className="quarantine-path-col">原始路径</th>
-                  <th className="quarantine-threat-col">威胁类型</th>
-                  <th className="quarantine-size-col">文件大小</th>
-                  <th className="quarantine-date-col">隔离日期</th>
-                  <th className="quarantine-status-col">状态</th>
-                  <th className="quarantine-actions-col">操作</th>
+                  <th>{t('quarantine_th_filename')}</th>
+                  <th>{t('quarantine_th_original_path')}</th>
+                  <th>{t('quarantine_th_threat_type')}</th>
+                  <th>{t('quarantine_th_size')}</th>
+                  <th>{t('quarantine_th_status')}</th>
+                  <th>{t('quarantine_th_actions')}</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredItems.map((item) => {
-                  const originalPath = item.originalPath || '未知路径'
+                  const originalPath = item.originalPath || t('quarantine_unknown_path')
                   const fileName = originalPath.split(/[\\/]/).pop() || originalPath
                   return (
                     <tr key={item.id}>
-                      <td className="select-col">
-                        <input
-                          type="checkbox"
+                      <td>
+                        <Checkbox
                           checked={selectedIds.includes(item.id)}
                           onChange={() => toggleSelection(item.id)}
+                          aria-label={t('quarantine_aria_select_file').replace('{file}', fileName)}
                         />
                       </td>
-                      <td className="quarantine-file-cell" title={fileName}>
+                      <td title={fileName}>
                         <strong>{fileName}</strong>
                       </td>
-                      <td className="path-cell" title={originalPath}>
+                      <td className={styles.pathCell} title={originalPath}>
                         {originalPath}
                       </td>
-                      <td className="quarantine-threat-cell">
+                      <td>
                         {item.threatType ? (
-                          <span className="severity-badge severity-medium">
+                          <span className={`${styles.badge} ${styles.badgeMedium}`}>
                             {item.threatType}
                           </span>
                         ) : (
-                          <span className="text-muted">-</span>
+                          <span style={{ color: tokens.colorNeutralForeground3 }}>-</span>
                         )}
                       </td>
-                      <td className="quarantine-size-cell">{formatFileSize(item.fileSize)}</td>
-                      <td className="quarantine-date-cell">{formatDate(item.isolatedAt)}</td>
-                      <td className="quarantine-status-cell">{getStatusBadge(item.status)}</td>
-                      <td className="quarantine-actions-cell">
-                        <div className="quarantine-actions">
-                          {item.status === 'quarantined' && (
-                            <button
+                      <td>{formatFileSize(item.fileSize)}</td>
+                      <td>{getStatusBadge(item.status)}</td>
+                      <td>
+                        {item.status === 'restored' ? (
+                          <span style={{ color: tokens.colorNeutralForeground3 }}>—</span>
+                        ) : (
+                          <div className={styles.actionButtons}>
+                            {item.status === 'quarantined' && (
+                              <Button
+                                appearance="outline"
+                                size="small"
+                                onClick={() => setConfirmDialog({
+                                  type: 'restore',
+                                  id: item.id,
+                                  fileName
+                                })}
+                                icon={<RotateCcw size={14} />}
+                                title={t('quarantine_restore_file_title')}
+                              >
+                                {t('quarantine_restore')}
+                              </Button>
+                            )}
+                            <Button
+                              appearance="outline"
+                              size="small"
                               onClick={() => setConfirmDialog({
-                                type: 'restore',
+                                type: 'delete',
                                 id: item.id,
                                 fileName
                               })}
-                              className="btn btn-outline-primary btn-sm"
-                              title="恢复文件"
+                              icon={<Trash2 size={14} />}
+                              style={{ color: tokens.colorPaletteRedForeground2, borderColor: tokens.colorPaletteRedBorderActive }}
+                              title={t('quarantine_delete_file_title')}
                             >
-                              <RotateCcw size={14} />
-                              恢复
-                            </button>
-                          )}
-                          <button
-                            onClick={() => setConfirmDialog({
-                              type: 'delete',
-                              id: item.id,
-                              fileName
-                            })}
-                            className="btn btn-outline-danger btn-sm"
-                            title="永久删除"
-                          >
-                            <Trash2 size={14} />
-                            删除
-                          </button>
-                        </div>
+                              {t('quarantine_delete')}
+                            </Button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   )
                 })}
               </tbody>
             </table>
-          </div>
-        )}
+          )}
+        </div>
       </div>
 
       {/* 确认对话框 */}
       {confirmDialog && (
-        <div className="modal-overlay" onClick={() => setConfirmDialog(null)}>
-          <div className="modal-surface quarantine-confirm-modal" onClick={(e) => e.stopPropagation()}>
-            <h3>
-              {confirmDialog.type === 'restore' ? '确认恢复' : '确认删除'}
-            </h3>
-            <p>
+        <div className={styles.overlay} onClick={() => setConfirmDialog(null)}>
+          <div className={styles.modalSurface} onClick={(e) => e.stopPropagation()}>
+            <div className={styles.modalHeader}>
+              <h3 className={styles.modalTitle}>
+                {confirmDialog.type === 'restore' ? t('quarantine_confirm_restore') : t('quarantine_confirm_delete')}
+              </h3>
+              <button className={styles.modalClose} onClick={() => setConfirmDialog(null)}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              </button>
+            </div>
+            <div className={styles.modalBody}>
               {confirmDialog.type === 'restore' ? (
                 <>
-                  确定要恢复文件 <strong>{confirmDialog.fileName}</strong> 到原始位置吗？
-                  <br />
-                  <span style={{ color: 'var(--color-warning)', fontSize: '0.9rem' }}>
-                    注意：如果原文件位置存在同名文件，可能会被覆盖。
-                  </span>
+                  <p className={styles.modalMessage}>{t('quarantine_restore_desc').replace('{file}', confirmDialog.fileName)}</p>
+                  <div className={`${styles.warningBox} ${styles.warningBoxRestore}`}>
+                    <p className={styles.warningText} style={{ color: tokens.colorPaletteYellowForeground2 }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+                      {t('quarantine_restore_warning')}
+                    </p>
+                  </div>
                 </>
               ) : (
                 <>
-                  确定要永久删除 <strong>{confirmDialog.fileName}</strong> 吗？
-                  <br />
-                  <span style={{ color: 'var(--color-danger)', fontSize: '0.9rem' }}>
-                    警告：此操作不可撤销，文件将被安全擦除。
-                  </span>
+                  <p className={styles.modalMessage}>{t('quarantine_delete_desc').replace('{file}', confirmDialog.fileName)}</p>
+                  <div className={`${styles.warningBox} ${styles.warningBoxDelete}`}>
+                    <p className={styles.warningText} style={{ color: tokens.colorPaletteRedForeground2 }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="m15 9-6 6"/><path d="m9 9 6 6"/></svg>
+                      {t('quarantine_delete_warning')}
+                    </p>
+                  </div>
                 </>
               )}
-            </p>
-            <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end', marginTop: '1rem' }}>
-              <button
+            </div>
+            <div className={styles.modalFooter}>
+              <Button
+                appearance="secondary"
+                size="small"
                 onClick={() => setConfirmDialog(null)}
-                className="btn btn-outline-secondary"
               >
                 取消
-              </button>
-              <button
+              </Button>
+              <Button
+                appearance="primary"
+                size="small"
                 onClick={() => {
                   if (confirmDialog.type === 'restore') {
                     handleRestore(confirmDialog.id)
@@ -321,10 +575,10 @@ const QuarantinePage: React.FC = () => {
                     handleDelete(confirmDialog.id)
                   }
                 }}
-                className={`btn ${confirmDialog.type === 'restore' ? 'btn-primary' : 'btn-danger'}`}
+                style={confirmDialog.type === 'delete' ? { backgroundColor: tokens.colorPaletteRedBackground3, color: '#fff' } : undefined}
               >
-                确认
-              </button>
+                {confirmDialog.type === 'restore' ? '确认恢复' : '确认删除'}
+              </Button>
             </div>
           </div>
         </div>

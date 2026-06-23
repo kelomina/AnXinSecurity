@@ -1,5 +1,6 @@
 use crate::services::trust_service::TrustService;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tauri::State;
 
 #[derive(Serialize)]
@@ -37,7 +38,7 @@ pub struct ScanCacheStoreRequest {
 /// English keywords: digital signature verification, WinVerifyTrust, file signature, trusted file
 #[tauri::command]
 pub async fn verify_file_signature(
-    trust: State<'_, TrustService>,
+    trust: State<'_, Arc<TrustService>>,
     file_path: String,
 ) -> Result<VerifyFileResponse, String> {
     let verdict = trust.verify_file(&file_path)?;
@@ -56,7 +57,7 @@ pub async fn verify_file_signature(
 /// English keywords: certificate info, signer info, code signing cert, cert thumbprint
 #[tauri::command]
 pub async fn get_signer_info(
-    trust: State<'_, TrustService>,
+    trust: State<'_, Arc<TrustService>>,
     file_path: String,
 ) -> Result<SignerInfoResponse, String> {
     let info = trust.get_signer_info(&file_path)?;
@@ -76,7 +77,7 @@ pub async fn get_signer_info(
 /// English keywords: SHA-256, file hash, hash computation
 #[tauri::command]
 pub async fn compute_file_sha256(
-    trust: State<'_, TrustService>,
+    trust: State<'_, Arc<TrustService>>,
     file_path: String,
 ) -> Result<String, String> {
     trust.compute_sha256(&file_path)
@@ -91,7 +92,7 @@ pub async fn compute_file_sha256(
 /// English keywords: scan cache lookup, verdict lookup, virus database cache
 #[tauri::command]
 pub async fn scan_cache_lookup(
-    trust: State<'_, TrustService>,
+    trust: State<'_, Arc<TrustService>>,
     file_path: String,
 ) -> Result<ScanCacheLookupResponse, String> {
     let result = trust.scan_cache_lookup(&file_path)?;
@@ -118,7 +119,7 @@ pub async fn scan_cache_lookup(
 /// English keywords: scan cache store, verdict store
 #[tauri::command]
 pub async fn scan_cache_store(
-    trust: State<'_, TrustService>,
+    trust: State<'_, Arc<TrustService>>,
     request: ScanCacheStoreRequest,
 ) -> Result<bool, String> {
     trust.scan_cache_store(&request.hash_hex, request.verdict)?;
@@ -134,7 +135,7 @@ pub async fn scan_cache_store(
 /// English keywords: cache config, signature cache, TTL config
 #[tauri::command]
 pub async fn set_trust_cache_config(
-    trust: State<'_, TrustService>,
+    trust: State<'_, Arc<TrustService>>,
     max_entries: u32,
     ttl_ms: u32,
 ) -> Result<bool, String> {

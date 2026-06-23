@@ -58,7 +58,9 @@ pub async fn scan_file(
     if should_skip_security_scan(&file_path)? {
         return Ok(skipped_scan_result(&file_path));
     }
-    engine.scan_file(&file_path, options.unwrap_or_default()).await
+    engine
+        .scan_file(&file_path, options.unwrap_or_default())
+        .await
 }
 
 /// 函数名称：scan_batch

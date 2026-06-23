@@ -1,61 +1,10 @@
 // 进程控制命令 — 使用 libloading 动态加载 ntdll Native API
 // Process control commands — uses libloading to dynamically load ntdll Native API
+use crate::services::process_control_service::{
+    resume_process_by_pid, suspend_process_by_pid, terminate_process_by_pid,
+};
 use crate::services::process_monitor_service::ProcessMonitorService;
-use libloading::{Library, Symbol};
-use windows::Win32::Foundation::*;
-use windows::Win32::System::Diagnostics::ToolHelp::*;
-use windows::Win32::System::Threading::*;
-
-/// 保护进程白名单 / Protected process whitelist
-const PROTECTED_PROCESSES: &[&str] = &[
-    "csrss.exe",
-    "smss.exe",
-    "wininit.exe",
-    "services.exe",
-    "lsass.exe",
-];
-
-/// 检查进程是否为受保护的系统进程 / Check if process is a protected system process
-fn is_protected_process(pid: u32) -> Result<bool, String> {
-    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
-        .map_err(|e| format!("Failed to create process snapshot: {}", e))?;
-
-    let mut entry = PROCESSENTRY32W {
-        dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32,
-        ..Default::default()
-    };
-
-    unsafe {
-        if Process32FirstW(snapshot, &mut entry).is_ok() {
-            loop {
-                if entry.th32ProcessID == pid {
-                    let exe_name = String::from_utf16_lossy(
-                        &entry.szExeFile[..entry
-                            .szExeFile
-                            .iter()
-                            .position(|&c| c == 0)
-                            .unwrap_or(entry.szExeFile.len())],
-                    )
-                    .to_lowercase();
-
-                    let is_protected = PROTECTED_PROCESSES
-                        .iter()
-                        .any(|&name| exe_name.contains(name));
-
-                    CloseHandle(snapshot).ok();
-                    return Ok(is_protected);
-                }
-
-                if !Process32NextW(snapshot, &mut entry).is_ok() {
-                    break;
-                }
-            }
-        }
-        CloseHandle(snapshot).ok();
-    }
-
-    Err("Process not found".to_string())
-}
+use tauri::Manager;
 
 /// 函数名称：suspend_process
 /// 函数作用：挂起指定 PID 的进程（通过 NtSuspendProcess 动态调用）。
@@ -64,23 +13,7 @@ fn is_protected_process(pid: u32) -> Result<bool, String> {
 /// English keywords: suspend process, pause process, process control, NtSuspendProcess
 #[tauri::command]
 pub async fn suspend_process(pid: u32) -> Result<bool, String> {
-    if is_protected_process(pid)? {
-        return Err("无法操作受保护的系统进程".to_string());
-    }
-    if pid == std::process::id() {
-        return Err("无法操作当前进程".to_string());
-    }
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, pid)
-            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
-
-        let result = call_nt_function("NtSuspendProcess", handle);
-
-        CloseHandle(handle).ok();
-
-        result
-    }
+    suspend_process_by_pid(pid)
 }
 
 /// 函数名称：resume_process
@@ -90,20 +23,7 @@ pub async fn suspend_process(pid: u32) -> Result<bool, String> {
 /// English keywords: resume process, continue process, process control, NtResumeProcess
 #[tauri::command]
 pub async fn resume_process(pid: u32) -> Result<bool, String> {
-    if is_protected_process(pid)? {
-        return Err("无法操作受保护的系统进程".to_string());
-    }
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, pid)
-            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
-
-        let result = call_nt_function("NtResumeProcess", handle);
-
-        CloseHandle(handle).ok();
-
-        result
-    }
+    resume_process_by_pid(pid)
 }
 
 /// 函数名称：terminate_process
@@ -113,90 +33,26 @@ pub async fn resume_process(pid: u32) -> Result<bool, String> {
 /// English keywords: terminate process, kill process, process control, TerminateProcess
 #[tauri::command]
 pub async fn terminate_process(pid: u32) -> Result<bool, String> {
-    if is_protected_process(pid)? {
-        return Err("无法终止受保护的系统进程".to_string());
-    }
-    if pid == std::process::id() {
-        return Err("无法终止当前进程".to_string());
-    }
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid)
-            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
-
-        let result = TerminateProcess(handle, 1);
-
-        CloseHandle(handle).ok();
-
-        if result.is_ok() {
-            Ok(true)
-        } else {
-            Err("TerminateProcess failed".to_string())
-        }
-    }
-}
-
-/// 动态加载 ntdll.dll 并调用指定 NT 函数 / Dynamically load ntdll.dll and call named NT function
-/// 使用 libloading 避免 windows-core 版本冲突 / Uses libloading to avoid windows-core version conflicts
-unsafe fn call_nt_function(func_name: &str, handle: HANDLE) -> Result<bool, String> {
-    let ntdll =
-        Library::new("ntdll.dll").map_err(|e| format!("Failed to load ntdll.dll: {}", e))?;
-
-    let func: Symbol<unsafe extern "system" fn(HANDLE) -> i32> = ntdll
-        .get(func_name.as_bytes())
-        .map_err(|e| format!("Failed to get {}: {}", func_name, e))?;
-
-    let status = func(handle);
-
-    // NT_SUCCESS(status) == 0
-    if status == 0 {
-        Ok(true)
-    } else {
-        Err(format!(
-            "{} failed with status: 0x{:X}",
-            func_name, status as u32
-        ))
-    }
-}
-
-/// 内部函数：终止进程（供拦截服务调用） / Internal: terminate process (for interception service)
-/// Internal function callable from other command modules for automated process termination.
-/// 中文关键词：内部终止，拦截终止
-/// English keywords: internal terminate, interception terminate
-pub async fn terminate_process_internal(pid: u32) -> Result<bool, String> {
-    if is_protected_process(pid)? {
-        return Err("无法操作受保护的系统进程".to_string());
-    }
-    if pid == std::process::id() {
-        return Err("无法操作当前进程".to_string());
-    }
-
-    unsafe {
-        let handle = OpenProcess(PROCESS_TERMINATE, FALSE, pid)
-            .map_err(|e| format!("Failed to open process (PID: {}): {}", pid, e))?;
-
-        let result = TerminateProcess(handle, 1);
-
-        CloseHandle(handle).ok();
-
-        if result.is_ok() {
-            Ok(true)
-        } else {
-            Err("TerminateProcess failed".to_string())
-        }
-    }
+    terminate_process_by_pid(pid)
 }
 
 /// 函数名称：start_process_watcher
-/// 函数作用：启动进程监控服务，轮询新进程并对未签名进程注入 file_hook。
-/// Purpose: Starts the process monitor service, polls new processes and injects file_hook into unsigned ones.
+/// 函数作用：启动进程监控服务，轮询新进程并对未签名进程注入 file_hook；路径参数为空时由后端解析默认开发目录或打包资源路径。
+/// Purpose: Starts the process monitor service, polls new processes and injects file_hook into unsigned ones; empty path parameters are resolved from development or bundled resource defaults.
 /// 调用方：前端设置页面
 /// Called by: Frontend settings page
-/// 中文关键词：进程监控，启动监控，注入监控
-/// English keywords: process monitor, start monitor, inject monitor
+/// 被调用方：ProcessMonitorService::start_with_resource_dir，AppHandle::path().resource_dir。
+/// Calls: ProcessMonitorService::start_with_resource_dir, AppHandle::path().resource_dir.
+/// 参数说明：injector_x64/injector_x86/dll_x64/dll_x86 为空时使用后端默认路径；interval_ms 为轮询间隔。
+/// Parameters: injector_x64/injector_x86/dll_x64/dll_x86 use backend defaults when empty; interval_ms is the polling interval.
+/// 错误处理：resource_dir 获取失败时继续使用开发目录候选；注入器或 DLL 缺失由服务层返回明确错误。
+/// Error handling: resource_dir failures fall back to development candidates; missing injector or DLL paths are reported by the service layer.
+/// 中文关键词：进程监控，启动监控，注入监控，默认路径，资源目录
+/// English keywords: process monitor, start monitor, inject monitor, default path, resource directory
 #[tauri::command]
 pub async fn start_process_watcher(
     watcher: tauri::State<'_, ProcessMonitorService>,
+    app_handle: tauri::AppHandle,
     injector_x64: String,
     injector_x86: String,
     dll_x64: String,
@@ -205,12 +61,14 @@ pub async fn start_process_watcher(
 ) -> Result<bool, String> {
     // ProcessMonitorService 需要可变引用，但 Tauri state 是共享引用
     // 使用内部 Mutex 来获取可变性
-    watcher.start(
+    let resource_dir = app_handle.path().resource_dir().ok();
+    watcher.start_with_resource_dir(
         &injector_x64,
         &injector_x86,
         &dll_x64,
         &dll_x86,
         interval_ms,
+        resource_dir.as_deref(),
     )
 }
 
@@ -227,6 +85,24 @@ pub async fn stop_process_watcher(
 ) -> Result<bool, String> {
     watcher.stop()?;
     Ok(true)
+}
+
+/// 函数名称：get_process_watcher_status
+/// 函数作用：查询 APIHook 进程监控 watcher 是否正在运行。
+/// Purpose: Queries whether the APIHook process monitor watcher is running.
+/// 调用方：前端 getMonitoringRuntimeStatus。
+/// Called by: frontend getMonitoringRuntimeStatus.
+/// 被调用方：ProcessMonitorService::is_running。
+/// Calls: ProcessMonitorService::is_running.
+/// 返回值说明：true 表示 watcher 已启动，false 表示未启动。
+/// Returns: true when the watcher is started, false when stopped.
+/// 中文关键词：APIHook状态，进程监控状态，运行态查询
+/// English keywords: APIHook status, process monitor status, runtime query
+#[tauri::command]
+pub async fn get_process_watcher_status(
+    watcher: tauri::State<'_, ProcessMonitorService>,
+) -> Result<bool, String> {
+    Ok(watcher.is_running())
 }
 
 /// 函数名称：set_signed_process_list

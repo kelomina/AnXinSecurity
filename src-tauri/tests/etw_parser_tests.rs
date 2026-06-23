@@ -16,9 +16,7 @@ mod wide_string_tests {
 
     #[test]
     fn test_extract_wide_string_from_utf16_le() {
-        let input: Vec<u8> = "Hi".encode_utf16()
-            .flat_map(|c| c.to_le_bytes())
-            .collect();
+        let input: Vec<u8> = "Hi".encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
         let result = extract_wide_string_test(&input);
         assert_eq!(result, "Hi");
     }
@@ -26,7 +24,8 @@ mod wide_string_tests {
     #[test]
     fn test_extract_wide_string_truncates_at_null() {
         let mut input: Vec<u8> = Vec::new();
-        "Hello\0World".encode_utf16()
+        "Hello\0World"
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .for_each(|b| input.push(b));
         let result = extract_wide_string_test(&input);
@@ -42,7 +41,8 @@ mod wide_string_tests {
     #[test]
     fn test_extract_wide_string_removes_control_chars() {
         let mut input: Vec<u8> = Vec::new();
-        "Test\u{8}File".encode_utf16()
+        "Test\u{8}File"
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .for_each(|b| input.push(b));
         let result = extract_wide_string_test(&input);
@@ -52,7 +52,8 @@ mod wide_string_tests {
     #[test]
     fn test_extract_wide_string_preserves_internal_whitespace() {
         let mut input: Vec<u8> = Vec::new();
-        "  Tab\tHere  ".encode_utf16()
+        "  Tab\tHere  "
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .for_each(|b| input.push(b));
         let result = extract_wide_string_test(&input);
@@ -63,7 +64,8 @@ mod wide_string_tests {
     #[test]
     fn test_extract_wide_string_trims_result() {
         let mut input: Vec<u8> = Vec::new();
-        "  Trimmed  ".encode_utf16()
+        "  Trimmed  "
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .for_each(|b| input.push(b));
         let result = extract_wide_string_test(&input);
@@ -73,7 +75,8 @@ mod wide_string_tests {
     #[test]
     fn test_extract_wide_string_with_chinese_chars() {
         let mut input: Vec<u8> = Vec::new();
-        "恶意软件.exe".encode_utf16()
+        "恶意软件.exe"
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .for_each(|b| input.push(b));
         let result = extract_wide_string_test(&input);
@@ -89,7 +92,8 @@ mod wide_string_tests {
     #[test]
     fn test_extract_wide_string_with_many_nulls() {
         let mut input: Vec<u8> = vec![0; 100];
-        "End".encode_utf16()
+        "End"
+            .encode_utf16()
             .flat_map(|c| c.to_le_bytes())
             .enumerate()
             .for_each(|(i, b)| input[i] = b);
@@ -149,10 +153,9 @@ mod path_selection_tests {
 
     #[test]
     fn test_pick_best_path_handles_multiple_null_separators() {
-        let input = format!("{}\0{}\0{}\0", 
-            r"C:\malware\bad.exe",
-            r"malware.exe",
-            r"C:\windows\system32\notepad.exe"
+        let input = format!(
+            "{}\0{}\0{}\0",
+            r"C:\malware\bad.exe", r"malware.exe", r"C:\windows\system32\notepad.exe"
         );
         let result = pick_best_path_test(&input);
         assert!(!result.is_empty());
@@ -161,11 +164,7 @@ mod path_selection_tests {
 
     #[test]
     fn test_pick_best_path_falls_back_to_first_candidate() {
-        let input = format!("{}\0{}\0{}\0", 
-            r"malware.exe",
-            r"other.txt",
-            r"another.doc"
-        );
+        let input = format!("{}\0{}\0{}\0", r"malware.exe", r"other.txt", r"another.doc");
         let result = pick_best_path_test(&input);
         assert_eq!(result, "malware.exe");
     }
@@ -329,16 +328,20 @@ mod guid_comparison_tests {
 
 mod common {
     pub const PROCESS_GUID_TEST: [u8; 16] = [
-        0xD6, 0x2C, 0xFB, 0x22, 0x7B, 0x0E, 0x2B, 0x42, 0xA0, 0xC7, 0x2F, 0xAD, 0x1F, 0xD0, 0xE7, 0x16,
+        0xD6, 0x2C, 0xFB, 0x22, 0x7B, 0x0E, 0x2B, 0x42, 0xA0, 0xC7, 0x2F, 0xAD, 0x1F, 0xD0, 0xE7,
+        0x16,
     ];
     pub const FILE_GUID_TEST: [u8; 16] = [
-        0x27, 0x89, 0xD0, 0xED, 0xC4, 0x9C, 0x65, 0x4E, 0xB9, 0x70, 0xC2, 0x56, 0x0F, 0xB5, 0xC2, 0x89,
+        0x27, 0x89, 0xD0, 0xED, 0xC4, 0x9C, 0x65, 0x4E, 0xB9, 0x70, 0xC2, 0x56, 0x0F, 0xB5, 0xC2,
+        0x89,
     ];
     pub const REGISTRY_GUID_TEST: [u8; 16] = [
-        0x03, 0x4F, 0xEB, 0x70, 0xDE, 0xC1, 0x73, 0x4F, 0xA0, 0x51, 0x33, 0xD1, 0x3D, 0x54, 0x13, 0xBD,
+        0x03, 0x4F, 0xEB, 0x70, 0xDE, 0xC1, 0x73, 0x4F, 0xA0, 0x51, 0x33, 0xD1, 0x3D, 0x54, 0x13,
+        0xBD,
     ];
     pub const NETWORK_GUID_TEST: [u8; 16] = [
-        0x49, 0x2A, 0xD4, 0x7D, 0x29, 0x53, 0x32, 0x48, 0x8D, 0xFD, 0x43, 0xD9, 0x79, 0x15, 0x3A, 0x88,
+        0x49, 0x2A, 0xD4, 0x7D, 0x29, 0x53, 0x32, 0x48, 0x8D, 0xFD, 0x43, 0xD9, 0x79, 0x15, 0x3A,
+        0x88,
     ];
 
     pub fn same_guid_test(a: &[u8; 16], b: &[u8; 16]) -> bool {

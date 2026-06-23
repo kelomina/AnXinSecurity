@@ -172,7 +172,9 @@ impl EngineService {
 
     /// 函数名称：scan_file_raw_with_options
     /// 函数作用：使用指定扫描选项调用原生引擎并返回原始 JSON。
+    ///   默认只记录恶意命中或错误结果；设置 ANXIN_ENGINE_DEBUG=1/true 时输出完整原始结果。
     /// Purpose: Calls the native engine with scan options and returns raw JSON.
+    ///   By default only malware hits or error results are logged; ANXIN_ENGINE_DEBUG=1/true enables full raw-result logging.
     /// 调用方：scan_file、scan_file_raw。
     /// Called by: scan_file, scan_file_raw.
     /// 被调用方：NativeEngineService::scan_file。
@@ -190,25 +192,32 @@ impl EngineService {
                 .await
                 .map_err(|e| format!("Scan file task failed: {}", e))?
                 .map_err(|e| format!("Scan file failed: {}", e))?;
-        eprintln!("[EngineService] scan_file raw result: {}", result);
+        if Self::should_log_raw_scan_result(&result) {
+            eprintln!("[EngineService] scan_file raw result: {}", result);
+        }
         Ok(result)
     }
 
     /// 函数名称：convert_scan_result
     /// 函数作用：将 DLL 原始扫描结果 `{is_malware, confidence, malware_family: {family_name}, ...}`
     ///   转换为前端统一的 ScanResult 格式 `{fileId, verdict, threatType, severity, description}`。
+    ///   判定以 is_malware 为准；confidence 是对当前结论的置信度，不单独把安全样本升级为 suspicious。
     ///   threatType 按优先级提取：
     ///     1. malware_family.family_name（引擎实际嵌套格式）
     ///     2. family_name（扁平格式）
     ///     3. threat_type / threatType / label（其他可能字段）
     /// Purpose: Converts raw DLL scan result `{is_malware, confidence, malware_family: {family_name}, ...}`
     ///   to the unified frontend ScanResult format `{fileId, verdict, threatType, severity, description}`.
+    ///   The verdict follows is_malware; confidence is confidence in the current result and does not promote benign samples to suspicious.
     ///   threatType priority: malware_family.family_name → family_name → threat_type → threatType → label.
     /// 调用方：scan_file, scan_batch
     /// Called by: scan_file, scan_batch
-    /// 中文关键词：结果转换，格式映射，ScanResult转换，威胁类型提取，嵌套字段，多字段回退
-    /// English keywords: result conversion, format mapping, ScanResult conversion, threat type extraction, nested field, multi-field fallback
+    /// 被调用方：engine_debug_logging_enabled
+    /// Calls: engine_debug_logging_enabled
+    /// 中文关键词：结果转换，格式映射，ScanResult转换，恶意判定，威胁类型提取，嵌套字段，多字段回退
+    /// English keywords: result conversion, format mapping, ScanResult conversion, malware verdict, threat type extraction, nested field, multi-field fallback
     fn convert_scan_result(raw: serde_json::Value, file_path: &str) -> serde_json::Value {
+        let debug_logging = Self::engine_debug_logging_enabled();
         let is_malware = raw
             .get("is_malware")
             .and_then(|v| v.as_bool())
@@ -221,11 +230,13 @@ impl EngineService {
 
         // 诊断：枚举原始结果中的所有字段
         // Diagnostics: enumerate all keys in the raw result
-        let keys: Vec<String> = raw
-            .as_object()
-            .map(|obj| obj.keys().cloned().collect())
-            .unwrap_or_default();
-        eprintln!("[EngineService] convert_scan_result keys: {:?}", keys);
+        if debug_logging {
+            let keys: Vec<String> = raw
+                .as_object()
+                .map(|obj| obj.keys().cloned().collect())
+                .unwrap_or_default();
+            eprintln!("[EngineService] convert_scan_result keys: {:?}", keys);
+        }
 
         // 从多个字段提取威胁类型（按优先级）：
         //   1. family_name — 引擎返回的家族名称（首选）
@@ -233,56 +244,58 @@ impl EngineService {
         // Extract threat type from multiple fields (by priority):
         //   1. family_name — malware family name from engine (preferred)
         //   2. threat_type / threatType / label — other fields that may contain threat type
-        let family_name_val = raw
-            .get("family_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        let threat_type_val = raw
-            .get("threat_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        let threattype_camel_val = raw
-            .get("threatType")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        let label_val = raw
-            .get("label")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        let error_val = raw
-            .get("error")
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        // 嵌套字段：malware_family.family_name
-        let nested_family = raw
-            .get("malware_family")
-            .and_then(|v| v.get("family_name"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("<missing>");
-        eprintln!(
-            "[EngineService]   field family_name (flat)      = {:?}",
-            family_name_val
-        );
-        eprintln!(
-            "[EngineService]   field malware_family.family_name (nested) = {:?}",
-            nested_family
-        );
-        eprintln!(
-            "[EngineService]   field threat_type             = {:?}",
-            threat_type_val
-        );
-        eprintln!(
-            "[EngineService]   field threatType              = {:?}",
-            threattype_camel_val
-        );
-        eprintln!(
-            "[EngineService]   field label                   = {:?}",
-            label_val
-        );
-        eprintln!(
-            "[EngineService]   field error                   = {:?}",
-            error_val
-        );
+        if debug_logging {
+            let family_name_val = raw
+                .get("family_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            let threat_type_val = raw
+                .get("threat_type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            let threattype_camel_val = raw
+                .get("threatType")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            let label_val = raw
+                .get("label")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            let error_val = raw
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            // 嵌套字段：malware_family.family_name
+            let nested_family = raw
+                .get("malware_family")
+                .and_then(|v| v.get("family_name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>");
+            eprintln!(
+                "[EngineService]   field family_name (flat)      = {:?}",
+                family_name_val
+            );
+            eprintln!(
+                "[EngineService]   field malware_family.family_name (nested) = {:?}",
+                nested_family
+            );
+            eprintln!(
+                "[EngineService]   field threat_type             = {:?}",
+                threat_type_val
+            );
+            eprintln!(
+                "[EngineService]   field threatType              = {:?}",
+                threattype_camel_val
+            );
+            eprintln!(
+                "[EngineService]   field label                   = {:?}",
+                label_val
+            );
+            eprintln!(
+                "[EngineService]   field error                   = {:?}",
+                error_val
+            );
+        }
 
         // 威胁类型字段读取优先级：
         //   1. malware_family.family_name（引擎实际嵌套格式）
@@ -307,10 +320,12 @@ impl EngineService {
                     .map(|s| s.to_string())
             })
             .unwrap_or_default();
-        eprintln!(
-            "[EngineService]   extracted threat_type = {:?}",
-            threat_type
-        );
+        if debug_logging {
+            eprintln!(
+                "[EngineService]   extracted threat_type = {:?}",
+                threat_type
+            );
+        }
 
         // 引擎返回 pe_features_failed 时视为安全文件
         // pe_features_failed 出现在原始引擎的 threat_type、threatType、label 或 error 字段中
@@ -328,13 +343,17 @@ impl EngineService {
                 .and_then(|v| v.as_str())
                 .map(|s| s == "pe_features_failed")
                 .unwrap_or(false);
-        eprintln!(
-            "[EngineService]   raw_threat_type = {:?}, is_pe_failed = {}",
-            raw_threat_type, is_pe_failed
-        );
+        if debug_logging {
+            eprintln!(
+                "[EngineService]   raw_threat_type = {:?}, is_pe_failed = {}",
+                raw_threat_type, is_pe_failed
+            );
+        }
 
         if is_pe_failed || threat_type == "pe_features_failed" {
-            eprintln!("[EngineService]   clearing threat_type due to pe_features_failed");
+            if debug_logging {
+                eprintln!("[EngineService]   clearing threat_type due to pe_features_failed");
+            }
             threat_type = String::new();
         }
 
@@ -344,15 +363,18 @@ impl EngineService {
             ("unknown", 0)
         } else if is_malware {
             ("malware", 90)
-        } else if confidence >= 0.8 {
-            ("suspicious", 50)
         } else {
             ("clean", 0)
         };
-        eprintln!(
-            "[EngineService]   is_malware={}, confidence={}, has_err={}, verdict={}",
-            is_malware, confidence, has_err, verdict
-        );
+        if verdict == "clean" {
+            threat_type = String::new();
+        }
+        if debug_logging || is_malware || has_err {
+            eprintln!(
+                "[EngineService]   is_malware={}, confidence={}, has_err={}, verdict={}",
+                is_malware, confidence, has_err, verdict
+            );
+        }
 
         let description = raw
             .get("description")
@@ -368,8 +390,64 @@ impl EngineService {
             "severity": severity,
             "description": description,
         });
-        eprintln!("[EngineService]   final result = {}", result);
+        if debug_logging || verdict != "clean" {
+            eprintln!("[EngineService]   final result = {}", result);
+        }
         result
+    }
+
+    /// 函数名称：engine_debug_logging_enabled
+    /// 函数作用：读取 ANXIN_ENGINE_DEBUG 环境变量，控制引擎字段级诊断日志是否输出。
+    /// Purpose: Reads the ANXIN_ENGINE_DEBUG environment variable to control field-level engine diagnostic logs.
+    /// 调用方：scan_file_raw_with_options、convert_scan_result、should_log_raw_scan_result。
+    /// Called by: scan_file_raw_with_options, convert_scan_result, should_log_raw_scan_result.
+    /// 中文关键词：引擎调试日志，环境变量，日志开关
+    /// English keywords: engine debug logging, environment variable, log switch
+    fn engine_debug_logging_enabled() -> bool {
+        std::env::var("ANXIN_ENGINE_DEBUG")
+            .map(|value| Self::engine_debug_value_enabled(&value))
+            .unwrap_or(false)
+    }
+
+    /// 函数名称：engine_debug_value_enabled
+    /// 函数作用：解析调试日志环境变量值，避免测试直接修改进程级环境变量。
+    /// Purpose: Parses the debug-log environment variable value so tests do not need to mutate process-wide environment variables.
+    /// 调用方：engine_debug_logging_enabled。
+    /// Called by: engine_debug_logging_enabled.
+    /// 中文关键词：引擎调试日志，环境变量解析，单元测试
+    /// English keywords: engine debug logging, environment parsing, unit test
+    fn engine_debug_value_enabled(value: &str) -> bool {
+        let normalized = value.trim();
+        normalized == "1" || normalized.eq_ignore_ascii_case("true")
+    }
+
+    /// 函数名称：should_log_raw_scan_result
+    /// 函数作用：判断是否输出原始扫描结果；默认只输出恶意或错误，调试环境变量开启后输出全部。
+    /// Purpose: Determines whether to log a raw scan result; by default logs only malware or error results, and logs all when debug is enabled.
+    /// 调用方：scan_file_raw_with_options。
+    /// Called by: scan_file_raw_with_options.
+    /// 被调用方：engine_debug_logging_enabled。
+    /// Calls: engine_debug_logging_enabled.
+    /// 中文关键词：原始扫描日志，刷屏控制，恶意命中，错误日志
+    /// English keywords: raw scan logging, log spam control, malware hit, error log
+    fn should_log_raw_scan_result(raw: &serde_json::Value) -> bool {
+        Self::should_log_raw_scan_result_with_debug(raw, Self::engine_debug_logging_enabled())
+    }
+
+    /// 函数名称：should_log_raw_scan_result_with_debug
+    /// 函数作用：用显式调试开关判断是否输出原始扫描结果，便于稳定测试默认日志策略。
+    /// Purpose: Determines raw-result logging from an explicit debug flag so the default log policy can be tested deterministically.
+    /// 调用方：should_log_raw_scan_result。
+    /// Called by: should_log_raw_scan_result.
+    /// 中文关键词：原始扫描日志，刷屏控制，单元测试
+    /// English keywords: raw scan logging, log spam control, unit test
+    fn should_log_raw_scan_result_with_debug(raw: &serde_json::Value, debug_logging: bool) -> bool {
+        debug_logging
+            || raw
+                .get("is_malware")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false)
+            || raw.get("error").is_some()
     }
 
     /// 函数名称：cancel_scan
@@ -431,6 +509,45 @@ mod tests {
     /// 辅助函数：调用私有 convert_scan_result
     fn convert(raw: serde_json::Value) -> serde_json::Value {
         EngineService::convert_scan_result(raw, "/test/path.exe")
+    }
+
+    #[test]
+    fn test_engine_debug_value_enabled_parses_supported_values() {
+        assert!(EngineService::engine_debug_value_enabled("1"));
+        assert!(EngineService::engine_debug_value_enabled("true"));
+        assert!(EngineService::engine_debug_value_enabled(" TRUE "));
+        assert!(!EngineService::engine_debug_value_enabled("0"));
+        assert!(!EngineService::engine_debug_value_enabled("false"));
+        assert!(!EngineService::engine_debug_value_enabled(""));
+    }
+
+    #[test]
+    fn test_raw_scan_log_policy_suppresses_clean_results_by_default() {
+        let clean = serde_json::json!({
+            "is_malware": false,
+            "confidence": 0.999
+        });
+        let malicious = serde_json::json!({
+            "is_malware": true,
+            "confidence": 0.99
+        });
+        let error = serde_json::json!({
+            "is_malware": false,
+            "error": "scan timeout"
+        });
+
+        assert!(!EngineService::should_log_raw_scan_result_with_debug(
+            &clean, false
+        ));
+        assert!(EngineService::should_log_raw_scan_result_with_debug(
+            &malicious, false
+        ));
+        assert!(EngineService::should_log_raw_scan_result_with_debug(
+            &error, false
+        ));
+        assert!(EngineService::should_log_raw_scan_result_with_debug(
+            &clean, true
+        ));
     }
 
     #[test]
@@ -582,7 +699,7 @@ mod tests {
     }
 
     #[test]
-    fn test_suspicious_file() {
+    fn test_non_malware_high_confidence_is_clean() {
         let raw = serde_json::json!({
             "is_malware": false,
             "confidence": 0.85,
@@ -591,8 +708,26 @@ mod tests {
             }
         });
         let result = convert(raw);
-        assert_eq!(result["verdict"], "suspicious");
-        assert_eq!(result["threatType"], "PUP.Optional");
+        assert_eq!(result["verdict"], "clean");
+        assert_eq!(result["severity"], 0);
+        assert_eq!(result["threatType"], "");
+    }
+
+    #[test]
+    fn test_axon_non_malware_high_confidence_is_clean() {
+        let raw = serde_json::json!({
+            "axon_malware": false,
+            "axon_score": 0.0005608681822195649,
+            "confidence": 0.9994391202926636,
+            "hardcase_triggered": false,
+            "is_malware": false,
+            "signature_hit": false,
+            "signature_score": 0.0
+        });
+        let result = convert(raw);
+        assert_eq!(result["verdict"], "clean");
+        assert_eq!(result["severity"], 0);
+        assert_eq!(result["threatType"], "");
     }
 
     #[test]

@@ -193,6 +193,32 @@ fn test_signature_verdict_various_statuses() {
     assert!(!expired.trusted);
 }
 
+#[test]
+fn test_windows_catalog_signed_system_file_is_trusted() {
+    if !cfg!(windows) {
+        return;
+    }
+
+    let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| "C:\\Windows".to_string());
+    let candidate = std::path::Path::new(&system_root)
+        .join("System32")
+        .join("ctfmon.exe");
+    if !candidate.exists() {
+        return;
+    }
+
+    let svc = TrustService::new();
+    let verdict = svc
+        .verify_file(&candidate.to_string_lossy())
+        .expect("system file signature verification should return a verdict");
+
+    assert!(
+        verdict.trusted,
+        "expected Windows system file to be trusted, status=0x{:08X}",
+        verdict.status as u32
+    );
+}
+
 // ================================================================
 // SignerInfo 结构体测试 / SignerInfo struct tests
 // ================================================================

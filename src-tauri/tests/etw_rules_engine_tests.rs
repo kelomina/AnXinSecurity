@@ -11,6 +11,140 @@
 // English keywords: wildcard match, DP algorithm, context ring, circular buffer, string normalization, rule engine
 
 #[cfg(test)]
+mod config_loading_tests {
+    use anxin_security::services::etw::parser::ParsedEvent;
+    use anxin_security::services::etw::rules::{EtwRuleEngine, ProviderKind};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn default_config_rules_load_and_match_file_create_event() {
+        let config_path =
+            resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
+
+        assert!(
+            engine.rule_count() >= 5,
+            "默认 ETW 配置至少应加载现有文件规则和镜像加载检测规则"
+        );
+
+        let matched = engine.on_event(&ParsedEvent {
+            ts_ms: 1700000000000,
+            pid: 4242,
+            tid: 10,
+            ppid: 0,
+            provider: ProviderKind::File,
+            opcode: 0,
+            id: 64,
+            op: "create".to_string(),
+            target: r"C:\Users\Alice\AppData\Local\Temp\dropper.exe".to_string(),
+            target2: String::new(),
+            image_base: None,
+            image_size: None,
+            start_address: None,
+        });
+
+        let matched = matched.expect("temp file create should match temp_dropper_create");
+        assert_eq!(matched.rule_id, "temp_dropper_create");
+        assert_eq!(matched.threat_type, "临时目录落地");
+        assert_eq!(matched.provider, "File");
+        assert_eq!(matched.pid, 4242);
+        assert_eq!(
+            matched.path,
+            r"C:\Users\Alice\AppData\Local\Temp\dropper.exe"
+        );
+        assert!(
+            matched.severity >= 61,
+            "配置中的 1-5 档 severity 应映射为 RiskService 可识别的 0-100 高风险分数，实际为 {}",
+            matched.severity
+        );
+        assert!(!matched.description.is_empty());
+    }
+
+    #[test]
+    fn default_config_rules_match_calc_probe_image_load_event() {
+        let config_path =
+            resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
+
+        let matched = engine.on_event(&ParsedEvent {
+            ts_ms: 1700000000001,
+            pid: 62092,
+            tid: 44,
+            ppid: 0,
+            provider: ProviderKind::Image,
+            opcode: 0,
+            id: 5,
+            op: "load".to_string(),
+            target:
+                r"E:\Project\HTML\AnXinSecurity\native\file_hook\build-calc-probe-x64\Release\calc_probe_payload.dll"
+                    .to_string(),
+            target2: String::new(),
+            image_base: Some(0x7ff7_0000_0000),
+            image_size: Some(0x12000),
+            start_address: None,
+        });
+
+        let matched = matched.expect("calc probe payload image load should match");
+        assert_eq!(matched.rule_id, "calc_probe_payload_image_load");
+        assert_eq!(matched.provider, "Image");
+        assert_eq!(matched.op, "load");
+        assert_eq!(matched.threat_type, "DLL 注入测试样本加载");
+        assert!(matched.path.ends_with("calc_probe_payload.dll"));
+    }
+
+    #[test]
+    fn empty_config_loads_as_explicit_empty_engine() {
+        let config_path = write_temp_rule_config("[]");
+        let engine = EtwRuleEngine::from_config_path(&config_path)
+            .expect("empty ETW config array should be an explicit empty engine");
+
+        assert_eq!(engine.rule_count(), 0);
+
+        let _ = fs::remove_file(config_path);
+    }
+
+    #[test]
+    fn bad_config_returns_clear_error_instead_of_silent_empty_rules() {
+        let config_path = write_temp_rule_config(r#"[{"ruleId":"bad","provider":"File"}]"#);
+        let err = match EtwRuleEngine::from_config_path(&config_path) {
+            Ok(_) => panic!("invalid ETW config should return an explicit error"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.contains("Failed to parse ETW rule config") || err.contains("Invalid ETW rule"),
+            "错误信息应明确指出配置解析或字段校验失败: {}",
+            err
+        );
+
+        let _ = fs::remove_file(config_path);
+    }
+
+    fn resolve_repo_config_path() -> Option<PathBuf> {
+        [
+            PathBuf::from("config/etw_match_rules.json"),
+            PathBuf::from("../config/etw_match_rules.json"),
+        ]
+        .into_iter()
+        .find(|path| path.exists())
+    }
+
+    fn write_temp_rule_config(content: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after UNIX_EPOCH")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("anxin-etw-rules-{}.json", unique));
+        fs::write(&path, content).expect("write temporary ETW rule config");
+        path
+    }
+}
+
+#[cfg(test)]
 mod wildcard_match_tests {
     use super::common::*;
 
@@ -44,8 +178,14 @@ mod wildcard_match_tests {
     fn test_wildcard_combined_star_and_question() {
         assert!(simple_wildcard_match("test*.exe", "test1.exe"));
         assert!(simple_wildcard_match("test*.exe", "testabc.exe"));
-        assert!(simple_wildcard_match("C:\\*\\*.exe", r"C:\Windows\notepad.exe"));
-        assert!(simple_wildcard_match("C:\\test?\\*.dll", r"C:\test1\mydll.dll"));
+        assert!(simple_wildcard_match(
+            "C:\\*\\*.exe",
+            r"C:\Windows\notepad.exe"
+        ));
+        assert!(simple_wildcard_match(
+            "C:\\test?\\*.dll",
+            r"C:\test1\mydll.dll"
+        ));
     }
 
     #[test]
@@ -72,17 +212,32 @@ mod wildcard_match_tests {
     #[test]
     fn test_wildcard_multiple_stars() {
         assert!(simple_wildcard_match("*test*", "onetestonetwo"));
-        assert!(simple_wildcard_match("C:\\*\\temp\\*", r"C:\Windows\temp\file.txt"));
+        assert!(simple_wildcard_match(
+            "C:\\*\\temp\\*",
+            r"C:\Windows\temp\file.txt"
+        ));
         assert!(simple_wildcard_match("a*b*c", "axxxbyyyc"));
         assert!(simple_wildcard_match("a*b*c", "abc"));
     }
 
     #[test]
     fn test_wildcard_real_world_patterns() {
-        assert!(simple_wildcard_match("C:\\Windows\\System32\\*.exe", r"C:\Windows\System32\notepad.exe"));
-        assert!(simple_wildcard_match("C:\\Windows\\System32\\*.exe", r"C:\Windows\System32\calc.exe"));
-        assert!(simple_wildcard_match("C:\\Windows\\*\\*.dll", r"C:\Windows\System32\kernel32.dll"));
-        assert!(simple_wildcard_match("C:\\Users\\*\\AppData\\*", r"C:\Users\John\AppData\Local\test"));
+        assert!(simple_wildcard_match(
+            "C:\\Windows\\System32\\*.exe",
+            r"C:\Windows\System32\notepad.exe"
+        ));
+        assert!(simple_wildcard_match(
+            "C:\\Windows\\System32\\*.exe",
+            r"C:\Windows\System32\calc.exe"
+        ));
+        assert!(simple_wildcard_match(
+            "C:\\Windows\\*\\*.dll",
+            r"C:\Windows\System32\kernel32.dll"
+        ));
+        assert!(simple_wildcard_match(
+            "C:\\Users\\*\\AppData\\*",
+            r"C:\Users\John\AppData\Local\test"
+        ));
         assert!(simple_wildcard_match("*.tmp", "autosave.tmp"));
         assert!(simple_wildcard_match("*.tmp", "12345.tmp"));
         assert!(simple_wildcard_match("malware_?.exe", "malware_a.exe"));
@@ -106,7 +261,10 @@ mod wildcard_match_tests {
     #[test]
     fn test_wildcard_security_sensitive_patterns() {
         assert!(simple_wildcard_match("*\\*.exe", r"C:\Windows\notepad.exe"));
-        assert!(simple_wildcard_match("*\\*.exe", r"C:\Users\Bob\malware.exe"));
+        assert!(simple_wildcard_match(
+            "*\\*.exe",
+            r"C:\Users\Bob\malware.exe"
+        ));
         assert!(simple_wildcard_match("*temp*", "temptemp"));
         assert!(simple_wildcard_match("*temp*", "temp123"));
         assert!(simple_wildcard_match("*temp*", "my_temp_file"));
@@ -119,21 +277,36 @@ mod string_normalization_tests {
 
     #[test]
     fn test_normalize_str_converts_forward_slash_to_backslash() {
-        assert_eq!(normalize_str_test("C:/Windows/System32"), r"c:\windows\system32");
-        assert_eq!(normalize_str_test("C:/Program Files/App.exe"), r"c:\program files\app.exe");
+        assert_eq!(
+            normalize_str_test("C:/Windows/System32"),
+            r"c:\windows\system32"
+        );
+        assert_eq!(
+            normalize_str_test("C:/Program Files/App.exe"),
+            r"c:\program files\app.exe"
+        );
     }
 
     #[test]
     fn test_normalize_str_converts_uppercase_to_lowercase() {
         assert_eq!(normalize_str_test("WINDOWS"), "windows");
         assert_eq!(normalize_str_test("SYSTEM32"), "system32");
-        assert_eq!(normalize_str_test("C:\\WINDOWS\\SYSTEM32"), r"c:\windows\system32");
+        assert_eq!(
+            normalize_str_test("C:\\WINDOWS\\SYSTEM32"),
+            r"c:\windows\system32"
+        );
     }
 
     #[test]
     fn test_normalize_str_combined_operations() {
-        assert_eq!(normalize_str_test("C:/WINDOWS/SYSTEM32"), r"c:\windows\system32");
-        assert_eq!(normalize_str_test("C:/Program Files/APP.EXE"), r"c:\program files\app.exe");
+        assert_eq!(
+            normalize_str_test("C:/WINDOWS/SYSTEM32"),
+            r"c:\windows\system32"
+        );
+        assert_eq!(
+            normalize_str_test("C:/Program Files/APP.EXE"),
+            r"c:\program files\app.exe"
+        );
     }
 
     #[test]
@@ -358,9 +531,18 @@ mod integration_scenario_tests {
             r"C:\Users\Bob\AppData\Local\Temp\stage1.tmp",
         ];
 
-        assert!(simple_wildcard_match(pattern, &normalize_str_test(paths[0])));
-        assert!(simple_wildcard_match(pattern, &normalize_str_test(paths[1])));
-        assert!(!simple_wildcard_match(pattern, &normalize_str_test(paths[2])));
+        assert!(simple_wildcard_match(
+            pattern,
+            &normalize_str_test(paths[0])
+        ));
+        assert!(simple_wildcard_match(
+            pattern,
+            &normalize_str_test(paths[1])
+        ));
+        assert!(!simple_wildcard_match(
+            pattern,
+            &normalize_str_test(paths[2])
+        ));
     }
 
     #[test]
@@ -458,7 +640,12 @@ mod common {
         }
     }
 
-    pub fn make_context_item(ts_ms: u64, provider: &str, op: &str, target: &str) -> ContextItemTest {
+    pub fn make_context_item(
+        ts_ms: u64,
+        provider: &str,
+        op: &str,
+        target: &str,
+    ) -> ContextItemTest {
         ContextItemTest {
             ts_ms,
             provider: provider.to_string(),

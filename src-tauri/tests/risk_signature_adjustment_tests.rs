@@ -82,7 +82,10 @@ fn test_high_risk_untrusted_signature_stays_high() {
     let base = map_severity_to_risk_level(90);
     assert_eq!(base, "high");
     let adjusted = adjust_risk_with_signature(base, false, true);
-    assert_eq!(adjusted, "high", "untrusted + high severity should stay high");
+    assert_eq!(
+        adjusted, "high",
+        "untrusted + high severity should stay high"
+    );
 }
 
 #[test]
@@ -126,14 +129,26 @@ fn test_severity_boundary_25_untrusted_escalates_from_low_to_medium() {
 
 #[test]
 fn test_should_intercept_after_signature_adjustment() {
-    let should_intercept = |level: &str| matches!(level, "high" | "medium");
+    let should_intercept = |level: &str| level == "high";
 
-    assert!(!should_intercept(&adjust_risk_with_signature("low", true, true)));
-    assert!(should_intercept(&adjust_risk_with_signature("low", false, true)));
-    assert!(should_intercept(&adjust_risk_with_signature("medium", true, true)));
-    assert!(should_intercept(&adjust_risk_with_signature("medium", false, true)));
-    assert!(should_intercept(&adjust_risk_with_signature("high", true, true)));
-    assert!(should_intercept(&adjust_risk_with_signature("high", false, true)));
+    assert!(!should_intercept(&adjust_risk_with_signature(
+        "low", true, true
+    )));
+    assert!(!should_intercept(&adjust_risk_with_signature(
+        "low", false, true
+    )));
+    assert!(!should_intercept(&adjust_risk_with_signature(
+        "medium", true, true
+    )));
+    assert!(!should_intercept(&adjust_risk_with_signature(
+        "medium", false, true
+    )));
+    assert!(should_intercept(&adjust_risk_with_signature(
+        "high", true, true
+    )));
+    assert!(should_intercept(&adjust_risk_with_signature(
+        "high", false, true
+    )));
 }
 
 #[test]
@@ -184,7 +199,7 @@ fn test_risk_assessment_serialization() {
     let assessment = RiskAssessment {
         event,
         risk_level: "medium".to_string(),
-        should_intercept: true,
+        should_intercept: false,
         reason: "Rule matched".to_string(),
     };
 
@@ -192,6 +207,6 @@ fn test_risk_assessment_serialization() {
     let parsed: RiskAssessment =
         serde_json::from_str(&json).expect("deserialization should succeed");
     assert_eq!(parsed.risk_level, "medium");
-    assert!(parsed.should_intercept);
+    assert!(!parsed.should_intercept);
     assert_eq!(parsed.event.pid, 5678);
 }

@@ -1,0 +1,16 @@
+{
+  "identifier": "interception",
+  "description": "独立拦截窗口最小权限配置（事件监听、窗口唤醒和隐藏）",
+  "windows": ["interception"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-request-user-attention",
+    "core:window:allow-set-focus"
+  ]
+}

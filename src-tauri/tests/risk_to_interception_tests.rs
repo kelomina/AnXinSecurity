@@ -1,6 +1,8 @@
-use std::sync::Arc;
+use anxin_security::services::interception_service::{
+    InterceptionDecision, InterceptionEntry, InterceptionService,
+};
 use anxin_security::services::risk_service::{RiskEvent, RiskService};
-use anxin_security::services::interception_service::{InterceptionService, InterceptionEntry, InterceptionDecision};
+use std::sync::Arc;
 
 mod common;
 
@@ -12,7 +14,7 @@ fn test_risk_service_initially_has_zero_count() {
 
 #[test]
 fn test_interception_service_initially_empty() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
     assert_eq!(inter.get_queue_size(), 0);
     assert!(inter.get_paused_pids().is_empty());
 }
@@ -20,7 +22,7 @@ fn test_interception_service_initially_empty() {
 #[test]
 fn test_services_can_be_wired_together() {
     let risk = RiskService::new();
-    let inter = Arc::new(InterceptionService::new());
+    let inter = Arc::new(InterceptionService::new_for_tests());
     risk.set_interception_service(inter);
     assert_eq!(risk.get_event_count(), 0);
 }
@@ -28,7 +30,7 @@ fn test_services_can_be_wired_together() {
 #[test]
 fn test_wired_interception_enqueue_visible_to_both() {
     let risk = RiskService::new();
-    let inter = Arc::new(InterceptionService::new());
+    let inter = Arc::new(InterceptionService::new_for_tests());
     risk.set_interception_service(inter.clone());
 
     let entry = InterceptionEntry {
@@ -49,7 +51,7 @@ fn test_wired_interception_enqueue_visible_to_both() {
 
 #[test]
 fn test_enqueue_then_decide_completes_flow() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     let entry = InterceptionEntry {
         pid: 8001,
@@ -70,7 +72,7 @@ fn test_enqueue_then_decide_completes_flow() {
 
 #[test]
 fn test_multiple_processes_decision_ordering() {
-    let inter = InterceptionService::new();
+    let inter = InterceptionService::new_for_tests();
 
     for pid in &[100, 200, 300] {
         inter.enqueue(InterceptionEntry {
@@ -134,8 +136,10 @@ fn test_risk_event_json_serialization() {
         timestamp: 10000,
     };
 
-    let json_str = serde_json::to_string(&event).expect("\u{5e8f}\u{5217}\u{5316}\u{5e94}\u{6210}\u{529f}");
-    let parsed: RiskEvent = serde_json::from_str(&json_str).expect("\u{53cd}\u{5e8f}\u{5217}\u{5316}\u{5e94}\u{6210}\u{529f}");
+    let json_str =
+        serde_json::to_string(&event).expect("\u{5e8f}\u{5217}\u{5316}\u{5e94}\u{6210}\u{529f}");
+    let parsed: RiskEvent = serde_json::from_str(&json_str)
+        .expect("\u{53cd}\u{5e8f}\u{5217}\u{5316}\u{5e94}\u{6210}\u{529f}");
     assert_eq!(parsed.pid, event.pid);
     assert_eq!(parsed.severity, event.severity);
     assert_eq!(parsed.threat_type, event.threat_type);
@@ -151,7 +155,7 @@ fn test_risk_service_counter_starts_at_zero() {
 #[test]
 fn test_risk_service_counter_independent_of_interception() {
     let risk = RiskService::new();
-    let inter = Arc::new(InterceptionService::new());
+    let inter = Arc::new(InterceptionService::new_for_tests());
     risk.set_interception_service(inter);
     assert_eq!(risk.get_event_count(), 0);
 }
@@ -159,7 +163,7 @@ fn test_risk_service_counter_independent_of_interception() {
 #[test]
 fn test_clear_all_on_wired_services() {
     let risk = RiskService::new();
-    let inter = Arc::new(InterceptionService::new());
+    let inter = Arc::new(InterceptionService::new_for_tests());
     risk.set_interception_service(inter.clone());
 
     for pid in 1..=5u32 {

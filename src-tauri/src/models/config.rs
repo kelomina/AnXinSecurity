@@ -23,6 +23,9 @@ pub struct AppConfig {
     pub file_monitoring: FileMonitorConfig,
     #[serde(rename = "behaviorAnalyzer")]
     pub behavior_analyzer: BehaviorAnalyzerConfig,
+    // locale 字段 — 界面语言设置 / Locale field for UI language
+    #[serde(default = "default_locale")]
+    pub locale: String,
     // 新增：扫描排除项列表
     // 新增：启动允许列表
 }
@@ -61,6 +64,36 @@ pub struct ScanConfig {
 pub struct ScannerConfig {
     #[serde(rename = "timeoutMs")]
     pub timeout_ms: u64,
+    #[serde(
+        rename = "startupSnapshotSlowWarnMs",
+        default = "default_startup_snapshot_slow_warn_ms"
+    )]
+    pub startup_snapshot_slow_warn_ms: u64,
+    #[serde(
+        rename = "startupModuleEnumerationTimeoutMs",
+        default = "default_startup_module_enumeration_timeout_ms"
+    )]
+    pub startup_module_enumeration_timeout_ms: u64,
+    #[serde(
+        rename = "startupSignatureVerifyTimeoutMs",
+        default = "default_startup_signature_verify_timeout_ms"
+    )]
+    pub startup_signature_verify_timeout_ms: u64,
+    #[serde(
+        rename = "startupSignatureVerifyConcurrency",
+        default = "default_startup_signature_verify_concurrency"
+    )]
+    pub startup_signature_verify_concurrency: usize,
+    #[serde(
+        rename = "startupRevocationCheckTimeoutMs",
+        default = "default_startup_revocation_check_timeout_ms"
+    )]
+    pub startup_revocation_check_timeout_ms: u64,
+    #[serde(
+        rename = "startupRevocationCheckConcurrency",
+        default = "default_startup_revocation_check_concurrency"
+    )]
+    pub startup_revocation_check_concurrency: usize,
     #[serde(rename = "healthPollIntervalMs")]
     pub health_poll_interval_ms: u64,
     #[serde(rename = "maxFileSizeMB")]
@@ -115,7 +148,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             brand: "AnXin Security".to_string(),
-            theme_color: "#4CA2FF".to_string(),
+            theme_color: "#5E95C6".to_string(),
             default_page: "overview".to_string(),
             minimize_to_tray: true,
             tray: TrayConfig {
@@ -135,6 +168,15 @@ impl Default for AppConfig {
             },
             scanner: ScannerConfig {
                 timeout_ms: 10000,
+                startup_snapshot_slow_warn_ms: default_startup_snapshot_slow_warn_ms(),
+                startup_module_enumeration_timeout_ms:
+                    default_startup_module_enumeration_timeout_ms(),
+                startup_signature_verify_timeout_ms: default_startup_signature_verify_timeout_ms(),
+                startup_signature_verify_concurrency: default_startup_signature_verify_concurrency(
+                ),
+                startup_revocation_check_timeout_ms: default_startup_revocation_check_timeout_ms(),
+                startup_revocation_check_concurrency: default_startup_revocation_check_concurrency(
+                ),
                 health_poll_interval_ms: 30000,
                 max_file_size_mb: 500,
                 ipc: IpcConfig {
@@ -158,9 +200,38 @@ impl Default for AppConfig {
                     file_name: "anxin_etw_behavior.db".to_string(),
                 },
             },
+            locale: "zh-CN".to_string(),
             // 新增字段默认值
         }
     }
+}
+
+fn default_startup_snapshot_slow_warn_ms() -> u64 {
+    30_000
+}
+
+fn default_startup_module_enumeration_timeout_ms() -> u64 {
+    1_000
+}
+
+fn default_startup_signature_verify_timeout_ms() -> u64 {
+    1_000
+}
+
+fn default_startup_signature_verify_concurrency() -> usize {
+    0
+}
+
+fn default_startup_revocation_check_timeout_ms() -> u64 {
+    5_000
+}
+
+fn default_startup_revocation_check_concurrency() -> usize {
+    4
+}
+
+fn default_locale() -> String {
+    "zh-CN".to_string()
 }
 
 impl AppConfig {
@@ -273,5 +344,72 @@ impl AppConfig {
         let content = serde_json::to_string_pretty(&existing_value)?;
         fs::write(config_path, content)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AppConfig;
+
+    #[test]
+    fn scanner_revocation_options_default_when_missing_from_legacy_config() {
+        let raw = r##"{
+            "brand": "AnXin Security",
+            "themeColor": "#5E95C6",
+            "defaultPage": "overview",
+            "minimizeToTray": true,
+            "tray": {},
+            "ui": {
+                "animations": true,
+                "themeMode": "system",
+                "window": {
+                    "minWidth": 800,
+                    "minHeight": 600
+                }
+            },
+            "scan": {
+                "commonExtensionsOnly": false
+            },
+            "scanner": {
+                "timeoutMs": 10000,
+                "startupSnapshotSlowWarnMs": 30000,
+                "startupSignatureVerifyTimeoutMs": 1000,
+                "healthPollIntervalMs": 30000,
+                "maxFileSizeMB": 500,
+                "ipc": {
+                    "enabled": false,
+                    "prefer": false,
+                    "host": "127.0.0.1",
+                    "port": 8765,
+                    "connectTimeoutMs": 500,
+                    "timeoutMs": 10000
+                }
+            },
+            "behaviorMonitoring": {
+                "enabled": false
+            },
+            "processMonitoring": {
+                "enabled": true
+            },
+            "fileMonitoring": {
+                "enabled": true
+            },
+            "behaviorAnalyzer": {
+                "enabled": true,
+                "flushIntervalMs": 500,
+                "sqlite": {
+                    "mode": "file",
+                    "directory": "data/behavior",
+                    "fileName": "anxin_etw_behavior.db"
+                }
+            }
+        }"##;
+
+        let config: AppConfig = serde_json::from_str(raw).expect("legacy config");
+
+        assert_eq!(config.scanner.startup_revocation_check_timeout_ms, 5_000);
+        assert_eq!(config.scanner.startup_revocation_check_concurrency, 4);
+        assert_eq!(config.scanner.startup_signature_verify_concurrency, 0);
+        assert_eq!(config.scanner.startup_module_enumeration_timeout_ms, 1_000);
     }
 }

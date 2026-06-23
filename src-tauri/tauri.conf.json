@@ -30,8 +30,11 @@
     "active": true,
     "targets": ["nsis"],
     "resources": [
-      "../native/bin/win32-x64/*.dll",
-      "../native/bin/win32-x86/*.dll",
+      "../native/bin/win32-x64/file_hook_injector.exe",
+      "../native/bin/win32-x86/file_hook_injector.exe",
+      "../native/bin/win32-x64/file_hook_detours.dll",
+      "../native/bin/win32-x86/file_hook_detours.dll",
+      "../config/etw_match_rules.json",
       "../Engine/**/*"
     ],
     "windows": {

@@ -73,7 +73,14 @@ test('i18nStore defaults to zh-CN locale', () => {
 
 test('i18nStore loadTranslations handles errors gracefully', () => {
   const i18nStoreSource = readFileSync(resolve(projectRoot, 'src/stores/i18nStore.ts'), 'utf8')
-  assert.match(i18nStoreSource, /catch \{[\s\S]*set\(\{ locale: 'zh-CN', translations: \{\}, loading: false \}\)/)
+  assert.match(i18nStoreSource, /const zhCNFallback: Translations = \{/)
+  assert.match(i18nStoreSource, /catch \{[\s\S]*set\(\{ locale: 'zh-CN', translations: zhCNFallback, loading: false \}\)/)
+})
+
+test('i18nStore fallback contains ETW diagnostics strings', () => {
+  const i18nStoreSource = readFileSync(resolve(projectRoot, 'src/stores/i18nStore.ts'), 'utf8')
+  assert.match(i18nStoreSource, /behavior_diag_title: 'ETW 现场诊断'/)
+  assert.match(i18nStoreSource, /behavior_diag_export_failed: '导出 ETW 诊断失败'/)
 })
 
 test('i18nStore t function uses translate from api', () => {

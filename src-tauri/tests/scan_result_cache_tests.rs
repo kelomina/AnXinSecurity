@@ -83,7 +83,7 @@ mod tests {
     #[test]
     fn test_lru_order_maintained_on_upsert() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -113,7 +113,7 @@ mod tests {
     #[test]
     fn test_touch_lru_moves_to_front() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -130,7 +130,7 @@ mod tests {
         });
 
         state.touch_lru("hash_a");
-        
+
         let lru_order: Vec<_> = state.lru.iter().collect();
         assert_eq!(lru_order, vec![&"hash_a", &"hash_b"]);
     }
@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn test_touch_nonexistent_key_no_op() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -148,7 +148,7 @@ mod tests {
         });
 
         state.touch_lru("nonexistent");
-        
+
         assert_eq!(state.len(), 1);
         assert_eq!(state.lru.len(), 1);
     }
@@ -156,7 +156,7 @@ mod tests {
     #[test]
     fn test_upsert_updates_existing_entry() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -164,7 +164,7 @@ mod tests {
             raw_result: serde_json::json!({"version": 1}),
             cached_at_ms: 1000,
         });
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 2,
@@ -186,7 +186,7 @@ mod tests {
     #[test]
     fn test_eviction_removes_oldest_lru_entry() {
         let mut state = ScanResultCacheState::new(2, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -203,9 +203,9 @@ mod tests {
         });
 
         state.evict_if_needed();
-        
+
         assert_eq!(state.len(), 2);
-        
+
         state.upsert(ScanCacheEntry {
             path: "c".to_string(),
             write_time: 3,
@@ -213,9 +213,9 @@ mod tests {
             raw_result: serde_json::json!({}),
             cached_at_ms: 3000,
         });
-        
+
         state.evict_if_needed();
-        
+
         assert_eq!(state.len(), 2);
         assert!(state.get("hash_a").is_none());
         assert!(state.get("hash_b").is_some());
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn test_eviction_with_max_entries_zero_no_eviction() {
         let mut state = ScanResultCacheState::new(0, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -233,16 +233,16 @@ mod tests {
             raw_result: serde_json::json!({}),
             cached_at_ms: 1000,
         });
-        
+
         state.evict_if_needed();
-        
+
         assert_eq!(state.len(), 0);
     }
 
     #[test]
     fn test_massive_eviction_handles_all_entries() {
         let mut state = ScanResultCacheState::new(5, DEFAULT_TTL_MS);
-        
+
         for i in 0..100 {
             state.upsert(ScanCacheEntry {
                 path: format!("file_{}", i),
@@ -252,11 +252,11 @@ mod tests {
                 cached_at_ms: (1000 + i) as u64,
             });
         }
-        
+
         state.evict_if_needed();
-        
+
         assert_eq!(state.len(), 5);
-        
+
         let remaining: Vec<_> = state.entries.keys().collect();
         assert!(remaining.contains(&&format!("hash_{:064}", 99)));
         assert!(remaining.contains(&&format!("hash_{:064}", 98)));
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn test_eviction_is_idempotent() {
         let mut state = ScanResultCacheState::new(2, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -284,10 +284,10 @@ mod tests {
 
         state.evict_if_needed();
         let len_after_first = state.len();
-        
+
         state.evict_if_needed();
         let len_after_second = state.len();
-        
+
         assert_eq!(len_after_first, len_after_second);
     }
 
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn test_get_returns_correct_entry() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: r"C:\test\malware.exe".to_string(),
             write_time: 12345,
@@ -316,14 +316,14 @@ mod tests {
     #[test]
     fn test_get_returns_none_for_missing_key() {
         let state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         assert!(state.get("nonexistent").is_none());
     }
 
     #[test]
     fn test_empty_state_operations() {
         let state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         assert!(state.is_empty());
         assert_eq!(state.len(), 0);
         assert!(state.get("any").is_none());
@@ -332,9 +332,9 @@ mod tests {
     #[test]
     fn test_len_after_operations() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         assert_eq!(state.len(), 0);
-        
+
         state.upsert(ScanCacheEntry {
             path: "a".to_string(),
             write_time: 1,
@@ -343,7 +343,7 @@ mod tests {
             cached_at_ms: 1000,
         });
         assert_eq!(state.len(), 1);
-        
+
         state.upsert(ScanCacheEntry {
             path: "b".to_string(),
             write_time: 2,
@@ -360,7 +360,12 @@ mod tests {
 
     #[test]
     fn test_cache_freshness_check() {
-        fn is_cache_fresh(entry_write_time: i64, cached_at_ms: u64, now_ms: u64, ttl_ms: u64) -> bool {
+        fn is_cache_fresh(
+            entry_write_time: i64,
+            cached_at_ms: u64,
+            now_ms: u64,
+            ttl_ms: u64,
+        ) -> bool {
             let Some(time_diff) = now_ms.checked_sub(cached_at_ms) else {
                 return false;
             };
@@ -369,14 +374,19 @@ mod tests {
 
         assert!(is_cache_fresh(1000, 5000, 6000, 3600000));
         assert!(is_cache_fresh(1000, 5000, 5000, 3600000));
-        
+
         assert!(!is_cache_fresh(1000, 5000, 4000, 3600000));
         assert!(!is_cache_fresh(1000, 5000, 5001 + 3600000, 3600000));
     }
 
     #[test]
     fn test_ttl_zero_means_always_stale() {
-        fn is_cache_fresh(_entry_write_time: i64, cached_at_ms: u64, now_ms: u64, ttl_ms: u64) -> bool {
+        fn is_cache_fresh(
+            _entry_write_time: i64,
+            cached_at_ms: u64,
+            now_ms: u64,
+            ttl_ms: u64,
+        ) -> bool {
             if ttl_ms == 0 {
                 return false;
             }
@@ -434,7 +444,7 @@ mod tests {
 
         let valid_hash = "a".repeat(64);
         assert!(is_valid_sha256_hex(&valid_hash));
-        
+
         assert!(!is_valid_sha256_hex("short"));
         assert!(!is_valid_sha256_hex(&"g".repeat(64)));
         assert!(!is_valid_sha256_hex(""));
@@ -447,7 +457,7 @@ mod tests {
     #[test]
     fn test_empty_hash_hex_is_skipped() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: "empty_hash".to_string(),
             write_time: 1,
@@ -462,7 +472,7 @@ mod tests {
     #[test]
     fn test_unicode_path_handling() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         state.upsert(ScanCacheEntry {
             path: r"C:\测试\文件.exe".to_string(),
             write_time: 1,
@@ -478,7 +488,7 @@ mod tests {
     #[test]
     fn test_large_path_handling() {
         let mut state = ScanResultCacheState::new(100, DEFAULT_TTL_MS);
-        
+
         let long_path = format!(r"C:\{}", "a".repeat(500));
         state.upsert(ScanCacheEntry {
             path: long_path.clone(),
@@ -494,7 +504,12 @@ mod tests {
 
     #[test]
     fn test_negative_write_time_handling() {
-        fn is_cache_fresh(entry_write_time: i64, cached_at_ms: u64, now_ms: u64, ttl_ms: u64) -> bool {
+        fn is_cache_fresh(
+            entry_write_time: i64,
+            cached_at_ms: u64,
+            now_ms: u64,
+            ttl_ms: u64,
+        ) -> bool {
             entry_write_time >= 0
                 && ttl_ms > 0
                 && now_ms

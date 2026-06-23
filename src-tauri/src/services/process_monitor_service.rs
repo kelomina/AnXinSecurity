@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -9,8 +10,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::services::path_policy_service::should_skip_security_scan;
-use libloading::{Library, Symbol};
+use libloading::Library;
 
+const FILE_HOOK_INJECTOR_NAME: &str = "file_hook_injector.exe";
+const FILE_HOOK_DETOURS_NAME: &str = "file_hook_detours.dll";
+const FILE_HOOK_X64_DIR: &str = "win32-x64";
+const FILE_HOOK_X86_DIR: &str = "win32-x86";
+const FILE_HOOK_NATIVE_BIN_DIR: &str = "native/bin";
+const FILE_HOOK_INJECTOR_SKIP_SELF_HOOK_ENV: &str = "ANXIN_FILE_HOOK_INJECTOR_SKIP_SELF_HOOK";
 const PROCESS_MONITOR_STOP_JOIN_TIMEOUT_MS: u64 = 2_500;
 const PROCESS_MONITOR_STOP_JOIN_POLL_MS: u64 = 25;
 
@@ -26,6 +33,16 @@ enum ProcArch {
 struct InjectTask {
     pid: u32,
     arch: ProcArch,
+}
+
+/// APIHook 注入器与 DLL 的最终解析路径。
+/// Resolved file_hook injector and DLL paths used by APIHook injection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessHookResolvedPaths {
+    pub injector_x64: PathBuf,
+    pub injector_x86: PathBuf,
+    pub dll_x64: PathBuf,
+    pub dll_x86: PathBuf,
 }
 
 /// 进程监控服务状态
@@ -49,36 +66,48 @@ impl ProcessMonitorService {
         }
     }
 
-    /// 函数名称：start
-    /// 函数作用：启动进程监控后台线程；注入处置前实时读取排除项和允许列表，命中时跳过未签名进程注入。
-    /// Function name: start
-    /// Purpose: Starts the process monitor thread; reads exclusions and allowlist before injection handling and skips matching unsigned processes.
-    /// 调用方：commands::process::start_process_watcher
-    /// Called by: commands::process::start_process_watcher
-    /// 中文关键词：进程监控，启动监控，进程轮询，DLL注入，排除项生效，允许列表生效，跳过注入，运行时列表，路径策略，实时保护
-    /// English keywords: process monitor, start monitoring, process polling, DLL injection, exclusion effective, allowlist effective, skip injection, runtime list, path policy, realtime protection
-    pub fn start(
+    /// 函数名称：start_with_resource_dir
+    /// 函数作用：启动进程监控后台线程；启动前解析 APIHook 注入器和 DLL 默认路径，避免前端必须手填绝对路径。
+    /// Function name: start_with_resource_dir
+    /// Purpose: Starts the process monitor thread after resolving default APIHook injector and DLL paths so the frontend does not need absolute paths.
+    /// 调用方：commands::process::start_process_watcher，commands::config::set_process_monitoring_enabled，main.rs 启动初始化。
+    /// Called by: commands::process::start_process_watcher, commands::config::set_process_monitoring_enabled, main.rs setup.
+    /// 被调用方：resolve_process_hook_paths，launch_injector，collect_current_pids，query_process_image_path，should_skip_security_scan，verify_file_signed，detect_process_arch。
+    /// Calls: resolve_process_hook_paths, launch_injector, collect_current_pids, query_process_image_path, should_skip_security_scan, verify_file_signed, detect_process_arch.
+    /// 参数说明：injector_x64/injector_x86/dll_x64/dll_x86 为空时使用默认候选路径；resource_dir 为 Tauri 打包资源目录；interval_ms 为轮询间隔。
+    /// Parameters: injector_x64/injector_x86/dll_x64/dll_x86 use default candidates when empty; resource_dir is the Tauri bundle resource directory; interval_ms is the polling interval.
+    /// 返回值说明：成功启动返回 true；已经启动时幂等返回 true；路径解析失败返回 String。
+    /// Returns: true after successful start; true when already running; String error when path resolution fails.
+    /// 错误处理：启动后台线程前校验四个文件是否存在；缺失时返回包含架构、文件名和候选路径的错误。
+    /// Error handling: Validates all four files before starting background threads; missing files return errors with architecture, filename and checked paths.
+    /// 中文关键词：进程监控，APIHook，默认路径，资源目录，开发目录，DLL注入，路径校验
+    /// English keywords: process monitor, APIHook, default path, resource directory, development directory, DLL injection, path validation
+    pub fn start_with_resource_dir(
         &self,
         injector_x64: &str,
         injector_x86: &str,
         dll_x64: &str,
         dll_x86: &str,
         interval_ms: u32,
+        resource_dir: Option<&Path>,
     ) -> Result<bool, String> {
         let mut guard = self.state.lock().unwrap();
         if guard.is_some() {
-            return Err("Process monitor is already running".to_string());
+            return Ok(true);
         }
+
+        let resolved_paths =
+            resolve_process_hook_paths(injector_x64, injector_x86, dll_x64, dll_x86, resource_dir)?;
 
         let stop_flag = Arc::new(AtomicBool::new(false));
         let (inject_tx, inject_rx) = mpsc::channel::<InjectTask>();
         let new_pid_queue = Arc::new(Mutex::new(Vec::new()));
         let sign_cache = Arc::new(Mutex::new(HashMap::new()));
 
-        let injector_x64 = injector_x64.to_string();
-        let injector_x86 = injector_x86.to_string();
-        let dll_x64 = dll_x64.to_string();
-        let dll_x86 = dll_x86.to_string();
+        let injector_x64 = path_to_process_hook_string(&resolved_paths.injector_x64);
+        let injector_x86 = path_to_process_hook_string(&resolved_paths.injector_x86);
+        let dll_x64 = path_to_process_hook_string(&resolved_paths.dll_x64);
+        let dll_x86 = path_to_process_hook_string(&resolved_paths.dll_x86);
         let interval = std::cmp::max(interval_ms, 100);
 
         // 注入线程
@@ -113,7 +142,7 @@ impl ProcessMonitorService {
 
         let watcher_thread = thread::spawn(move || {
             let self_pid = std::process::id();
-            let mut seen: HashSet<u32> = HashSet::new();
+            let mut seen = initial_seen_pids();
 
             while !monitor_stop.load(Ordering::Relaxed) {
                 let current = collect_current_pids();
@@ -160,7 +189,10 @@ impl ProcessMonitorService {
                     let signed = if let Some(s) = signed {
                         s
                     } else {
-                        let s = verify_file_signed(&image_path);
+                        let s = super::trust_service::TrustService::new()
+                            .verify_file(&image_path)
+                            .map(|verdict| verdict.trusted)
+                            .unwrap_or(false);
                         monitor_sign_cache
                             .lock()
                             .unwrap()
@@ -270,6 +302,23 @@ impl ProcessMonitorService {
         Ok(())
     }
 
+    /// 函数名称：is_running
+    /// 函数作用：读取 APIHook 进程监控 watcher 是否已有运行态线程。
+    /// Function name: is_running
+    /// Purpose: Reads whether the APIHook process monitor watcher currently has runtime threads.
+    /// 调用方：commands::process::get_process_watcher_status。
+    /// Called by: commands::process::get_process_watcher_status.
+    /// 返回值说明：true 表示 watcher 已启动；false 表示未启动或已停止。
+    /// Returns: true when the watcher is started; false when stopped.
+    /// 中文关键词：进程监控状态，APIHook状态，运行态查询
+    /// English keywords: process monitor status, APIHook status, runtime query
+    pub fn is_running(&self) -> bool {
+        self.state
+            .lock()
+            .map(|state| state.is_some())
+            .unwrap_or(false)
+    }
+
     /// 函数名称：set_signed_list
     /// 函数作用：预填签名缓存，将指定路径标记为已签名。
     /// Purpose: Pre-fills the signature cache, marking given paths as signed.
@@ -311,6 +360,228 @@ impl ProcessMonitorService {
     }
 }
 
+/// 函数名称：resolve_process_hook_paths
+/// 函数作用：解析 APIHook 注入链路所需的 x64/x86 注入器与 DLL 路径，显式路径优先，空路径才回退到默认候选。
+/// Function name: resolve_process_hook_paths
+/// Purpose: Resolves x64/x86 injector and DLL paths needed by the APIHook injection path; explicit paths win, empty paths fall back to defaults.
+/// 调用方：ProcessMonitorService::start_with_resource_dir，process_monitor_service_tests。
+/// Called by: ProcessMonitorService::start_with_resource_dir, process_monitor_service_tests.
+/// 被调用方：resolve_process_hook_file。
+/// Calls: resolve_process_hook_file.
+/// 参数说明：四个字符串为前端兼容参数；resource_dir 为 Tauri 打包资源目录，可为空。
+/// Parameters: the four strings are frontend-compatible parameters; resource_dir is the optional Tauri bundle resource directory.
+/// 返回值说明：成功时返回四个已存在文件路径；失败时返回明确缺失文件和候选路径。
+/// Returns: existing paths for all four files on success; explicit missing file and candidate paths on failure.
+/// 错误处理：不会启动进程或注入 DLL，只做文件存在性检查并返回 String。
+/// Error handling: Does not start processes or inject DLLs; only checks file existence and returns String errors.
+/// 中文关键词：APIHook，默认路径，资源目录，开发目录，注入器，DLL，路径解析
+/// English keywords: APIHook, default path, resource directory, development directory, injector, DLL, path resolution
+pub fn resolve_process_hook_paths(
+    injector_x64: &str,
+    injector_x86: &str,
+    dll_x64: &str,
+    dll_x86: &str,
+    resource_dir: Option<&Path>,
+) -> Result<ProcessHookResolvedPaths, String> {
+    Ok(ProcessHookResolvedPaths {
+        injector_x64: resolve_process_hook_file(
+            injector_x64,
+            "x64 injector",
+            FILE_HOOK_X64_DIR,
+            FILE_HOOK_INJECTOR_NAME,
+            resource_dir,
+        )?,
+        injector_x86: resolve_process_hook_file(
+            injector_x86,
+            "x86 injector",
+            FILE_HOOK_X86_DIR,
+            FILE_HOOK_INJECTOR_NAME,
+            resource_dir,
+        )?,
+        dll_x64: resolve_process_hook_file(
+            dll_x64,
+            "x64 DLL",
+            FILE_HOOK_X64_DIR,
+            FILE_HOOK_DETOURS_NAME,
+            resource_dir,
+        )?,
+        dll_x86: resolve_process_hook_file(
+            dll_x86,
+            "x86 DLL",
+            FILE_HOOK_X86_DIR,
+            FILE_HOOK_DETOURS_NAME,
+            resource_dir,
+        )?,
+    })
+}
+
+/// 函数名称：process_hook_default_path_candidates
+/// 函数作用：生成 APIHook 文件默认候选路径，顺序为开发目录 native/bin 优先，Tauri resource_dir 其次。
+/// Function name: process_hook_default_path_candidates
+/// Purpose: Builds default APIHook file candidates, preferring the development native/bin directory and then Tauri resource_dir.
+/// 调用方：resolve_process_hook_file，process_monitor_service_tests。
+/// Called by: resolve_process_hook_file, process_monitor_service_tests.
+/// 参数说明：arch_dir 为 win32-x64 或 win32-x86；file_name 为 file_hook_injector.exe 或 file_hook_detours.dll；resource_dir 可为空。
+/// Parameters: arch_dir is win32-x64 or win32-x86; file_name is file_hook_injector.exe or file_hook_detours.dll; resource_dir is optional.
+/// 返回值说明：返回按优先级排序的候选路径，不检查文件是否存在。
+/// Returns: ordered candidate paths without checking file existence.
+/// 中文关键词：路径候选，开发目录，资源目录，APIHook，打包资源
+/// English keywords: path candidates, development directory, resource directory, APIHook, bundled resource
+pub fn process_hook_default_path_candidates(
+    arch_dir: &str,
+    file_name: &str,
+    resource_dir: Option<&Path>,
+) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Some(project_root) = locate_process_hook_project_root() {
+        candidates.push(
+            project_root
+                .join(FILE_HOOK_NATIVE_BIN_DIR)
+                .join(arch_dir)
+                .join(file_name),
+        );
+    }
+
+    if let Some(resource_dir) = resource_dir {
+        candidates.push(
+            resource_dir
+                .join(FILE_HOOK_NATIVE_BIN_DIR)
+                .join(arch_dir)
+                .join(file_name),
+        );
+        candidates.push(resource_dir.join(arch_dir).join(file_name));
+    }
+
+    candidates
+}
+
+/// 函数名称：resolve_process_hook_file
+/// 函数作用：解析单个 APIHook 文件路径；前端传入非空路径时只验证该路径，传空时按默认候选查找。
+/// Function name: resolve_process_hook_file
+/// Purpose: Resolves one APIHook file path; non-empty frontend paths are validated directly, empty paths use default candidates.
+/// 调用方：resolve_process_hook_paths。
+/// Called by: resolve_process_hook_paths.
+/// 被调用方：process_hook_default_path_candidates，format_missing_process_hook_file_error。
+/// Calls: process_hook_default_path_candidates, format_missing_process_hook_file_error.
+/// 错误处理：缺失时返回包含角色、文件名和候选路径的 String。
+/// Error handling: Missing files return String with role, filename and checked candidates.
+/// 中文关键词：单文件解析，注入器路径，DLL路径，缺失错误
+/// English keywords: single file resolution, injector path, DLL path, missing file error
+fn resolve_process_hook_file(
+    explicit_path: &str,
+    role: &str,
+    arch_dir: &str,
+    file_name: &str,
+    resource_dir: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let trimmed_path = explicit_path.trim();
+    if !trimmed_path.is_empty() {
+        let explicit = PathBuf::from(trimmed_path);
+        if explicit.is_file() {
+            return Ok(explicit);
+        }
+        return Err(format_missing_process_hook_file_error(
+            role,
+            file_name,
+            &[explicit],
+        ));
+    }
+
+    let candidates = process_hook_default_path_candidates(arch_dir, file_name, resource_dir);
+    candidates
+        .iter()
+        .find(|candidate| candidate.is_file())
+        .cloned()
+        .ok_or_else(|| format_missing_process_hook_file_error(role, file_name, &candidates))
+}
+
+/// 函数名称：locate_process_hook_project_root
+/// 函数作用：从当前目录或 Cargo 清单目录推导项目根目录，用于开发模式下寻找 native/bin。
+/// Function name: locate_process_hook_project_root
+/// Purpose: Infers the project root from current_dir or Cargo manifest dir so development mode can find native/bin.
+/// 调用方：process_hook_default_path_candidates。
+/// Called by: process_hook_default_path_candidates.
+/// 错误处理：当前目录不可读且编译期清单目录不可用时返回 None。
+/// Error handling: Returns None when current_dir is unavailable and compile-time manifest dir cannot be used.
+/// 中文关键词：项目根目录，开发模式，Cargo清单，路径推导
+/// English keywords: project root, development mode, Cargo manifest, path inference
+fn locate_process_hook_project_root() -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(current_dir) = std::env::current_dir() {
+        roots.push(current_dir);
+    }
+    roots.push(PathBuf::from(env!("CARGO_MANIFEST_DIR")));
+
+    for root in roots {
+        if let Some(project_root) = normalize_process_hook_project_root(&root) {
+            return Some(project_root);
+        }
+    }
+    None
+}
+
+/// 函数名称：normalize_process_hook_project_root
+/// 函数作用：把 src-tauri 目录或项目内子目录规整到项目根目录。
+/// Function name: normalize_process_hook_project_root
+/// Purpose: Normalizes src-tauri or nested project directories to the project root.
+/// 调用方：locate_process_hook_project_root。
+/// Called by: locate_process_hook_project_root.
+/// 中文关键词：路径规整，项目根目录，src-tauri，native目录
+/// English keywords: path normalization, project root, src-tauri, native directory
+fn normalize_process_hook_project_root(start: &Path) -> Option<PathBuf> {
+    for ancestor in start.ancestors() {
+        if ancestor.file_name().is_some_and(|name| name == "src-tauri") {
+            return ancestor.parent().map(Path::to_path_buf);
+        }
+        if ancestor.join("src-tauri").is_dir() && ancestor.join("native").is_dir() {
+            return Some(ancestor.to_path_buf());
+        }
+    }
+    None
+}
+
+/// 函数名称：format_missing_process_hook_file_error
+/// 函数作用：格式化 APIHook 文件缺失错误，带上角色、文件名和已检查候选路径。
+/// Function name: format_missing_process_hook_file_error
+/// Purpose: Formats an APIHook missing-file error with role, filename and checked candidates.
+/// 调用方：resolve_process_hook_file。
+/// Called by: resolve_process_hook_file.
+/// 中文关键词：错误信息，缺失文件，候选路径，APIHook
+/// English keywords: error message, missing file, candidate paths, APIHook
+fn format_missing_process_hook_file_error(
+    role: &str,
+    file_name: &str,
+    candidates: &[PathBuf],
+) -> String {
+    let checked_paths = if candidates.is_empty() {
+        "no candidate paths were available".to_string()
+    } else {
+        candidates
+            .iter()
+            .map(|candidate| candidate.display().to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+
+    format!(
+        "Missing APIHook {} file '{}'. Checked paths: {}",
+        role, file_name, checked_paths
+    )
+}
+
+/// 函数名称：path_to_process_hook_string
+/// 函数作用：将已解析 PathBuf 转为 Windows 命令行可用字符串。
+/// Function name: path_to_process_hook_string
+/// Purpose: Converts a resolved PathBuf to a Windows command-line string.
+/// 调用方：ProcessMonitorService::start_with_resource_dir。
+/// Called by: ProcessMonitorService::start_with_resource_dir.
+/// 中文关键词：路径转换，命令行，注入器
+/// English keywords: path conversion, command line, injector
+fn path_to_process_hook_string(path: &Path) -> String {
+    path.display().to_string()
+}
+
 /// 函数名称：wait_for_process_monitor_thread_stop
 /// 函数作用：在限定时间内等待进程监控线程退出，避免 stop 路径无限 join。
 /// Purpose: Waits for a process monitor thread to finish within a bounded timeout, avoiding indefinite joins on stop.
@@ -347,13 +618,6 @@ fn wait_for_process_monitor_thread_stop(
     Ok(Some(handle))
 }
 
-/// 函数名称：to_wide
-/// 函数作用：将 Rust 字符串转为 UTF-16 以 null 结尾的 Vec<u16>，用于 Windows API 调用。
-/// Purpose: Converts Rust string to null-terminated UTF-16 Vec<u16> for Windows API calls.
-fn to_wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
 /// 函数名称：collect_current_pids
 /// 函数作用：通过 CreateToolhelp32Snapshot 收集系统当前所有进程 PID。
 /// Purpose: Collects all current process PIDs via CreateToolhelp32Snapshot.
@@ -384,6 +648,18 @@ fn collect_current_pids() -> HashSet<u32> {
     pids
 }
 
+/// 函数名称：initial_seen_pids
+/// 函数作用：进程监控启动时把已有进程作为基线，避免刚启动就向全系统既有进程注入 Hook DLL。
+/// Function name: initial_seen_pids
+/// Purpose: Uses existing processes as the initial baseline so startup does not inject the hook DLL into every already-running process.
+/// 调用方：watcher_thread。
+/// Called by: watcher_thread.
+/// 中文关键词：进程监控，启动基线，既有进程，减少误报
+/// English keywords: process monitor, startup baseline, existing processes, false-positive reduction
+fn initial_seen_pids() -> HashSet<u32> {
+    collect_current_pids()
+}
+
 /// 函数名称：query_process_image_path
 /// 函数作用：通过 OpenProcess + QueryFullProcessImageNameW 获取指定 PID 的可执行文件路径。
 /// Purpose: Gets executable path for a PID via OpenProcess + QueryFullProcessImageNameW.
@@ -412,77 +688,6 @@ fn query_process_image_path(pid: u32) -> Option<String> {
         } else {
             None
         }
-    }
-}
-
-/// 函数名称：verify_file_signed
-/// 函数作用：通过 WinVerifyTrust 检查文件是否有有效数字签名。失败时保守返回 false。
-/// Purpose: Checks if file has valid digital signature via WinVerifyTrust. Returns false conservatively on failure.
-/// 被调用方：watcher_thread
-/// Calls: WinVerifyTrust (wintrust.dll libloading)
-/// 返回值：true 表示已签名，false 表示未签名或验证失败
-/// 错误处理：DLL/符号加载失败时输出诊断日志并返回 false
-/// Error handling: Logs diagnostic on DLL/symbol load failure and returns false
-/// 副作用：调用 WinVerifyTrust（WTD_STATEACTION_CLOSE 清理）
-/// 中文关键词：签名检查，WinVerifyTrust，进程签名，文件签名
-/// English keywords: signature check, WinVerifyTrust, process signature, file signature
-fn verify_file_signed(file_path: &str) -> bool {
-    let wide = to_wide(file_path);
-    unsafe {
-        let lib = match Library::new("wintrust.dll") {
-            Ok(l) => l,
-            Err(e) => {
-                eprintln!("verify_file_signed: failed to load wintrust.dll: {}", e);
-                return false;
-            }
-        };
-        let verify: Symbol<
-            unsafe extern "system" fn(
-                isize,
-                *const super::trust_service::Guid,
-                *const super::trust_service::WinTrustData,
-            ) -> i32,
-        > = match lib.get(b"WinVerifyTrust") {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("verify_file_signed: failed to load WinVerifyTrust: {}", e);
-                return false;
-            }
-        };
-
-        let file_info = super::trust_service::WinTrustFileInfo {
-            cb_struct: std::mem::size_of::<super::trust_service::WinTrustFileInfo>() as u32,
-            file_path: wide.as_ptr(),
-            h_file: 0,
-            pg_known_subject: std::ptr::null(),
-        };
-
-        use super::trust_service::{
-            WinTrustData, ACTION_VERIFY_V2, WTD_CACHE_ONLY_URL_RETRIEVAL, WTD_CHOICE_FILE,
-            WTD_REVOKE_NONE, WTD_STATEACTION_CLOSE, WTD_STATEACTION_VERIFY, WTD_UI_NONE,
-        };
-
-        let mut data = WinTrustData {
-            cb_struct: std::mem::size_of::<WinTrustData>() as u32,
-            policy_callback_data: std::ptr::null(),
-            sip_client_data: std::ptr::null(),
-            ui_choice: WTD_UI_NONE,
-            revocation_checks: WTD_REVOKE_NONE,
-            union_choice: WTD_CHOICE_FILE,
-            union_data: &file_info,
-            state_action: WTD_STATEACTION_VERIFY,
-            h_wvt_state_data: 0,
-            pwsz_url_reference: std::ptr::null(),
-            prov_flags: WTD_CACHE_ONLY_URL_RETRIEVAL,
-            ui_context: 0,
-            p_signature_settings: std::ptr::null(),
-        };
-
-        let status = verify(0, &ACTION_VERIFY_V2, &data);
-        data.state_action = WTD_STATEACTION_CLOSE;
-        verify(0, &ACTION_VERIFY_V2, &data);
-
-        status == 0
     }
 }
 
@@ -565,6 +770,7 @@ fn launch_injector(
 
     let result = std::process::Command::new(injector)
         .args(["--pid", &pid.to_string(), "--dll", dll])
+        .env(FILE_HOOK_INJECTOR_SKIP_SELF_HOOK_ENV, "1")
         .creation_flags(0x08000000) // CREATE_NO_WINDOW
         .spawn();
 
@@ -602,16 +808,23 @@ mod tests {
     fn process_monitor_thread_wait_joins_finished_thread_without_timeout() {
         let handle = thread::spawn(|| {});
 
-        let remaining_handle = wait_for_process_monitor_thread_stop(
-            handle,
-            Duration::from_millis(250),
-            "unit",
-        )
-        .expect("finished thread should join cleanly");
+        let remaining_handle =
+            wait_for_process_monitor_thread_stop(handle, Duration::from_millis(250), "unit")
+                .expect("finished thread should join cleanly");
 
         assert!(
             remaining_handle.is_none(),
             "finished process monitor thread should not be retained"
+        );
+    }
+
+    #[test]
+    fn initial_seen_pids_uses_current_process_baseline() {
+        let baseline = initial_seen_pids();
+
+        assert!(
+            baseline.contains(&std::process::id()),
+            "startup baseline should include the current process and avoid treating existing PIDs as new"
         );
     }
 }

@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+use std::sync::Mutex;
+use std::time::UNIX_EPOCH;
 
 use crate::services::runtime_list_store::load_runtime_list;
 
@@ -23,6 +26,34 @@ pub struct ExclusionEntry {
     pub entry_type: String,
     pub description: Option<String>,
     pub created_at: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct PathPolicySnapshot {
+    exclusions: Vec<PreparedExclusionEntry>,
+    allowlist: PreparedAllowlistIndex,
+    lookup_cache: std::sync::Arc<Mutex<HashMap<String, PreparedPathLookup>>>,
+    hash_cache: std::sync::Arc<Mutex<HashMap<String, Option<String>>>>,
+    decision_cache: std::sync::Arc<Mutex<HashMap<String, bool>>>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedExclusionEntry {
+    entry: ExclusionEntry,
+    normalized_path: String,
+    file_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedAllowlistIndex {
+    exact_paths: HashSet<String>,
+    hashes: HashSet<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedPathLookup {
+    normalized_path: String,
+    file_name: Option<String>,
 }
 
 /// 函数名称：load_allowlist_entries
@@ -85,6 +116,24 @@ pub fn load_exclusion_entries() -> Result<Vec<ExclusionEntry>, String> {
     load_runtime_list(EXCLUSIONS_RUNTIME_FILE, EXCLUSIONS_LEGACY_FIELD)
 }
 
+/// 函数名称：load_path_policy_snapshot
+/// 函数作用：一次性读取排除项和允许列表，供启动快照这类批量扫描在内存中重复判断，避免每个模块都重复读取/解密运行时文件。
+/// Function name: load_path_policy_snapshot
+/// Purpose: Loads exclusions and allowlist once so batch scanners such as startup snapshot can evaluate policy in memory instead of repeatedly reading/decrypting runtime files per module.
+/// 调用方：SnapshotService::take_startup_snapshot。
+/// Called by: SnapshotService::take_startup_snapshot.
+/// 中文关键词：路径策略快照，启动快照，排除项，允许列表，性能优化
+/// English keywords: path policy snapshot, startup snapshot, exclusions, allowlist, performance optimization
+pub fn load_path_policy_snapshot() -> Result<PathPolicySnapshot, String> {
+    Ok(PathPolicySnapshot {
+        exclusions: prepare_exclusion_entries(load_exclusion_entries()?),
+        allowlist: prepare_allowlist_entries(load_allowlist_entries()?),
+        lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+    })
+}
+
 /// 函数名称：should_skip_security_scan
 /// 函数作用：判断给定路径是否因排除项或允许列表而应跳过扫描/监控处置。
 /// Function name: should_skip_security_scan
@@ -116,6 +165,269 @@ pub fn should_skip_security_scan(path: &str) -> Result<bool, String> {
         return Ok(true);
     }
     is_allowed_path(path)
+}
+
+impl PathPolicySnapshot {
+    /// 函数名称：should_skip_security_scan
+    /// 函数作用：使用已加载的策略快照判断路径是否应跳过扫描；适用于启动快照这类单轮批量扫描。
+    /// Purpose: Determines whether a path should be skipped using a preloaded policy snapshot; intended for one-shot batch scans such as startup snapshot.
+    /// 调用方：SnapshotService::take_startup_snapshot，scan_startup_target。
+    /// Called by: SnapshotService::take_startup_snapshot and scan_startup_target.
+    /// 中文关键词：路径策略快照，跳过扫描，批量扫描
+    /// English keywords: path policy snapshot, skip scan, batch scan
+    pub fn should_skip_security_scan(&self, path: &str) -> bool {
+        let lookup = self.lookup_for_path(path);
+        self.is_excluded_lookup(&lookup) || self.is_allowed_lookup(path, &lookup)
+    }
+
+    /// 函数作用：只使用无需读取文件内容的路径规则判断是否跳过，供启动快照在读取 metadata 前快速处理明确排除/路径允许目标。
+    /// 安全边界：本函数不做哈希允许列表匹配；返回 false 只表示“路径规则未命中”，调用方仍必须继续完整策略/签名/扫描流程。
+    pub fn should_skip_by_path_only(&self, path: &str) -> bool {
+        let lookup = self.lookup_for_path(path);
+        self.is_excluded_lookup(&lookup) || self.is_allowed_path_by_exact_lookup(&lookup)
+    }
+
+    /// 函数作用：同一轮批量扫描内复用路径策略判定结果，避免多个进程加载同一 DLL 时反复匹配排除项/允许列表。
+    /// 安全边界：调用方必须提供包含文件版本信息的缓存键；没有键时不缓存，避免把旧文件的允许结果复用到新文件。
+    pub fn should_skip_security_scan_cached(&self, path: &str, cache_key: Option<&str>) -> bool {
+        let Some(cache_key) = cache_key.filter(|key| !key.trim().is_empty()) else {
+            return self.should_skip_security_scan(path);
+        };
+
+        if let Some(cached) = self
+            .decision_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(cache_key)
+            .copied()
+        {
+            return cached;
+        }
+
+        let decision = self.should_skip_security_scan(path);
+        self.decision_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(cache_key.to_string(), decision);
+        decision
+    }
+
+    /// 函数作用：调用方已经确认排除项和精确路径允许列表未命中后，只继续检查哈希允许列表。
+    /// 安全边界：本函数只用于同一调用点刚执行过 should_skip_by_path_only(path) == false 的路径；没有文件版本键时不缓存，也不会把路径规则命中写入哈希决策缓存。
+    #[allow(dead_code)]
+    pub fn should_skip_by_hash_after_path_miss_cached(
+        &self,
+        path: &str,
+        cache_key: Option<&str>,
+    ) -> bool {
+        self.hash_after_path_miss_cached(path, cache_key).skip_scan
+    }
+
+    /// 函数作用：同上，但额外返回本次哈希允许列表检查已经计算出的 SHA-256，供后续扫描缓存查找复用。
+    /// 安全边界：返回的 hash 只绑定调用方提供的文件版本键；缺少版本键时不返回 hash，避免裸路径或过期文件内容被后续缓存误用。
+    pub fn hash_after_path_miss_cached(
+        &self,
+        path: &str,
+        cache_key: Option<&str>,
+    ) -> HashAfterPathMissDecision {
+        let Some(cache_key) = cache_key.filter(|key| !key.trim().is_empty()) else {
+            return HashAfterPathMissDecision {
+                skip_scan: self.is_allowed_by_hash(path),
+                sha256_hex: None,
+            };
+        };
+        if self.allowlist.hashes.is_empty() {
+            return HashAfterPathMissDecision {
+                skip_scan: false,
+                sha256_hex: None,
+            };
+        }
+        let Some(current_cache_key) = file_version_cache_key(path).filter(|key| key == cache_key)
+        else {
+            return HashAfterPathMissDecision {
+                skip_scan: self.is_allowed_by_hash(path),
+                sha256_hex: None,
+            };
+        };
+        let scoped_cache_key = format!("hash-after-path-miss|{}", current_cache_key);
+
+        if let Some(cached) = self
+            .decision_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&scoped_cache_key)
+            .copied()
+        {
+            let sha256_hex = self
+                .hash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .get(&current_cache_key)
+                .cloned()
+                .flatten();
+            return HashAfterPathMissDecision {
+                skip_scan: cached,
+                sha256_hex,
+            };
+        }
+
+        let sha256_hex = self.sha256_hex_cached_with_key(path, &current_cache_key);
+        let decision = sha256_hex
+            .as_deref()
+            .is_some_and(|current_hash| self.allowlist.hashes.contains(current_hash));
+        self.decision_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(scoped_cache_key, decision);
+        HashAfterPathMissDecision {
+            skip_scan: decision,
+            sha256_hex,
+        }
+    }
+
+    fn is_excluded_lookup(&self, lookup: &PreparedPathLookup) -> bool {
+        self.exclusions.iter().any(|entry| {
+            matches_prepared_exclusion(entry, &lookup.normalized_path, lookup.file_name.as_deref())
+        })
+    }
+
+    fn is_allowed_lookup(&self, path: &str, lookup: &PreparedPathLookup) -> bool {
+        if self.allowlist.exact_paths.contains(&lookup.normalized_path) {
+            return true;
+        }
+
+        self.is_allowed_by_hash(path)
+    }
+
+    fn is_allowed_by_hash(&self, path: &str) -> bool {
+        if self.allowlist.hashes.is_empty() {
+            return false;
+        }
+
+        self.sha256_hex_cached(path)
+            .as_deref()
+            .is_some_and(|current_hash| self.allowlist.hashes.contains(current_hash))
+    }
+
+    fn is_allowed_path_by_exact_lookup(&self, lookup: &PreparedPathLookup) -> bool {
+        self.allowlist.exact_paths.contains(&lookup.normalized_path)
+    }
+
+    /// 函数作用：同一轮批量扫描内复用路径标准化和文件名提取结果。
+    /// 安全边界：只缓存纯字符串转换结果，不缓存文件属性、哈希、签名或可信判定。
+    fn lookup_for_path(&self, path: &str) -> PreparedPathLookup {
+        if let Some(cached) = self
+            .lookup_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(path)
+            .cloned()
+        {
+            return cached;
+        }
+
+        let lookup = prepare_path_lookup(path);
+        self.lookup_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(path.to_string(), lookup.clone());
+        lookup
+    }
+
+    /// 函数作用：同一轮批量扫描内复用允许列表哈希匹配所需的 SHA-256。
+    /// 安全边界：缓存键包含规范化路径、高精度修改时间和文件大小；文件版本信息不可读时不缓存。
+    fn sha256_hex_cached(&self, path: &str) -> Option<String> {
+        let cache_key = file_version_cache_key(path)?;
+        self.sha256_hex_cached_with_key(path, &cache_key)
+    }
+
+    fn sha256_hex_cached_with_key(&self, path: &str, cache_key: &str) -> Option<String> {
+        if let Some(cached) = self
+            .hash_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(cache_key)
+            .cloned()
+        {
+            return cached;
+        }
+
+        let computed = sha256_hex_of_file(path).ok();
+        self.hash_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(cache_key.to_string(), computed.clone());
+        computed
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HashAfterPathMissDecision {
+    pub skip_scan: bool,
+    pub sha256_hex: Option<String>,
+}
+
+fn prepare_path_lookup(path: &str) -> PreparedPathLookup {
+    PreparedPathLookup {
+        normalized_path: normalize_path(path),
+        file_name: file_name_lower(path),
+    }
+}
+
+fn file_version_cache_key(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    let fs_path = trimmed
+        .strip_prefix(r"\\?\")
+        .or_else(|| trimmed.strip_prefix(r"\??\"))
+        .unwrap_or(trimmed);
+    let metadata = std::fs::metadata(fs_path).ok()?;
+    if !metadata.is_file() {
+        return None;
+    }
+    let modified_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(format!(
+        "{}|modified_ns={}|len={}",
+        normalize_path(path),
+        modified_ns,
+        metadata.len()
+    ))
+}
+
+fn prepare_exclusion_entries(entries: Vec<ExclusionEntry>) -> Vec<PreparedExclusionEntry> {
+    entries
+        .into_iter()
+        .map(|entry| {
+            let normalized_path = normalize_path(&entry.path);
+            let file_name = file_name_lower(&entry.path);
+            PreparedExclusionEntry {
+                entry,
+                normalized_path,
+                file_name,
+            }
+        })
+        .collect()
+}
+
+fn prepare_allowlist_entries(entries: Vec<AllowlistEntry>) -> PreparedAllowlistIndex {
+    let mut exact_paths = HashSet::with_capacity(entries.len());
+    let mut hashes = HashSet::new();
+
+    for entry in entries {
+        exact_paths.insert(normalize_path(&entry.path));
+        if let Some(hash) = entry.hash.as_deref().and_then(normalized_sha256_hex) {
+            hashes.insert(hash);
+        }
+    }
+
+    PreparedAllowlistIndex {
+        exact_paths,
+        hashes,
+    }
 }
 
 /// 函数名称：is_excluded_path
@@ -189,7 +501,7 @@ pub fn is_allowed_path(path: &str) -> Result<bool, String> {
             return Ok(true);
         }
 
-        let Some(entry_hash) = entry.hash.as_deref().filter(|value| !value.is_empty()) else {
+        let Some(entry_hash) = entry.hash.as_deref().and_then(normalized_sha256_hex) else {
             continue;
         };
 
@@ -199,7 +511,7 @@ pub fn is_allowed_path(path: &str) -> Result<bool, String> {
 
         if file_hash
             .as_deref()
-            .is_some_and(|current_hash| current_hash.eq_ignore_ascii_case(entry_hash))
+            .is_some_and(|current_hash| current_hash.eq_ignore_ascii_case(&entry_hash))
         {
             return Ok(true);
         }
@@ -262,11 +574,45 @@ fn file_name_lower(path: &str) -> Option<String> {
 }
 
 fn sha256_hex_of_file(path: &str) -> Result<String, String> {
-    let bytes = std::fs::read(path)
-        .map_err(|err| format!("Failed to read file for allowlist hash: {}", err))?;
+    let mut file = std::fs::File::open(path)
+        .map_err(|err| format!("Failed to open file for allowlist hash: {}", err))?;
     let mut hasher = sha2::Sha256::new();
-    hasher.update(&bytes);
+    let mut buffer = [0u8; 65536];
+    loop {
+        let read = std::io::Read::read(&mut file, &mut buffer)
+            .map_err(|err| format!("Failed to read file for allowlist hash: {}", err))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn normalized_sha256_hex(hash_hex: &str) -> Option<String> {
+    let normalized = hash_hex.trim();
+    if normalized.len() != 64 || !normalized.chars().all(|ch| ch.is_ascii_hexdigit()) {
+        return None;
+    }
+    Some(normalized.to_ascii_lowercase())
+}
+
+fn matches_prepared_exclusion(
+    entry: &PreparedExclusionEntry,
+    normalized_path: &str,
+    file_name: Option<&str>,
+) -> bool {
+    match entry.entry.entry_type.as_str() {
+        "directory" => is_under_directory(normalized_path, &entry.normalized_path),
+        "process" => {
+            normalized_path == entry.normalized_path
+                || entry
+                    .file_name
+                    .as_deref()
+                    .is_some_and(|name| file_name == Some(name))
+        }
+        _ => normalized_path == entry.normalized_path,
+    }
 }
 
 #[cfg(test)]
@@ -322,12 +668,18 @@ mod tests {
 
     #[test]
     fn normalize_path_converts_forward_slash_to_backslash() {
-        assert_eq!(normalize_path(r"C:/Windows/System32"), r"c:\windows\system32");
+        assert_eq!(
+            normalize_path(r"C:/Windows/System32"),
+            r"c:\windows\system32"
+        );
     }
 
     #[test]
     fn normalize_path_lowercases_all_chars() {
-        assert_eq!(normalize_path(r"C:\PROGRAM FILES\APP"), r"c:\program files\app");
+        assert_eq!(
+            normalize_path(r"C:\PROGRAM FILES\APP"),
+            r"c:\program files\app"
+        );
     }
 
     #[test]
@@ -358,7 +710,10 @@ mod tests {
 
     #[test]
     fn file_name_lower_extracts_basename() {
-        assert_eq!(file_name_lower(r"C:\Windows\notepad.exe"), Some("notepad.exe".to_string()));
+        assert_eq!(
+            file_name_lower(r"C:\Windows\notepad.exe"),
+            Some("notepad.exe".to_string())
+        );
     }
 
     #[test]
@@ -378,12 +733,18 @@ mod tests {
 
     #[test]
     fn is_under_directory_matches_child_path() {
-        assert!(is_under_directory(r"c:\safe\folder\app.exe", r"c:\safe\folder"));
+        assert!(is_under_directory(
+            r"c:\safe\folder\app.exe",
+            r"c:\safe\folder"
+        ));
     }
 
     #[test]
     fn is_under_directory_rejects_sibling_directory() {
-        assert!(!is_under_directory(r"c:\safe\folder2\app.exe", r"c:\safe\folder"));
+        assert!(!is_under_directory(
+            r"c:\safe\folder2\app.exe",
+            r"c:\safe\folder"
+        ));
     }
 
     #[test]
@@ -494,7 +855,10 @@ mod tests {
 
     #[test]
     fn is_under_directory_rejects_different_drive() {
-        assert!(!is_under_directory(r"d:\safe\folder\app.exe", r"c:\safe\folder"));
+        assert!(!is_under_directory(
+            r"d:\safe\folder\app.exe",
+            r"c:\safe\folder"
+        ));
     }
 
     #[test]
@@ -506,7 +870,10 @@ mod tests {
 
     #[test]
     fn file_name_lower_handles_no_extension() {
-        assert_eq!(file_name_lower(r"C:\Windows\README"), Some("readme".to_string()));
+        assert_eq!(
+            file_name_lower(r"C:\Windows\README"),
+            Some("readme".to_string())
+        );
     }
 
     #[test]
@@ -540,6 +907,31 @@ mod tests {
     }
 
     #[test]
+    fn prepared_process_exclusion_uses_prepared_file_name_once() {
+        let entry = PreparedExclusionEntry {
+            normalized_path: normalize_path(r"C:\Windows\notepad.exe"),
+            file_name: file_name_lower(r"C:\Windows\notepad.exe"),
+            entry: ExclusionEntry {
+                path: r"C:\Windows\notepad.exe".to_string(),
+                entry_type: "process".to_string(),
+                description: None,
+                created_at: "2026-05-03T00:00:00Z".to_string(),
+            },
+        };
+        let lookup = prepare_path_lookup(r"\\?\C:\Windows\NOTEPAD.EXE");
+        assert!(matches_prepared_exclusion(
+            &entry,
+            &lookup.normalized_path,
+            lookup.file_name.as_deref()
+        ));
+        assert!(!matches_prepared_exclusion(
+            &entry,
+            &normalize_path(r"C:\Windows\calc.exe"),
+            file_name_lower(r"C:\Windows\calc.exe").as_deref()
+        ));
+    }
+
+    #[test]
     fn sha256_hex_of_file_computes_correct_hash() {
         use std::io::Write;
         let temp_dir = std::env::temp_dir();
@@ -561,6 +953,486 @@ mod tests {
     fn sha256_hex_of_file_returns_error_for_nonexistent_file() {
         let result = sha256_hex_of_file(r"C:\nonexistent\file\that\does\not\exist.txt");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn path_policy_snapshot_hash_cache_invalidates_when_file_version_changes() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("anxin_policy_cache_{}.txt", std::process::id()));
+        let mut file = std::fs::File::create(&temp_file).expect("create temp file");
+        file.write_all(b"hello allowlist").expect("write temp file");
+        drop(file);
+
+        let temp_path = temp_file.to_string_lossy().to_string();
+        let trusted_hash = sha256_hex_of_file(&temp_path).expect("compute trusted hash");
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(Vec::new()),
+            allowlist: prepare_allowlist_entries(vec![AllowlistEntry {
+                path: r"C:\Other\Path.exe".to_string(),
+                hash: Some(trusted_hash),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        assert!(snapshot.should_skip_security_scan(&temp_path));
+        assert_eq!(
+            snapshot
+                .hash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&temp_file, b"changed allowlist content").expect("rewrite temp file");
+
+        assert!(!snapshot.should_skip_security_scan(&temp_path));
+        assert!(
+            snapshot
+                .hash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len()
+                >= 2
+        );
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[test]
+    fn path_policy_snapshot_decision_cache_invalidates_when_file_version_changes() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!("anxin_policy_decision_{}.txt", std::process::id()));
+        let mut file = std::fs::File::create(&temp_file).expect("create temp file");
+        file.write_all(b"first version").expect("write temp file");
+        drop(file);
+
+        let temp_path = temp_file.to_string_lossy().to_string();
+        let trusted_hash = sha256_hex_of_file(&temp_path).expect("compute trusted hash");
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(Vec::new()),
+            allowlist: prepare_allowlist_entries(vec![AllowlistEntry {
+                path: r"C:\Other\Path.exe".to_string(),
+                hash: Some(trusted_hash),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        let first_key = file_version_cache_key(&temp_path).expect("first cache key");
+        assert!(snapshot.should_skip_security_scan_cached(&temp_path, Some(&first_key)));
+        assert_eq!(
+            snapshot
+                .decision_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&temp_file, b"second version").expect("rewrite temp file");
+        let second_key = file_version_cache_key(&temp_path).expect("second cache key");
+        assert_ne!(first_key, second_key);
+        assert!(!snapshot.should_skip_security_scan_cached(&temp_path, Some(&second_key)));
+        assert_eq!(
+            snapshot
+                .decision_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            2
+        );
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[test]
+    fn path_policy_snapshot_path_only_skip_does_not_use_hash_allowlist() {
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(vec![ExclusionEntry {
+                path: r"C:\Ignored".to_string(),
+                entry_type: "directory".to_string(),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            allowlist: prepare_allowlist_entries(vec![
+                AllowlistEntry {
+                    path: r"C:\Trusted\App.exe".to_string(),
+                    hash: None,
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+                AllowlistEntry {
+                    path: r"C:\Other\HashOnly.exe".to_string(),
+                    hash: Some(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    ),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+            ]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        assert!(snapshot.should_skip_by_path_only(r"C:\Ignored\child.dll"));
+        assert!(snapshot.should_skip_by_path_only(r"c:\trusted\APP.exe"));
+        assert!(!snapshot.should_skip_by_path_only(r"C:\Unknown\HashOnly.exe"));
+        assert_eq!(
+            snapshot
+                .hash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn path_policy_snapshot_hash_after_path_miss_ignores_exact_path_only_entries() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!(
+            "anxin_policy_exact_only_{}.txt",
+            std::process::id()
+        ));
+        let mut file = std::fs::File::create(&temp_file).expect("create temp file");
+        file.write_all(b"exact path only").expect("write temp file");
+        drop(file);
+
+        let temp_path = temp_file.to_string_lossy().to_string();
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(Vec::new()),
+            allowlist: prepare_allowlist_entries(vec![AllowlistEntry {
+                path: temp_path.clone(),
+                hash: None,
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        let cache_key = file_version_cache_key(&temp_path).expect("cache key");
+        assert!(snapshot.should_skip_by_path_only(&temp_path));
+        assert!(!snapshot.should_skip_by_hash_after_path_miss_cached(&temp_path, Some(&cache_key)));
+        assert_eq!(
+            snapshot
+                .decision_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            0
+        );
+        assert_eq!(
+            snapshot
+                .hash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            0
+        );
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[test]
+    fn path_policy_snapshot_hash_after_path_miss_uses_hash_allowlist_and_cache() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!(
+            "anxin_policy_hash_after_miss_{}.txt",
+            std::process::id()
+        ));
+        let mut file = std::fs::File::create(&temp_file).expect("create temp file");
+        file.write_all(b"hash allowlist content")
+            .expect("write temp file");
+        drop(file);
+
+        let temp_path = temp_file.to_string_lossy().to_string();
+        let trusted_hash = sha256_hex_of_file(&temp_path).expect("compute trusted hash");
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(Vec::new()),
+            allowlist: prepare_allowlist_entries(vec![
+                AllowlistEntry {
+                    path: r"C:\Different\ExactOnly.exe".to_string(),
+                    hash: None,
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+                AllowlistEntry {
+                    path: r"C:\Different\HashOnly.exe".to_string(),
+                    hash: Some(trusted_hash.clone()),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+            ]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        let cache_key = file_version_cache_key(&temp_path).expect("cache key");
+        let first_decision = snapshot.hash_after_path_miss_cached(&temp_path, Some(&cache_key));
+        assert!(first_decision.skip_scan);
+        assert_eq!(
+            first_decision.sha256_hex.as_deref(),
+            Some(trusted_hash.as_str())
+        );
+        assert_eq!(
+            snapshot
+                .decision_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+        let cached_decision = snapshot.hash_after_path_miss_cached(&temp_path, Some(&cache_key));
+        assert!(cached_decision.skip_scan);
+        assert_eq!(
+            cached_decision.sha256_hex.as_deref(),
+            Some(trusted_hash.as_str())
+        );
+        assert_eq!(
+            snapshot
+                .decision_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[test]
+    fn path_policy_hash_after_path_miss_does_not_return_hash_for_stale_version_key() {
+        use std::io::Write;
+
+        let temp_dir = std::env::temp_dir();
+        let temp_file = temp_dir.join(format!(
+            "anxin_policy_stale_hash_{}.txt",
+            std::process::id()
+        ));
+        let mut file = std::fs::File::create(&temp_file).expect("create temp file");
+        file.write_all(b"first hash version")
+            .expect("write temp file");
+        drop(file);
+
+        let temp_path = temp_file.to_string_lossy().to_string();
+        let trusted_hash = sha256_hex_of_file(&temp_path).expect("compute trusted hash");
+        let stale_cache_key = file_version_cache_key(&temp_path).expect("stale cache key");
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(Vec::new()),
+            allowlist: prepare_allowlist_entries(vec![AllowlistEntry {
+                path: r"C:\Different\HashOnly.exe".to_string(),
+                hash: Some(trusted_hash),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&temp_file, b"second hash version").expect("rewrite temp file");
+
+        let decision = snapshot.hash_after_path_miss_cached(&temp_path, Some(&stale_cache_key));
+        assert!(!decision.skip_scan);
+        assert!(decision.sha256_hex.is_none());
+
+        std::fs::remove_file(&temp_file).ok();
+    }
+
+    #[test]
+    fn path_policy_snapshot_prepared_entries_keep_existing_match_semantics() {
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(vec![
+                ExclusionEntry {
+                    path: r"C:\Safe\Folder".to_string(),
+                    entry_type: "directory".to_string(),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+                ExclusionEntry {
+                    path: "blocked.exe".to_string(),
+                    entry_type: "process".to_string(),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+            ]),
+            allowlist: prepare_allowlist_entries(vec![AllowlistEntry {
+                path: r"C:\Trusted\App.exe".to_string(),
+                hash: None,
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        assert!(snapshot.should_skip_by_path_only(r"c:\safe\folder\child.dll"));
+        assert!(snapshot.should_skip_by_path_only(r"C:\Temp\BLOCKED.EXE"));
+        assert!(snapshot.should_skip_by_path_only(r"c:\trusted\app.exe"));
+        assert!(!snapshot.should_skip_by_path_only(r"C:\Temp\other.exe"));
+    }
+
+    #[test]
+    fn path_policy_snapshot_reuses_prepared_lookup_without_hash_fast_path() {
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(vec![
+                ExclusionEntry {
+                    path: r"C:\Ignored".to_string(),
+                    entry_type: "directory".to_string(),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+                ExclusionEntry {
+                    path: "blocked.exe".to_string(),
+                    entry_type: "process".to_string(),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+            ]),
+            allowlist: prepare_allowlist_entries(vec![
+                AllowlistEntry {
+                    path: r"C:\Trusted\App.exe".to_string(),
+                    hash: None,
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+                AllowlistEntry {
+                    path: r"C:\HashOnly\App.exe".to_string(),
+                    hash: Some(
+                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            .to_string(),
+                    ),
+                    description: None,
+                    created_at: "2026-06-16T00:00:00Z".to_string(),
+                },
+            ]),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        assert!(snapshot.should_skip_by_path_only(r"c:/ignored/child.dll"));
+        assert!(snapshot.should_skip_by_path_only(r"C:\Temp\BLOCKED.EXE"));
+        assert!(snapshot.should_skip_by_path_only(r"\\?\C:\Trusted\App.exe"));
+        assert!(!snapshot.should_skip_by_path_only(r"C:\Unknown\App.exe"));
+        assert_eq!(
+            snapshot
+                .hash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn path_policy_snapshot_caches_prepared_lookup_per_raw_path() {
+        let snapshot = PathPolicySnapshot {
+            exclusions: prepare_exclusion_entries(vec![ExclusionEntry {
+                path: r"C:\Ignored".to_string(),
+                entry_type: "directory".to_string(),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            }]),
+            allowlist: prepare_allowlist_entries(Vec::new()),
+            lookup_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            hash_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+            decision_cache: std::sync::Arc::new(Mutex::new(HashMap::new())),
+        };
+
+        let path = r"C:/Ignored/Child.dll";
+        assert!(snapshot.should_skip_by_path_only(path));
+        assert!(snapshot.should_skip_by_path_only(path));
+        assert_eq!(
+            snapshot
+                .lookup_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn prepared_allowlist_index_splits_exact_paths_and_hashes() {
+        let entries = prepare_allowlist_entries(vec![AllowlistEntry {
+            path: r"C:\Trusted\App.exe".to_string(),
+            hash: Some(
+                "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789".to_string(),
+            ),
+            description: None,
+            created_at: "2026-06-16T00:00:00Z".to_string(),
+        }]);
+
+        assert!(entries.exact_paths.contains(r"c:\trusted\app.exe"));
+        assert!(entries
+            .hashes
+            .contains("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));
+    }
+
+    #[test]
+    fn prepared_allowlist_index_rejects_non_sha256_hashes() {
+        let entries = prepare_allowlist_entries(vec![
+            AllowlistEntry {
+                path: r"C:\Trusted\ShortHash.exe".to_string(),
+                hash: Some("abc123".to_string()),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            },
+            AllowlistEntry {
+                path: r"C:\Trusted\InvalidHash.exe".to_string(),
+                hash: Some(
+                    "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".to_string(),
+                ),
+                description: None,
+                created_at: "2026-06-16T00:00:00Z".to_string(),
+            },
+        ]);
+
+        assert!(entries.exact_paths.contains(r"c:\trusted\shorthash.exe"));
+        assert!(entries.exact_paths.contains(r"c:\trusted\invalidhash.exe"));
+        assert!(entries.hashes.is_empty());
+    }
+
+    #[test]
+    fn normalized_sha256_hex_accepts_only_full_hex_hashes() {
+        assert_eq!(
+            normalized_sha256_hex(
+                " ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789 "
+            )
+            .as_deref(),
+            Some("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")
+        );
+        assert!(normalized_sha256_hex("abc123").is_none());
+        assert!(normalized_sha256_hex(
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+        )
+        .is_none());
     }
 
     #[test]
