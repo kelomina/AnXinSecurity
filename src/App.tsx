@@ -14,12 +14,14 @@
  * English keywords: root component, layout, routing, page switch, modal, intercept, tray exit, splash
  */
 import React, { useEffect, useState, useCallback } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
 import { listen } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useConfigStore } from './stores/configStore'
 import { useThemeStore } from './stores/themeStore'
 import { useI18nStore } from './stores/i18nStore'
 import { onSnapshotProgress, onSnapshotResult } from './api/snapshot'
+import { getPrivilegeStatus } from './api/privilege'
+import { startEngine, scannerHealth } from './api/scanner'
 import Sidebar from './components/Sidebar'
 import TitleBar from './components/TitleBar'
 import Toast from './components/Toast'
@@ -35,17 +37,6 @@ import SplashScreen, {
   type StartupSnapshotSummary,
 } from './components/SplashScreen'
 import BehaviorLifecyclePage from './components/BehaviorLifecyclePage'
-
-const pageVariants = {
-  initial: { opacity: 0, y: 8 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -8 }
-}
-
-const pageTransition = {
-  duration: 0.25,
-  ease: 'easeOut' as const
-}
 
 const PHASE_STATUS_RANK: Record<StartupPhaseStatus, number> = {
   pending: 0,
@@ -106,6 +97,12 @@ const App: React.FC = () => {
   const { loadTranslations, t } = useI18nStore()
   const [isExitPromptOpen, setIsExitPromptOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
+  // 非管理员权限提示 / Non-admin privilege warning
+  const [showPrivilegeWarning, setShowPrivilegeWarning] = useState(false)
+  // 远程会话状态 / Remote session state
+  const [isRemoteSession, setIsRemoteSession] = useState(false)
+  // 内存节省模式 / Memory-saving mode
+  const [isLowPowerMode, setIsLowPowerMode] = useState(false)
   const [splashStatusKey, setSplashStatusKey] = useState('splash_status_bootstrap')
   const [startupPhaseStatuses, setStartupPhaseStatuses] = useState<Record<string, StartupPhaseStatus>>({
     config: 'active',
@@ -246,7 +243,10 @@ const App: React.FC = () => {
 
       setPhaseStatus('theme', 'active')
       setStatusKey('splash_status_theme')
-      initializeTheme()
+      const cleanupTheme = initializeTheme()
+      if (cleanupTheme) {
+        cleanupFns.push(cleanupTheme)
+      }
       setPhaseStatus('theme', 'complete')
 
       setPhaseStatus('i18n', 'active')
@@ -260,10 +260,66 @@ const App: React.FC = () => {
         setIsExitPromptOpen(true)
       }))
 
+      // 监听内存节省模式切换（主窗口隐藏到托盘时进入，显示时退出）
+      //  Listen for memory-saving mode changes (enter when main window hidden to tray, exit when shown)
+      addAsyncCleanup(listen<boolean>('memory-mode-changed', (event) => {
+        setIsLowPowerMode(event.payload)
+      }))
+
+      // 监听远程会话状态变化（检测到远程控制软件时隐藏 UI）
+      //  Listen for remote session state changes (hide UI when remote control software detected)
+      addAsyncCleanup(listen<{ is_remote: boolean }>('remote-session-changed', (event) => {
+        const isRemote = event.payload.is_remote
+        setIsRemoteSession(isRemote)
+        if (isRemote) {
+          // 检测到远程会话，隐藏主窗口（后台防护继续运行）
+          //  Remote session detected, hide main window (background protection continues)
+          const currentWindow = getCurrentWindow()
+          currentWindow.hide().catch(() => {})
+        }
+      }))
+
       setPhaseStatus('listeners', 'complete')
+
+      // 检查管理员权限和 IPC 连接状态
+      //  Check admin privileges and IPC connection status
+      let serviceConnected = false
+      try {
+        const status = await getPrivilegeStatus()
+        serviceConnected = status.service_connected
+        if (!status.is_elevated) {
+          setShowPrivilegeWarning(true)
+        }
+      } catch (err) {
+        console.error('Failed to check privilege status:', err)
+      }
+
+      // 如果已连接服务进程，防护由 SYSTEM 服务提供，跳过本地快照等待
+      //  If connected to service process, protection is provided by SYSTEM service,
+      //  skip local snapshot waiting — snapshot runs in service process and results
+      //  will arrive via IPC event forwarding
+      if (serviceConnected) {
+        setPhaseStatus('protection', 'complete')
+        setPhaseStatus('snapshot', 'complete')
+        setStatusKey('splash_status_snapshot_complete')
+        finishStartupScreen()
+        return
+      }
 
       setPhaseStatus('protection', 'active')
       setStatusKey('splash_status_protection')
+
+      // 引擎自检：首次安装时默认启动引擎
+      //  Engine self-check: auto-start engine on first install
+      try {
+        const health = await scannerHealth()
+        if (health.status !== 'running') {
+          await startEngine()
+        }
+      } catch (err) {
+        console.error('Engine auto-start check failed:', err)
+      }
+
       noProgressFallbackTimer = window.setTimeout(() => {
         if (snapshotProgressStarted) return
         setPhaseStatus('snapshot', 'warning')
@@ -341,19 +397,23 @@ const App: React.FC = () => {
       <TitleBar />
       <Sidebar />
       <main className="content">
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={currentPage}
-            initial="initial"
-            animate="animate"
-            exit="exit"
-            variants={pageVariants}
-            transition={pageTransition}
-            className="page-container"
-          >
-            {renderPage()}
-          </motion.div>
-        </AnimatePresence>
+        {/* 非管理员权限警告横幅 / Non-admin privilege warning banner */}
+        {showPrivilegeWarning && (
+          <div className="privilege-warning-banner">
+            <span>{t('warning_non_admin_title')}</span>
+            <span>{t('warning_non_admin_message')}</span>
+            <button
+              className="privilege-warning-close"
+              onClick={() => setShowPrivilegeWarning(false)}
+              aria-label={t('common_close')}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        <div className="page-container" data-low-power={isLowPowerMode ? 'true' : 'false'} data-remote={isRemoteSession ? 'true' : 'false'}>
+          {renderPage()}
+        </div>
       </main>
 
       {/* 托盘退出确认弹窗 */}
