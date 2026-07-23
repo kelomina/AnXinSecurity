@@ -7,10 +7,10 @@
 ; - NSIS_HOOK_PREUNINSTALL: 卸载前（文件尚未删除）
 ;
 ; 安装时注册 AnXin Security 防护服务（开机自启）
-; 卸载时停止并删除防护服务
+; 卸载时停止并彻底删除防护服务
 ;
 ; Register AnXin Security protection service (auto-start at boot) on install
-; Stop and remove protection service on uninstall
+; Stop and completely remove protection service on uninstall
 
 ; ============================================================================
 ; 完成页面配置 — 在 MUI_PAGE_FINISH 之前预定义（hooks 在模板第 28 行被 !include）
@@ -27,9 +27,11 @@
   ;  Delete existing service first (prevent stale config, e.g. old AnXinSecurity.exe path)
   DetailPrint "Cleaning up existing AnXin Security service..."
   nsExec::Exec 'sc.exe stop "AnXinSecurityService"'
-  Sleep 1000
+  ; 等待服务停止（固定 5 秒，足够服务完成停止流程）
+  ;  Wait for service to stop (fixed 5s, enough for service to complete stop)
+  Sleep 5000
   nsExec::Exec 'sc.exe delete "AnXinSecurityService"'
-  Sleep 1000
+  Sleep 2000
 
   ; 注册 Windows 服务（自动启动类型）
   ;  Register Windows service (automatic start type)
@@ -40,15 +42,24 @@
   nsExec::ExecToStack 'sc.exe create "AnXinSecurityService" binPath= "\$\"$INSTDIR\anxin-security.exe\$\" --service" start= auto DisplayName= "AnXin Security Protection Service"'
   Pop $0 ; exit code
   Pop $1 ; output
+  DetailPrint "sc create exit code: $0"
+  DetailPrint "sc create output: $1"
   ${If} $0 == 0
     DetailPrint "Service registered successfully."
     ; 设置服务描述
     nsExec::Exec 'sc.exe description "AnXinSecurityService" "AnXin Security background protection service - provides file hook protection at system startup."'
     ; 启动服务
     DetailPrint "Starting AnXin Security service..."
-    nsExec::Exec 'sc.exe start "AnXinSecurityService"'
+    nsExec::ExecToStack 'sc.exe start "AnXinSecurityService"'
+    Pop $0
+    Pop $1
+    DetailPrint "sc start exit code: $0"
+    DetailPrint "sc start output: $1"
+    ${If} $0 != 0
+      DetailPrint "WARNING: Service failed to start (exit code: $0). See output above."
+    ${EndIf}
   ${Else}
-    DetailPrint "Service registration failed (exit code: $0). Output: $1"
+    DetailPrint "ERROR: Service registration failed (exit code: $0). Output: $1"
   ${EndIf}
 !macroend
 
@@ -57,9 +68,26 @@
   ;  Stop service (ignore errors, service may not be running)
   DetailPrint "Stopping AnXin Security protection service..."
   nsExec::Exec 'sc.exe stop "AnXinSecurityService"'
-  ; 等待服务停止
-  Sleep 2000
+  ; 等待服务停止（固定 5 秒）
+  ;  Wait for service to stop (fixed 5s)
+  Sleep 5000
   ; 删除服务
   DetailPrint "Removing AnXin Security protection service..."
-  nsExec::Exec 'sc.exe delete "AnXinSecurityService"'
+  nsExec::ExecToStack 'sc.exe delete "AnXinSecurityService"'
+  Pop $0
+  Pop $1
+  DetailPrint "sc delete exit code: $0"
+  DetailPrint "sc delete output: $1"
+  ; 再次等待确保删除完成
+  Sleep 2000
+  ; 验证服务已删除（sc query 返回非 0 表示服务不存在）
+  nsExec::Exec 'sc.exe query "AnXinSecurityService"'
+  Pop $0
+  ${If} $0 == 0
+    DetailPrint "WARNING: Service still exists after delete. Forcing removal..."
+    nsExec::Exec 'sc.exe delete "AnXinSecurityService"'
+    Sleep 2000
+  ${Else}
+    DetailPrint "Service successfully removed."
+  ${EndIf}
 !macroend
