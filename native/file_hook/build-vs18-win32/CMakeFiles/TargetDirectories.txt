@@ -1,5 +1,0 @@
-E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18-win32/CMakeFiles/detours.dir
-E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18-win32/CMakeFiles/file_hook_detours.dir
-E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18-win32/CMakeFiles/file_hook_injector.dir
-E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18-win32/CMakeFiles/ALL_BUILD.dir
-E:/Project/HTML/AnXinSecurity/native/file_hook/build-vs18-win32/CMakeFiles/ZERO_CHECK.dir
