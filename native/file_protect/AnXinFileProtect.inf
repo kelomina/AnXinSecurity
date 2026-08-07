@@ -1,0 +1,67 @@
+;
+; AnXinFileProtect.inf
+; Installation file for AnXin Security File Protection Minifilter Driver
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = ActivityMonitor
+ClassGuid   = {b86dff51-a31e-4bac-b3cf-e8cfe75c9fc2}
+Provider    = %ProviderString%
+DriverVer   = 07/25/2026,1.0.0.0
+CatalogFile = AnXinFileProtect.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir   = 13
+
+[Manufacturer]
+%ManufacturerName% = AnXinSecurity, NTamd64.10.0...16299
+
+[AnXinSecurity.NTamd64.10.0...16299]
+%DeviceDescription% = AnXinFileProtect_Install, Root\AnXinFileProtect
+
+[AnXinFileProtect_Install.NT]
+CopyFiles = AnXinFileProtect_CopyFiles
+
+[AnXinFileProtect_Install.NT.Services]
+AddService = AnXinFileProtect, 0x00000002, AnXinFileProtect_Service_Install
+
+[AnXinFileProtect_Service_Install]
+DisplayName    = %ServiceDisplayName%
+Description    = %ServiceDescription%
+ServiceType    = 2                  ; SERVICE_FILE_SYSTEM_DRIVER
+StartType      = 1                  ; SERVICE_SYSTEM_START (load during kernel init)
+                                    ; 必须与 driver_install_service.rs 手工安装路径一致：
+                                    ; 按需启动会在开机到服务拉起之间留下无保护窗口。
+                                    ; Must match the manual install path in driver_install_service.rs;
+                                    ; demand-start would leave the boot window unprotected.
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\AnXinFileProtect.sys
+Dependencies   = FltMgr             ; minifilter 必须在 FltMgr 之后加载 / must load after FltMgr
+LoadOrderGroup = "FSFilter Anti-Virus"
+AddReg         = AnXinFileProtect_Altitude_AddReg
+
+[AnXinFileProtect_Altitude_AddReg]
+; Instances 必须位于 Parameters 子键下，INF2Cat 工具要求此格式。
+; 过滤管理器运行时查找 <Service>\Parameters\Instances，与 INF2Cat 验证要求一致。
+HKR, "Parameters\Instances",                            "DefaultInstance",                0x00000000, "AnXinFileProtect Instance"
+HKR, "Parameters\Instances\AnXinFileProtect Instance",  "Altitude",                       0x00000000, "328800"
+HKR, "Parameters\Instances\AnXinFileProtect Instance",  "Flags",                          0x00010001, 0x00000000
+
+[AnXinFileProtect_CopyFiles]
+AnXinFileProtect.sys
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+AnXinFileProtect.sys = 1,,
+
+[Strings]
+ProviderString       = "AnXin Security"
+ManufacturerName     = "AnXin Security"
+DeviceDescription    = "AnXin Security File Protection Minifilter Driver"
+ServiceDisplayName   = "AnXin File Protection Driver"
+ServiceDescription   = "Protects AnXin Security application files from unauthorized modification, deletion, and renaming."
+DiskName             = "AnXin Security Installation Disk"

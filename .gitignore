@@ -1,179 +1,297 @@
+# ==========================================
+# AnXinSecurity .gitignore
+# 最后更新：2026-06-25
+# ==========================================
+
+# ==========================================
+# 通用构建产物
+# ==========================================
+build/
+dist/
+out/
+release/
+target/
+*.exe
+*.dll
+*.sys
+*.lib
+*.obj
+*.o
+*.a
+*.so
+*.dylib
+*.pdb
+*.ilk
+*.exp
+
+# ==========================================
+# CMake 构建产物
+# ==========================================
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+*.vcxproj
+*.vcxproj.filters
+*.sln
+*.slnx
+!native/driver/AnXinProcProtect.vcxproj
+!native/driver/AnXinProcProtect.sln
+!native/file_protect/AnXinFileProtect.vcxproj
+!native/net_filter/AnXinNetFilter.vcxproj
+!native/hypervisor/AnXinHypervisor.vcxproj
+Makefile
+*.tlog/
+*.lastbuildstate
+*.recipe
+*.log
+*.stamp
+*.stamp.rule
+*.depend
+*.list
+*.bin
+*.recipe
+
+# ==========================================
+# Rust / Cargo
+# ==========================================
+/src-tauri/target/
+/src-tauri/target-check/
+/src-tauri/target_check/
+/target_check/
+/src-tauri/gen/
+
+# ==========================================
+# Node.js
+# ==========================================
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# Python（如有脚本）
+# ==========================================
 __pycache__/
 *.py[codz]
 *$py.class
-
 *.so
-
 .Python
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
+venv/
+.venv/
+env/
 .eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-share/python-wheels/
 *.egg-info/
-.installed.cfg
 *.egg
-MANIFEST
 
-*.manifest
-*.spec
-
-pip-log.txt
-pip-delete-this-directory.txt
-
-htmlcov/
-.tox/
-.nox/
-.coverage
-.coverage.*
-.cache
-nosetests.xml
-coverage.xml
-*.cover
-*.py.cover
-.hypothesis/
-.pytest_cache/
-cover/
-
-*.mo
-*.pot
-
-*.log
-local_settings.py
-db.sqlite3
-db.sqlite3-journal
-
-instance/
-.webassets-cache
-
-.scrapy
-
-out/
-release/
-storybook-static/
-
-Engine
-
-.DS_Store
-Thumbs.db
+# ==========================================
+# IDE / 编辑器
+# ==========================================
 .vscode/
 .idea/
-/_build/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
 
-.pybuilder/
-target/
+# ==========================================
+# Tauri 特定
+# ==========================================
+.taurignore
 
-.ipynb_checkpoints
+# ==========================================
+# 原生模块构建产物（native/）
+# ==========================================
+native/file_hook/build-*/
+native/raven_engine/build/
+native/bin/
 
-profile_default/
-ipython_config.py
+# ==========================================
+# 编译后引擎（Engine/）
+# ==========================================
+Engine/
 
-.pdm-python
-.pdm-build/
-
-.pixi
-
-__pypackages__/
-
-celerybeat-schedule
-celerybeat.pid
-
-*.sage.py
-
-.env
-.envrc
-.venv
-env/
-venv/
-ENV/
-env.bak/
-venv.bak/
-myenv/
-
-.spyderproject
-.spyproject
-
-.ropeproject
-
-/site
-
-.mypy_cache/
-.dmypy.json
-dmypy.json
-
-.pyre/
-
-.pytype/
-
-cython_debug/
-
-.abstra/
-
-.ruff_cache/
-
-.pypirc
-
-.cursorignore
-.cursorindexingignore
-
-marimo/_static/
-marimo/_lsp/
-__marimo__/
-
-
-data/processed_lightgbm
-benign_samples
-malicious_samples
-extracted_features.pkl
-test/
-scan_results
-reports/
-node_modules
-logs
-vir
-engine
-config/scan_cache.json
-quarantine_index.json
-.trae
-ben
-output
-build-x86
-build-x64
-bin
-startup_allowlist.enc
-
-# Agent / IDE artifacts
-helloagents/
-
-# Runtime data
-data/anxin_signature_db.bin
-data/behavior/
-data/runtime/
+# ==========================================
+# 运行时数据（data/）
+# ==========================================
+data/
 src-tauri/data/
 
-# Tauri
-/src-tauri/target
-/src-tauri/target-check
-/target_check
-/src-tauri/gen
+# ==========================================
+# 运行时配置文件（config/ 下的动态文件）
+# ==========================================
+config/scan_cache.json
+config/quarantine_index.json
+config/startup_allowlist.enc
 
-# Archive
-/archive/
+# ==========================================
+# 日志与调试
+# ==========================================
+logs/
+*.log
+debug/
 
-debug
+# ==========================================
+# 测试与报告（本地生成）
+# ==========================================
+test/
+tests/screenshots/
+reports/
+scan_results/
 
-.lock
+# ==========================================
+# 历史归档
+# ==========================================
+archive/
 
-# Docs (本地知识文档，不提交)
+# ==========================================
+# 临时文件与缓存
+# ==========================================
+*.tmp
+*.temp
+.cache/
+.coverage
+htmlcov/
+
+# ==========================================
+# 样本与病毒库（安全相关）
+# ==========================================
+benign_samples/
+malicious_samples/
+ben/
+vir/
+output/
+extracted_features.pkl
+data/processed_lightgbm
+
+# ==========================================
+# 旧版构建目录
+# ==========================================
+build-x86/
+build-x64/
+bin/
+startup_allowlist.enc
+
+# ==========================================
+# AI / Agent 工具产物
+# ==========================================
+helloagents/
+.trae/
+.trae-cn/
+
+# ==========================================
+# 文档（本地知识文档，不提交）
+# ==========================================
 docs/
-src-tauri/data/behavior/anxin_etw_behavior.db
-src-tauri/Cargo.lock
-package-lock.json
+!docs/
+docs/*
+!docs/continuous-running.md
+!docs/firewall_driver_guide.md
+
+# ==========================================
+# 私钥、证书与凭据（严禁提交）
+# ==========================================
+*.pfx
+*.pem
+*.p12
+*.cer
+*.crt
+*.key
+
+# ==========================================
+# VM 部署 / 诊断脚本与输出（可能硬编码 VM 凭据）
+# ==========================================
+deploy_*.ps1
+deploy_*.txt
+check_vm*.ps1
+check_mounted_disks.ps1
+diag_*.ps1
+diagnose_*.ps1
+vm_*.ps1
+cap.ps1
+check_admin.ps1
+check_drivers.ps1
+# 含硬编码 VM 密码的脚本（严禁提交）
+native/driver/setup_remote.ps1
+native/driver/setup_remote.bat
+# 驱动 VM 部署 / 验证辅助脚本与测试残留（一次性产物，不提交）
+native/driver/bootstrap_startup.bat
+native/driver/deploy_driver.bat
+native/driver/mount_and_check.ps1
+native/driver/mount_vhdx.txt
+native/driver/list_temp_files.ps1
+native/driver/run_verify.ps1
+native/driver/verify_driver.ps1
+native/driver/test_*.txt
+native/file_protect/link_err*.txt
+native/file_protect/link_out*.txt
+native/hypervisor/build_log*.txt
+native/hypervisor/offline_log.txt
+
+# ==========================================
+# 本地调试输出（stdout/stderr、dump、一次性测试产物）
+# ==========================================
+dump_*.txt
+dump_stderr.txt
+dump_stdout.txt
+copy_result.txt
+deploy_proc_log.txt
+attack_test_results.csv
+attack_tests.ps1
+capture_splash.ps1
+
+# ==========================================
+# 驱动构建 / 部署 / 诊断一次性脚本（仓库根目录，本地产物，严禁提交）
+# ==========================================
+/build_*.ps1
+/find_build_env.ps1
+/find_toolset.ps1
+/find_vhd_path.ps1
+/fix_*.ps1
+/force_dismount*.ps1
+/full_hyperv_reset*.ps1
+/get_vm_disk.ps1
+/list_certs.ps1
+/offline_*.ps1
+/prepare_signed_drivers.ps1
+/release_vhd.ps1
+/reset_vmms.ps1
+/restart_vm.ps1
+/restore_drivers.ps1
+/run_*.ps1
+/safeboot_sign_phase*.ps1
+/sign_*.ps1
+/start_*.ps1
+/test_*.ps1
+/verify_*.ps1
+/dump_pe_imports.ps1
+/_dump_exports.py
+test_r3_log.txt
+mnt_result.txt
+engine_stdout.txt
+engine_stderr.txt
+vite_err.txt
+vite_out.txt
+screenshot_splash.png
+
+# ==========================================
+# 驱动部署 / 备份产物、数据集、工具缓存、破解残留（严禁提交）
+# ==========================================
+native_deploy/
+backup_drivers_*/
+asi-lab-datasets/
+.pnpm-store/
+.codex/
+anxin-fluent2-preview/
+avast! sandbox/
+BT/
+Project
+public/
+
+# ==========================================
+# 其他
+# ==========================================
+.lock
+.cursorignore
+.cursorindexingignore

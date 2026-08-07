@@ -1,0 +1,88 @@
+;
+; AnXinProcProtect.inf
+; Installation file for AnXin Security Process Protection Driver
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = Security
+ClassGuid   = {d61ca365-5af4-4486-9993-5e306daa5b64}
+Provider    = %ProviderString%
+DriverVer   = 07/25/2026,1.0.0.0
+CatalogFile = AnXinProcProtect.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir   = 13
+
+; ---------------------------------------------------------------------------
+; Manufacturer / Models
+; ---------------------------------------------------------------------------
+
+[Manufacturer]
+%ManufacturerName% = AnXinSecurity, NTamd64.10.0...16299
+
+[AnXinSecurity.NTamd64.10.0...16299]
+%DeviceDescription% = AnXinProcProtect_Install, Root\AnXinProcProtect
+
+; ---------------------------------------------------------------------------
+; DDInstall sections
+; ---------------------------------------------------------------------------
+
+[AnXinProcProtect_Install.NT]
+CopyFiles = AnXinProcProtect_CopyFiles
+
+[AnXinProcProtect_Install.NT.Services]
+AddService = AnXinProcProtect, 0x00000002, AnXinProcProtect_Service_Install
+
+; ---------------------------------------------------------------------------
+; Service installation
+; ---------------------------------------------------------------------------
+
+[AnXinProcProtect_Service_Install]
+DisplayName    = %ServiceDisplayName%
+Description    = %ServiceDescription%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START (manual)
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\AnXinProcProtect.sys
+
+; ---------------------------------------------------------------------------
+; File copy
+; ---------------------------------------------------------------------------
+
+[AnXinProcProtect_CopyFiles]
+AnXinProcProtect.sys
+
+; ---------------------------------------------------------------------------
+; Source file list
+; ---------------------------------------------------------------------------
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+AnXinProcProtect.sys = 1,,
+
+; ---------------------------------------------------------------------------
+; Registry settings
+; ---------------------------------------------------------------------------
+
+[AnXinProcProtect_Install.NT.HW]
+AddReg = AnXinProcProtect_AddReg
+
+[AnXinProcProtect_AddReg]
+HKR,, "Altitude",         0x00010001, "325800"
+HKR,, "SupportedAltitudes", 0x00010001, "325800"
+
+; ---------------------------------------------------------------------------
+; Strings
+; ---------------------------------------------------------------------------
+
+[Strings]
+ProviderString       = "AnXin Security"
+ManufacturerName     = "AnXin Security"
+DeviceDescription    = "AnXin Security Process Protection Driver"
+ServiceDisplayName   = "AnXin Security Process Protection Driver"
+ServiceDescription   = "Protects AnXin Security application processes from unauthorized handle access."
+DiskName             = "AnXin Security Installation Disk"

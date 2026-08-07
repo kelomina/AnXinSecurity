@@ -1,0 +1,136 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}</ProjectGuid>
+    <RootNamespace>AnXinHypervisor</RootNamespace>
+    <ProjectName>AnXinHypervisor</ProjectName>
+    <WindowsTargetPlatformVersion>10.0.28000.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <PlatformToolset>v170</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <UseDebugLibraries>true</UseDebugLibraries>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <OutDir>$(ProjectDir)$(Platform)\$(Configuration)\</OutDir>
+    <IntDir>$(ProjectDir)$(Platform)\$(Configuration)\obj\</IntDir>
+    <TargetName>AnXinHypervisor</TargetName>
+    <TargetExt>.sys</TargetExt>
+    <GenerateManifest>false</GenerateManifest>
+  </PropertyGroup>
+
+  <!-- WDK paths -->
+  <PropertyGroup>
+    <WdkIncludeDir>C:\Program Files (x86)\Windows Kits\10\Include\10.0.28000.0</WdkIncludeDir>
+    <WdkLibDir>C:\Program Files (x86)\Windows Kits\10\Lib\10.0.28000.0\km\x64</WdkLibDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>false</TreatWarningAsError>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(WdkIncludeDir)\km;$(WdkIncludeDir)\shared;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_AMD64_;AMD64;POOL_NX_OPTIN=1;_KERNEL_MODE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <AdditionalOptions>/kernel /Oi /GS- /Zp8 %(AdditionalOptions)</AdditionalOptions>
+      <ExceptionHandling>false</ExceptionHandling>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Release'">MultiThreaded</RuntimeLibrary>
+      <RuntimeLibrary Condition="'$(Configuration)'=='Debug'">MultiThreadedDebug</RuntimeLibrary>
+      <CallingConvention>StdCall</CallingConvention>
+      <CompileAs>CompileAsC</CompileAs>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>ntoskrnl.lib;hal.lib;ntstrsafe.lib;wdmsec.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(WdkLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalOptions>/DRIVER /ENTRY:DriverEntry /INTEGRITYCHECK /SUBSYSTEM:NATIVE /BASE:0x10000 %(AdditionalOptions)</AdditionalOptions>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <IgnoreAllDefaultLibraries>true</IgnoreAllDefaultLibraries>
+      <NoEntryPoint>false</NoEntryPoint>
+    </Link>
+    <MASM>
+      <PreprocessorDefinitions>_AMD64_;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <IncludePaths>$(WdkIncludeDir)\km;$(WdkIncludeDir)\shared;%(IncludePaths)</IncludePaths>
+    </MASM>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Debug'">
+    <ClCompile>
+      <PreprocessorDefinitions>_DEBUG;DBG=1;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Optimization>Disabled</Optimization>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <ItemDefinitionGroup Condition="'$(Configuration)'=='Release'">
+    <ClCompile>
+      <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <Optimization>MaxSpeed</Optimization>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+    </ClCompile>
+  </ItemDefinitionGroup>
+
+  <!-- Source files -->
+  <ItemGroup>
+    <ClCompile Include="src\driver.c" />
+    <ClCompile Include="src\debug.c" />
+    <ClCompile Include="src\hal.c" />
+    <ClCompile Include="src\exit_handler.c" />
+    <ClCompile Include="src\exit_cpuid.c" />
+    <ClCompile Include="src\exit_cr.c" />
+    <ClCompile Include="src\exit_msr.c" />
+    <ClCompile Include="src\hypercall.c" />
+    <ClCompile Include="src\page_table.c" />
+    <ClCompile Include="src\protect.c" />
+    <ClCompile Include="src\intel\intel_ops.c" />
+    <ClCompile Include="src\intel\vmx.c" />
+    <ClCompile Include="src\intel\vmcs.c" />
+    <ClCompile Include="src\intel\ept.c" />
+    <ClCompile Include="src\amd\amd_ops.c" />
+    <ClCompile Include="src\amd\svm.c" />
+    <ClCompile Include="src\amd\vmcb.c" />
+    <ClCompile Include="src\amd\npt.c" />
+  </ItemGroup>
+
+  <!-- MASM assembly files -->
+  <ItemGroup>
+    <MASM Include="src\intel\entry_intel.asm" />
+    <MASM Include="src\amd\entry_amd.asm" />
+  </ItemGroup>
+
+  <!-- Header files -->
+  <ItemGroup>
+    <ClInclude Include="include\anx_hv.h" />
+    <ClInclude Include="include\ept.h" />
+    <ClInclude Include="include\exit_reasons.h" />
+    <ClInclude Include="include\hal.h" />
+    <ClInclude Include="include\per_cpu.h" />
+    <ClInclude Include="include\platform.h" />
+    <ClInclude Include="include\protect.h" />
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>

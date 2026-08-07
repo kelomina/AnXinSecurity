@@ -11,6 +11,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <deque>
 #include <iostream>
 #include <fstream>
 
@@ -52,6 +53,18 @@ using CreateRemoteThreadExFn = HANDLE(WINAPI*)(
     DWORD,
     LPPROC_THREAD_ATTRIBUTE_LIST,
     LPDWORD);
+using NtCreateThreadExFn = LONG(WINAPI*)(
+    PHANDLE,
+    ACCESS_MASK,
+    LPVOID,
+    HANDLE,
+    LPTHREAD_START_ROUTINE,
+    LPVOID,
+    ULONG,
+    SIZE_T,
+    SIZE_T,
+    SIZE_T,
+    LPVOID);
 using NtSuspendProcessFn = LONG(WINAPI*)(HANDLE);
 using NtResumeProcessFn = LONG(WINAPI*)(HANDLE);
 
@@ -62,6 +75,7 @@ constexpr wchar_t kPipeNameEnv[] = L"ANXIN_HOOK_PIPE";
 constexpr DWORD kPipeConnectTimeoutMs = 200;
 constexpr DWORD kPipeOpenRetryMs = 20;
 constexpr int kPipeOpenRetries = 50;
+constexpr DWORD kPipeCachedHandleTtlMs = 3000;
 constexpr DWORD kHeartbeatIntervalMs = 10000;
 constexpr DWORD kHeartbeatAckTimeoutMs = 1000;
 constexpr ULONGLONG kInjectionChainWindowMs = 5000;
@@ -93,6 +107,7 @@ WriteProcessMemoryFn gKernelBaseWriteProcessMemory = nullptr;
 CreateRemoteThreadFn gKernelBaseCreateRemoteThread = nullptr;
 CreateRemoteThreadExFn gKernelBaseCreateRemoteThreadEx = nullptr;
 HMODULE gNtdll = nullptr;
+NtCreateThreadExFn gNtCreateThreadEx = nullptr;
 NtSuspendProcessFn gNtSuspendProcess = nullptr;
 NtResumeProcessFn gNtResumeProcess = nullptr;
 thread_local bool gInsideHook = false;
@@ -100,18 +115,45 @@ HMODULE gSelfModule = nullptr;
 HANDLE gHeartbeatThread = nullptr;
 volatile LONG gHeartbeatStop = 0;
 std::mutex gProcessStateMutex;
+std::mutex gPipeWriteMutex;
+HANDLE gCachedPipeHandle = INVALID_HANDLE_VALUE;
+std::wstring gCachedPipeName;
+ULONGLONG gCachedPipeLastUsed = 0;
 std::unordered_map<std::uintptr_t, DWORD> gProcessHandleTargets;
+/*
+ * VUL-050: LRU 逐出辅助队列。记录句柄的插入顺序，当 gProcessHandleTargets
+ * 超过上限时，从队列头部弹出最旧的句柄并从 map 中删除，而非全表清空。
+ * 全表清空会被攻击者利用：先用 2048+ 个可疑句柄填满表触发 clear()，
+ * 然后后续的 CreateRemoteThread 因查不到目标 PID 而不被阻断。
+ *
+ * VUL-050: LRU eviction queue. Records insertion order of handles so
+ * that when gProcessHandleTargets exceeds the limit, the oldest entry
+ * is evicted individually instead of clearing the whole table. The old
+ * clear() behavior was exploitable: an attacker fills the table with
+ * 2048+ suspicious handles to trigger clear(), then a subsequent
+ * CreateRemoteThread finds no target PID and is not blocked.
+ */
+std::deque<std::uintptr_t> gProcessHandleLru;
 std::unordered_map<unsigned long long, NativeInjectionChain> gInjectionChains;
 
 void detachDetours();
 
 std::wstring readPipeName() {
-  wchar_t value[512]{};
-  DWORD n = ::GetEnvironmentVariableW(kPipeNameEnv, value, static_cast<DWORD>(std::size(value)));
-  if (n == 0 || n >= static_cast<DWORD>(std::size(value))) {
-    return std::wstring(kDefaultPipeName);
-  }
-  return std::wstring(value, value + n);
+  /*
+   * VUL-051: 不再从环境变量 ANXIN_HOOK_PIPE 读取管道名。
+   * 被注入进程的环境块由其父进程完全控制，恶意父进程可设置
+   * ANXIN_HOOK_PIPE 指向攻击者管道，接收全部 hook 上报并回复 ACK 维持
+   * hook 存活，真实服务端对该进程无可见性。
+   * 现在直接使用硬编码的默认管道名。
+   *
+   * VUL-051: No longer read the pipe name from the ANXIN_HOOK_PIPE
+   * environment variable. The injected process's environment block is
+   * fully controlled by its parent, which could set ANXIN_HOOK_PIPE to
+   * an attacker-controlled pipe to receive all hook reports and reply
+   * with ACKs to keep the hook alive, blinding the real service.
+   * Now uses the hardcoded default pipe name directly.
+   */
+  return std::wstring(kDefaultPipeName);
 }
 
 std::string utf8FromWide(const wchar_t* ws) {
@@ -416,6 +458,38 @@ HANDLE openPipeHandle(const std::wstring& pipeName, DWORD desiredAccess) {
   return INVALID_HANDLE_VALUE;
 }
 
+void closeCachedPipeHandleLocked() {
+  if (gCachedPipeHandle != INVALID_HANDLE_VALUE) {
+    ::CloseHandle(gCachedPipeHandle);
+    gCachedPipeHandle = INVALID_HANDLE_VALUE;
+  }
+  gCachedPipeName.clear();
+  gCachedPipeLastUsed = 0;
+}
+
+HANDLE getCachedPipeHandleLocked(const std::wstring& pipeName, DWORD* lastError) {
+  if (lastError) *lastError = 0;
+
+  ULONGLONG now = ::GetTickCount64();
+  if (gCachedPipeHandle != INVALID_HANDLE_VALUE) {
+    if (gCachedPipeName == pipeName && now - gCachedPipeLastUsed <= kPipeCachedHandleTtlMs) {
+      return gCachedPipeHandle;
+    }
+    closeCachedPipeHandleLocked();
+  }
+
+  HANDLE hPipe = openPipeHandle(pipeName, GENERIC_WRITE);
+  if (hPipe == INVALID_HANDLE_VALUE) {
+    if (lastError) *lastError = ::GetLastError();
+    return INVALID_HANDLE_VALUE;
+  }
+
+  gCachedPipeHandle = hPipe;
+  gCachedPipeName = pipeName;
+  gCachedPipeLastUsed = now;
+  return gCachedPipeHandle;
+}
+
 bool waitHeartbeatAck(HANDLE hPipe) {
   DWORD start = ::GetTickCount();
   std::string buf;
@@ -485,20 +559,37 @@ bool sendPayload(const std::string& payload, DWORD* lastError = nullptr) {
     if (lastError) *lastError = ERROR_INVALID_NAME;
     return false;
   }
-  HANDLE hPipe = openPipeHandle(pipeName, GENERIC_WRITE);
-  if (hPipe == INVALID_HANDLE_VALUE) {
-    if (lastError) *lastError = ::GetLastError();
-    return false;
-  }
-  DWORD written = 0;
-  BOOL ok = ::WriteFile(hPipe, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr);
-  DWORD err = ok ? 0 : ::GetLastError();
-  ::CloseHandle(hPipe);
-  if (!ok || written != static_cast<DWORD>(payload.size())) {
+  std::lock_guard<std::mutex> lock(gPipeWriteMutex);
+
+  for (int attempt = 0; attempt < 2; ++attempt) {
+    DWORD openError = 0;
+    HANDLE hPipe = getCachedPipeHandleLocked(pipeName, &openError);
+    if (hPipe == INVALID_HANDLE_VALUE) {
+      if (lastError) *lastError = openError != 0 ? openError : ::GetLastError();
+      return false;
+    }
+
+    DWORD written = 0;
+    BOOL ok =
+        ::WriteFile(hPipe, payload.data(), static_cast<DWORD>(payload.size()), &written, nullptr);
+    DWORD err = ok ? 0 : ::GetLastError();
+    if (ok && written == static_cast<DWORD>(payload.size())) {
+      gCachedPipeLastUsed = ::GetTickCount64();
+      return true;
+    }
+
+    // 同一条注入链会在毫秒级连续上报多条消息。若服务端刚好关闭了上一根
+    // pipe 实例，缓存句柄会在这里失效；关闭后重连一次，避免事件链中段丢失。
+    closeCachedPipeHandleLocked();
+    if (attempt == 0 && (err == ERROR_BROKEN_PIPE || err == ERROR_NO_DATA || err == ERROR_PIPE_NOT_CONNECTED)) {
+      continue;
+    }
     if (lastError) *lastError = ok ? ERROR_WRITE_FAULT : err;
     return false;
   }
-  return true;
+
+  if (lastError) *lastError = ERROR_WRITE_FAULT;
+  return false;
 }
 
 void sendNotice(const char* apiName, const std::string& pathUtf8) {
@@ -619,9 +710,36 @@ NativeInjectionChain& chainForTargetLocked(DWORD targetPid, ULONGLONG now) {
 void recordProcessHandle(HANDLE hProcess, DWORD targetPid) {
   if (!hProcess || hProcess == INVALID_HANDLE_VALUE || targetPid == 0) return;
   std::lock_guard<std::mutex> lock(gProcessStateMutex);
-  gProcessHandleTargets[reinterpret_cast<std::uintptr_t>(hProcess)] = targetPid;
-  if (gProcessHandleTargets.size() > kMaxTrackedProcessHandles) {
-    gProcessHandleTargets.clear();
+  std::uintptr_t key = reinterpret_cast<std::uintptr_t>(hProcess);
+  /*
+   * VUL-050: 若句柄已存在则先从 LRU 队列移除旧条目（避免重复），
+   * 然后重新插入队尾以更新其 LRU 顺序。新句柄直接插入 map 和队尾。
+   *
+   * VUL-050: If the handle already exists, first remove its old entry from
+   * the LRU queue (to avoid duplicates), then re-push to the back to
+   * refresh its LRU order. New handles are inserted into the map and the
+   * queue back directly.
+   */
+  if (gProcessHandleTargets.find(key) != gProcessHandleTargets.end()) {
+    for (auto it = gProcessHandleLru.begin(); it != gProcessHandleLru.end(); ++it) {
+      if (*it == key) { gProcessHandleLru.erase(it); break; }
+    }
+  }
+  gProcessHandleTargets[key] = targetPid;
+  gProcessHandleLru.push_back(key);
+  /*
+   * VUL-050: 超过上限时逐出最旧条目（队头），而非全表清空。
+   * 逐出是 O(1) 的，且保留了其他有效条目，防止攻击者刷量致盲检测。
+   *
+   * VUL-050: Evict the oldest entry (queue front) when over the limit,
+   * instead of clearing the whole table. Eviction is O(1) and preserves
+   * other valid entries, preventing attackers from blinding detection by
+   * flooding the table.
+   */
+  while (gProcessHandleTargets.size() > kMaxTrackedProcessHandles && !gProcessHandleLru.empty()) {
+    std::uintptr_t oldest = gProcessHandleLru.front();
+    gProcessHandleLru.pop_front();
+    gProcessHandleTargets.erase(oldest);
   }
 }
 
@@ -664,6 +782,7 @@ void updateNativeInjectionChain(
 
 bool shouldBlockRemoteThread(
     DWORD targetPid,
+    const char* terminalApiName,
     std::string& chainSummary,
     std::string& baseAddress,
     SIZE_T& size) {
@@ -677,7 +796,8 @@ bool shouldBlockRemoteThread(
   const auto& chain = it->second;
   bool strongChain = chain.sawWriteProcessMemory && (chain.sawVirtualAllocEx || chain.sawOpenProcess);
   if (!strongChain) return false;
-  chainSummary = "OpenProcess>VirtualAllocEx>WriteProcessMemory>CreateRemoteThread";
+  chainSummary = "OpenProcess>VirtualAllocEx>WriteProcessMemory>";
+  chainSummary += terminalApiName ? terminalApiName : "CreateRemoteThread";
   baseAddress = chain.baseAddress;
   size = chain.size;
   gInjectionChains.erase(it);
@@ -724,6 +844,90 @@ bool resumeTargetProcessAfterReportFailure(HANDLE hProcess, DWORD targetPid) {
   LONG status = gNtResumeProcess(resumeHandle);
   ::CloseHandle(resumeHandle);
   return status == 0;
+}
+
+/*
+ * VUL-052: 恢复失败时的看门狗线程。
+ * 旧代码在 resumeTargetProcessAfterReportFailure 失败时无重试、无看门狗，
+ * 目标进程永久挂起。与 VUL-051（管道重定向）配合，攻击者干扰管道通信使
+ * 上报失败，目标进程被永久冻结。
+ *
+ * 现在在看门狗线程中最多重试 kMaxResumeRetries 次，每次间隔
+ * kResumeRetryIntervalMs。看门狗复制目标 PID 并自行打开句柄，不依赖
+ * 调用方的 hProcess（可能已关闭）。
+ *
+ * VUL-052: Watchdog thread for resume failures. The old code had no retry
+ * and no watchdog when resumeTargetProcessAfterReportFailure failed,
+ * leaving the target permanently suspended. Combined with VUL-051 (pipe
+ * redirection), an attacker could disrupt pipe communication to make
+ * reporting fail and freeze the target forever. Now the watchdog retries
+ * up to kMaxResumeRetries times with kResumeRetryIntervalMs interval.
+ * The watchdog copies the target PID and opens its own handle, not
+ * relying on the caller's hProcess (which may be closed).
+ */
+constexpr int kMaxResumeRetries = 5;
+constexpr DWORD kResumeRetryIntervalMs = 500;
+
+struct ResumeWatchdogParams {
+  DWORD targetPid{0};
+};
+
+DWORD WINAPI resumeWatchdogThreadProc(LPVOID arg) {
+  std::unique_ptr<ResumeWatchdogParams> params(static_cast<ResumeWatchdogParams*>(arg));
+  if (!params || params->targetPid == 0) return 0;
+  DWORD pid = params->targetPid;
+  if (pid == 4 || pid == ::GetCurrentProcessId()) return 0;
+
+  for (int i = 0; i < kMaxResumeRetries; ++i) {
+    ::Sleep(kResumeRetryIntervalMs);
+    if (!gNtResumeProcess) continue;
+
+    /* 检查进程是否仍存在 */
+    HANDLE checkHandle = ::OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (!checkHandle) {
+      /* 进程已退出，无需恢复 */
+      return 0;
+    }
+    DWORD exitCode = 0;
+    if (::GetExitCodeProcess(checkHandle, &exitCode) && exitCode != STILL_ACTIVE) {
+      ::CloseHandle(checkHandle);
+      return 0;
+    }
+    ::CloseHandle(checkHandle);
+
+    /* 尝试恢复 */
+    HANDLE resumeHandle = nullptr;
+    constexpr DWORD kResumeAccess = PROCESS_SUSPEND_RESUME | PROCESS_QUERY_LIMITED_INFORMATION;
+    if (gOpenProcess) {
+      resumeHandle = gOpenProcess(kResumeAccess, FALSE, pid);
+    } else {
+      resumeHandle = ::OpenProcess(kResumeAccess, FALSE, pid);
+    }
+    if (resumeHandle) {
+      LONG status = gNtResumeProcess(resumeHandle);
+      ::CloseHandle(resumeHandle);
+      if (status == 0) {
+        /* 恢复成功 */
+        return 0;
+      }
+    }
+  }
+  /* 达到最大重试次数仍未恢复，记录诊断（目标可能永久冻结） */
+  std::cerr << "[file_hook_detours] WARNING: resume watchdog exhausted for pid="
+            << pid << " after " << kMaxResumeRetries << " retries" << std::endl;
+  return 0;
+}
+
+void launchResumeWatchdog(DWORD targetPid) {
+  if (targetPid == 0 || targetPid == 4 || targetPid == ::GetCurrentProcessId()) return;
+  auto* params = new ResumeWatchdogParams();
+  params->targetPid = targetPid;
+  HANDLE h = ::CreateThread(nullptr, 0, resumeWatchdogThreadProc, params, 0, nullptr);
+  if (h) {
+    ::CloseHandle(h);
+  } else {
+    delete params;
+  }
 }
 
 class HookGuard {
@@ -1083,7 +1287,7 @@ HANDLE HookCreateRemoteThreadImpl(
     std::string chain;
     std::string baseAddress;
     SIZE_T writeSize = 0;
-    if (shouldBlockRemoteThread(targetPid, chain, baseAddress, writeSize)) {
+    if (shouldBlockRemoteThread(targetPid, apiName, chain, baseAddress, writeSize)) {
       bool targetSuspended = suspendTargetProcessForDecision(hProcess, targetPid);
       {
         std::string diag;
@@ -1113,7 +1317,10 @@ HANDLE HookCreateRemoteThreadImpl(
           ERROR_ACCESS_DENIED,
           chain);
       if (targetSuspended && !reported) {
-        resumeTargetProcessAfterReportFailure(hProcess, targetPid);
+        /* VUL-052: 恢复失败时启动看门狗线程重试，防止目标永久冻结 */
+        if (!resumeTargetProcessAfterReportFailure(hProcess, targetPid)) {
+          launchResumeWatchdog(targetPid);
+        }
       }
       {
         std::string diag;
@@ -1223,7 +1430,7 @@ HANDLE HookCreateRemoteThreadExImpl(
     std::string chain;
     std::string baseAddress;
     SIZE_T writeSize = 0;
-    if (shouldBlockRemoteThread(targetPid, chain, baseAddress, writeSize)) {
+    if (shouldBlockRemoteThread(targetPid, apiName, chain, baseAddress, writeSize)) {
       bool targetSuspended = suspendTargetProcessForDecision(hProcess, targetPid);
       {
         std::string diag;
@@ -1253,7 +1460,10 @@ HANDLE HookCreateRemoteThreadExImpl(
           ERROR_ACCESS_DENIED,
           chain);
       if (targetSuspended && !reported) {
-        resumeTargetProcessAfterReportFailure(hProcess, targetPid);
+        /* VUL-052: 恢复失败时启动看门狗线程重试，防止目标永久冻结 */
+        if (!resumeTargetProcessAfterReportFailure(hProcess, targetPid)) {
+          launchResumeWatchdog(targetPid);
+        }
       }
       {
         std::string diag;
@@ -1351,6 +1561,146 @@ HANDLE WINAPI HookKernelBaseCreateRemoteThreadEx(
       lpThreadId);
 }
 
+LONG HookNtCreateThreadExImpl(
+    NtCreateThreadExFn original,
+    const char* apiName,
+    PHANDLE phThread,
+    ACCESS_MASK desiredAccess,
+    LPVOID objectAttributes,
+    HANDLE hProcess,
+    LPTHREAD_START_ROUTINE lpStartAddress,
+    LPVOID lpParameter,
+    ULONG createFlags,
+    SIZE_T zeroBits,
+    SIZE_T stackSize,
+    SIZE_T maximumStackSize,
+    LPVOID attributeList) {
+  HookGuard guard;
+  if (guard.entered()) {
+    DWORD targetPid = targetPidFromProcessHandle(hProcess);
+    std::string chain;
+    std::string baseAddress;
+    SIZE_T writeSize = 0;
+    if (shouldBlockRemoteThread(targetPid, apiName, chain, baseAddress, writeSize)) {
+      bool targetSuspended = suspendTargetProcessForDecision(hProcess, targetPid);
+      {
+        std::string diag;
+        diag += "\"api\":\"";
+        appendEscaped(diag, apiName ? std::string(apiName) : std::string("NtCreateThreadEx"));
+        diag += "\",\"targetPid\":";
+        diag += std::to_string(targetPid);
+        diag += ",\"targetSuspended\":";
+        diag += targetSuspended ? "true" : "false";
+        appendStringField(diag, "chain", chain);
+        appendStringField(diag, "baseAddress", baseAddress);
+        appendStringField(diag, "startAddress", hexFromPtr(reinterpret_cast<const void*>(lpStartAddress)));
+        if (writeSize != 0) {
+          appendU64Field(diag, "size", static_cast<unsigned long long>(writeSize));
+        }
+        appendDetoursDiagnostic("remote_thread_block_decision", diag);
+      }
+      bool reported = sendProcessInjectionNotice(
+          apiName,
+          targetPid,
+          static_cast<DWORD>(desiredAccess),
+          baseAddress,
+          writeSize,
+          hexFromPtr(reinterpret_cast<const void*>(lpStartAddress)),
+          true,
+          targetSuspended,
+          ERROR_ACCESS_DENIED,
+          chain);
+      if (targetSuspended && !reported) {
+        /* VUL-052: 恢复失败时启动看门狗线程重试，防止目标永久冻结 */
+        if (!resumeTargetProcessAfterReportFailure(hProcess, targetPid)) {
+          launchResumeWatchdog(targetPid);
+        }
+      }
+      {
+        std::string diag;
+        diag += "\"api\":\"";
+        appendEscaped(diag, apiName ? std::string(apiName) : std::string("NtCreateThreadEx"));
+        diag += "\",\"targetPid\":";
+        diag += std::to_string(targetPid);
+        diag += ",\"targetSuspended\":";
+        diag += targetSuspended ? "true" : "false";
+        diag += ",\"reported\":";
+        diag += reported ? "true" : "false";
+        diag += ",\"rolledBack\":";
+        diag += (targetSuspended && !reported) ? "true" : "false";
+        appendDetoursDiagnostic("remote_thread_block_result", diag);
+      }
+      std::cerr << "[file_hook_detours] blocked " << apiName
+                << " targetPid=" << targetPid
+                << " targetSuspended=" << (targetSuspended ? 1 : 0)
+                << " reported=" << (reported ? 1 : 0)
+                << std::endl;
+      if (phThread) {
+        *phThread = nullptr;
+      }
+      return static_cast<LONG>(0xC0000022L); // STATUS_ACCESS_DENIED
+    }
+  }
+
+  LONG status = original
+      ? original(
+            phThread,
+            desiredAccess,
+            objectAttributes,
+            hProcess,
+            lpStartAddress,
+            lpParameter,
+            createFlags,
+            zeroBits,
+            stackSize,
+            maximumStackSize,
+            attributeList)
+      : static_cast<LONG>(0xC0000001L);
+  if (guard.entered() && status >= 0 && phThread && *phThread) {
+    DWORD targetPid = targetPidFromProcessHandle(hProcess);
+    sendProcessInjectionNotice(
+        apiName,
+        targetPid,
+        static_cast<DWORD>(desiredAccess),
+        {},
+        0,
+        hexFromPtr(reinterpret_cast<const void*>(lpStartAddress)),
+        false,
+        false,
+        0,
+        {});
+  }
+  return status;
+}
+
+LONG WINAPI HookNtCreateThreadEx(
+    PHANDLE phThread,
+    ACCESS_MASK desiredAccess,
+    LPVOID objectAttributes,
+    HANDLE hProcess,
+    LPTHREAD_START_ROUTINE lpStartAddress,
+    LPVOID lpParameter,
+    ULONG createFlags,
+    SIZE_T zeroBits,
+    SIZE_T stackSize,
+    SIZE_T maximumStackSize,
+    LPVOID attributeList) {
+  return HookNtCreateThreadExImpl(
+      gNtCreateThreadEx,
+      "NtCreateThreadEx",
+      phThread,
+      desiredAccess,
+      objectAttributes,
+      hProcess,
+      lpStartAddress,
+      lpParameter,
+      createFlags,
+      zeroBits,
+      stackSize,
+      maximumStackSize,
+      attributeList);
+}
+
 void attachDetours() {
   HMODULE kernelBase = ::GetModuleHandleW(L"KernelBase.dll");
   if (kernelBase) {
@@ -1368,6 +1718,7 @@ void attachDetours() {
   }
   gNtdll = ::GetModuleHandleW(L"ntdll.dll");
   if (gNtdll) {
+    gNtCreateThreadEx = reinterpret_cast<NtCreateThreadExFn>(::GetProcAddress(gNtdll, "NtCreateThreadEx"));
     gNtSuspendProcess = reinterpret_cast<NtSuspendProcessFn>(::GetProcAddress(gNtdll, "NtSuspendProcess"));
     gNtResumeProcess = reinterpret_cast<NtResumeProcessFn>(::GetProcAddress(gNtdll, "NtResumeProcess"));
   }
@@ -1384,6 +1735,9 @@ void attachDetours() {
   DetourAttach(reinterpret_cast<PVOID*>(&gVirtualAllocEx), HookVirtualAllocEx);
   DetourAttach(reinterpret_cast<PVOID*>(&gWriteProcessMemory), HookWriteProcessMemory);
   DetourAttach(reinterpret_cast<PVOID*>(&gCreateRemoteThread), HookCreateRemoteThread);
+  if (gNtCreateThreadEx) {
+    DetourAttach(reinterpret_cast<PVOID*>(&gNtCreateThreadEx), HookNtCreateThreadEx);
+  }
   if (gCreateRemoteThreadEx) {
     DetourAttach(reinterpret_cast<PVOID*>(&gCreateRemoteThreadEx), HookCreateRemoteThreadEx);
   }
@@ -1425,6 +1779,9 @@ void detachDetours() {
   DetourDetach(reinterpret_cast<PVOID*>(&gVirtualAllocEx), HookVirtualAllocEx);
   DetourDetach(reinterpret_cast<PVOID*>(&gWriteProcessMemory), HookWriteProcessMemory);
   DetourDetach(reinterpret_cast<PVOID*>(&gCreateRemoteThread), HookCreateRemoteThread);
+  if (gNtCreateThreadEx) {
+    DetourDetach(reinterpret_cast<PVOID*>(&gNtCreateThreadEx), HookNtCreateThreadEx);
+  }
   if (gCreateRemoteThreadEx) {
     DetourDetach(reinterpret_cast<PVOID*>(&gCreateRemoteThreadEx), HookCreateRemoteThreadEx);
   }
@@ -1468,6 +1825,10 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID) {
     if (gHeartbeatThread) {
       ::CloseHandle(gHeartbeatThread);
       gHeartbeatThread = nullptr;
+    }
+    {
+      std::lock_guard<std::mutex> lock(gPipeWriteMutex);
+      closeCachedPipeHandleLocked();
     }
     detachDetours();
   }

@@ -1,0 +1,94 @@
+;
+; AnXinNetFilter.inf
+; AnXin Security 网络过滤（WFP Callout）驱动安装文件
+; Installation file for the AnXin Security Network Filter (WFP callout) driver
+;
+; 说明 / Note:
+;   WFP callout 驱动不是 PnP 设备驱动，这里沿用与 AnXinProcProtect 一致的
+;   Root 枚举方式，便于用同一套流程做 INF 安装与签名验证。
+;   生产环境也可以直接用 sc.exe 创建内核服务，见 build_net_filter.bat 末尾。
+;   A WFP callout driver is not a PnP device driver. This INF uses the same
+;   Root-enumerated form as AnXinProcProtect so INF installation and signature
+;   verification follow one process. Production may equally create the kernel
+;   service with sc.exe — see the end of build_net_filter.bat.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = NetService
+ClassGuid   = {4D36E974-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderString%
+DriverVer   = 07/26/2026,1.0.0.0
+CatalogFile = AnXinNetFilter.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+; ---------------------------------------------------------------------------
+; Manufacturer / Models
+; ---------------------------------------------------------------------------
+
+[Manufacturer]
+%ManufacturerName% = AnXinSecurity, NTamd64.10.0...16299
+
+[AnXinSecurity.NTamd64.10.0...16299]
+%DeviceDescription% = AnXinNetFilter_Install, Root\AnXinNetFilter
+
+; ---------------------------------------------------------------------------
+; DDInstall
+; ---------------------------------------------------------------------------
+
+[AnXinNetFilter_Install.NT]
+CopyFiles = AnXinNetFilter_CopyFiles
+
+[AnXinNetFilter_Install.NT.Services]
+AddService = AnXinNetFilter, 0x00000002, AnXinNetFilter_Service_Install
+
+; ---------------------------------------------------------------------------
+; Service
+; ---------------------------------------------------------------------------
+;
+; StartType = 1 (SERVICE_SYSTEM_START)
+;   改为系统启动时加载：用户在防火墙标签页首次点击时安装驱动，安装后提示重启，
+;   重启后驱动随内核初始化阶段加载。驱动加载后默认 fail-open（全放行），
+;   等应用启动握手后才开始过滤。enabled 开关控制应用是否握手接管。
+;   安全模式默认不加载 SYSTEM_START 驱动，保留逃生路径。
+;   Loads at system start: the driver is installed when the user first clicks
+;   the firewall tab, followed by a reboot prompt. After reboot the driver loads
+;   during kernel init. It defaults to fail-open (permit all) until the app
+;   handshake; the enabled switch controls whether the app takes over filtering.
+;   Safe Mode does not load SYSTEM_START drivers by default, preserving an escape hatch.
+;
+[AnXinNetFilter_Service_Install]
+DisplayName    = %ServiceDisplayName%
+Description    = %ServiceDescription%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 1                  ; SERVICE_SYSTEM_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\AnXinNetFilter.sys
+
+; ---------------------------------------------------------------------------
+; Files
+; ---------------------------------------------------------------------------
+
+[AnXinNetFilter_CopyFiles]
+AnXinNetFilter.sys
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+AnXinNetFilter.sys = 1,,
+
+; ---------------------------------------------------------------------------
+; Strings
+; ---------------------------------------------------------------------------
+
+[Strings]
+ProviderString     = "AnXin Security"
+ManufacturerName   = "AnXin Security"
+DeviceDescription  = "AnXin Security Network Filter Driver"
+ServiceDisplayName = "AnXin Security Network Filter Driver"
+ServiceDescription = "Provides application-level network traffic control (allow/block/prompt), DNS domain filtering, traffic statistics and shaping via the Windows Filtering Platform."
+DiskName           = "AnXin Security Installation Disk"
