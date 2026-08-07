@@ -29,7 +29,7 @@ import {
 } from '../api/behavior'
 import { useConfigStore } from '../stores/configStore'
 import { useI18nStore } from '../stores/i18nStore'
-import { Play, Pause, Trash2, Shield, AlertTriangle, Download, RefreshCw } from 'lucide-react'
+import { Play, Pause, Trash2, Shield, AlertTriangle, Download, RefreshCw } from './icons'
 import {
   Button,
   Badge,
@@ -38,6 +38,12 @@ import {
   tokens,
   Skeleton,
   SkeletonItem,
+  Table,
+  TableHeader,
+  TableHeaderCell,
+  TableBody,
+  TableRow,
+  TableCell,
 } from '@fluentui/react-components'
 
 const useStyles = makeStyles({
@@ -87,6 +93,29 @@ const useStyles = makeStyles({
     alignItems: 'center',
     ...shorthands.gap('8px'),
   },
+  hookCounter: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase200,
+    marginLeft: '4px',
+  },
+  controlSpacer: {
+    marginLeft: 'auto',
+    display: 'flex',
+    ...shorthands.gap('8px'),
+  },
+  cardEmptyCentered: {
+    ...shorthands.padding('48px'),
+    textAlign: 'center',
+  },
+  emptyStateIconLarge: {
+    color: tokens.colorNeutralForeground3,
+    marginBottom: '16px',
+    opacity: 0.3,
+  },
+  mutedParagraph: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase300,
+  },
   statsGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
@@ -102,6 +131,15 @@ const useStyles = makeStyles({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  statCardProcess: {
+    backgroundColor: tokens.colorPaletteBlueBackground2,
+  },
+  statCardFile: {
+    backgroundColor: tokens.colorPaletteYellowBackground2,
+  },
+  statCardRegistry: {
+    backgroundColor: tokens.colorNeutralBackground4,
+  },
   statLabel: {
     fontSize: tokens.fontSizeBase200,
     color: tokens.colorNeutralForeground2,
@@ -111,6 +149,24 @@ const useStyles = makeStyles({
     fontSize: tokens.fontSizeBase500,
     fontWeight: tokens.fontWeightBold,
     color: tokens.colorNeutralForeground1,
+  },
+  statLabelProcess: {
+    color: tokens.colorPaletteBlueForeground2,
+  },
+  statValueProcess: {
+    color: tokens.colorPaletteBlueForeground2,
+  },
+  statLabelFile: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  statValueFile: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  statLabelRegistry: {
+    color: tokens.colorNeutralForeground3,
+  },
+  statValueRegistry: {
+    color: tokens.colorNeutralForeground3,
   },
   tabBar: {
     display: 'flex',
@@ -130,37 +186,12 @@ const useStyles = makeStyles({
     ...shorthands.padding('14px', '20px'),
     borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
   },
-  tableScroll: {
-    maxHeight: '500px',
-    overflowX: 'auto',
-    overflowY: 'auto',
-  },
-  table: {
-    width: '100%',
-    borderCollapse: 'collapse' as const,
+  sectionHeader: {
+    fontWeight: tokens.fontWeightSemibold,
     fontSize: tokens.fontSizeBase300,
-    '& thead': {
-      backgroundColor: tokens.colorNeutralBackground3,
-      position: 'sticky' as const,
-      top: 0,
-      zIndex: 1,
-    },
-    '& th': {
-      ...shorthands.padding('12px', '16px'),
-      textAlign: 'left' as const,
-      fontWeight: tokens.fontWeightSemibold,
-      color: tokens.colorNeutralForeground2,
-      borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
-    },
-    '& td': {
-      ...shorthands.padding('12px', '16px'),
-      borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
-    },
-    '& tbody tr': {
-      ':hover': {
-        backgroundColor: tokens.colorNeutralBackground1Hover,
-      },
-    },
+  },
+  tableScroll: {
+    overflowX: 'auto',
   },
   emptyState: {
     ...shorthands.padding('40px', '20px'),
@@ -173,6 +204,15 @@ const useStyles = makeStyles({
   textMono: {
     fontFamily: 'Consolas, "Courier New", monospace',
     fontSize: tokens.fontSizeBase200,
+  },
+  textWrap: {
+    wordBreak: 'break-word',
+  },
+  textBreakAll: {
+    wordBreak: 'break-all',
+  },
+  mutedText: {
+    color: tokens.colorNeutralForeground3,
   },
   truncate: {
     overflow: 'hidden',
@@ -196,6 +236,77 @@ const useStyles = makeStyles({
     fontFamily: 'Consolas, "Courier New", monospace',
     color: tokens.colorNeutralForeground1,
   },
+  diagValueLarge: {
+    fontSize: tokens.fontSizeBase500,
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  diagHeader: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+    marginBottom: '12px',
+  },
+  diagActions: {
+    marginLeft: 'auto',
+    display: 'flex',
+    ...shorthands.gap('8px'),
+  },
+  diagDescription: {
+    color: tokens.colorNeutralForeground3,
+    fontSize: tokens.fontSizeBase200,
+    marginBottom: '12px',
+  },
+  diagCounterGrid: {
+    display: 'grid',
+    gridTemplateColumns: '1fr 1fr',
+    ...shorthands.gap('12px'),
+    fontSize: tokens.fontSizeBase200,
+  },
+  diagSection: {
+    marginTop: '12px',
+  },
+  diagSectionTitle: {
+    color: tokens.colorNeutralForeground3,
+    marginBottom: '8px',
+    fontSize: tokens.fontSizeBase200,
+  },
+  bucketGrid: {
+    display: 'grid',
+    ...shorthands.gap('8px'),
+  },
+  bucketCard: {
+    ...shorthands.padding('10px', '12px'),
+    backgroundColor: tokens.colorNeutralBackground3,
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    display: 'grid',
+    ...shorthands.gap('4px'),
+  },
+  bucketBadges: {
+    display: 'flex',
+    ...shorthands.gap('8px'),
+    flexWrap: 'wrap',
+    alignItems: 'center',
+  },
+  diagnosticsMessage: {
+    marginTop: '12px',
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    wordBreak: 'break-all',
+  },
+  skeletonRow: {
+    marginBottom: '8px',
+  },
+  skeletonItem: {
+    height: '40px',
+  },
+  registryBadge: {
+    backgroundColor: tokens.colorNeutralBackground4,
+    color: tokens.colorNeutralForeground3,
+  },
+  processRowInteractive: {
+    cursor: 'pointer',
+  },
 })
 
 /** 页面属性 / Page props */
@@ -215,7 +326,7 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
   const [etwDiagnostics, setEtwDiagnostics] = useState<EtwDiagnosticsSnapshot | null>(null)
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false)
   const [diagnosticsMessage, setDiagnosticsMessage] = useState('')
-  const { config } = useConfigStore()
+  const { config, devModeUnlocked } = useConfigStore()
   const { t } = useI18nStore()
   const edrEnabled = config?.behaviorMonitoring?.enabled ?? false
 
@@ -244,13 +355,15 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
 
     loadHistory()
     loadProcesses()
-    loadEtwDiagnostics()
+    if (devModeUnlocked) {
+      loadEtwDiagnostics()
+    }
 
     return () => {
       unlisten()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [edrEnabled])
+  }, [edrEnabled, devModeUnlocked])
 
   /**
    * 监听文件 Hook 专用事件 / Listen for dedicated file Hook events.
@@ -374,15 +487,11 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
   }
 
   /**
-   * 获取事件类型 badge 样式 / Get event type badge style
-   * Registry 类型需要自定义紫色样式 / Registry type needs custom purple style
+   * 获取事件类型 badge 类 / Get event type badge class.
    */
-  const getTypeBadgeStyle = (type: string): React.CSSProperties | undefined => {
-    if (type === 'Registry') {
-      return { background: 'rgba(143,112,177,0.13)', color: '#8F70B1' }
-    }
-    return undefined
-  }
+  const getTypeBadgeClassName = (type: string): string | undefined => (
+    type === 'Registry' ? styles.registryBadge : undefined
+  )
 
   /**
    * 把统计对象转成简短文本 / Convert counter map to short display text.
@@ -450,10 +559,10 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
           >
             {t('behavior_clear_log')}
           </Button>
-          <span style={{ color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginLeft: '4px' }}>
+          <span className={styles.hookCounter}>
             Hook: {fileHookEventCount}
           </span>
-          <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+          <div className={styles.controlSpacer}>
             <Button
               appearance={viewMode === 'events' ? 'primary' : 'outline'}
               size="small"
@@ -474,25 +583,26 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
 
       {/* EDR 关闭时隐藏事件内容 / Hide event content when EDR is off */}
       {!edrEnabled ? (
-        <div className={styles.card} style={{ padding: '48px', textAlign: 'center' }}>
-          <Shield size={64} style={{ color: tokens.colorNeutralForeground3, marginBottom: '16px', opacity: 0.3 }} />
-          <p style={{ color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase300 }}>
+        <div className={`${styles.card} ${styles.cardEmptyCentered}`}>
+          <Shield size={64} className={styles.emptyStateIconLarge} />
+          <p className={styles.mutedParagraph}>
             {t('behavior_edr_disabled_hint')}
           </p>
         </div>
       ) : (
         <>
-          {/* ETW 现场诊断 / ETW field diagnostics */}
+          {/* ETW 现场诊断 — 仅在开发者模式解锁后显示 / ETW field diagnostics — only show when dev mode unlocked */}
+          {devModeUnlocked && (
           <div className={styles.card}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-              <div style={{ fontWeight: tokens.fontWeightSemibold, fontSize: tokens.fontSizeBase300 }}>{t('behavior_diag_title')}</div>
+            <div className={styles.diagHeader}>
+              <div className={styles.sectionHeader}>{t('behavior_diag_title')}</div>
               <Badge
                 appearance="filled"
                 color={etwDiagnostics?.collecting ? 'success' : 'warning'}
               >
                 {etwDiagnostics?.collecting ? t('behavior_diag_collecting') : t('behavior_diag_not_collecting')}
               </Badge>
-              <div style={{ marginLeft: 'auto', display: 'flex', gap: '8px' }}>
+              <div className={styles.diagActions}>
                 <Button
                   appearance="outline"
                   size="small"
@@ -522,76 +632,69 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
                 </Button>
               </div>
             </div>
-            <p style={{ color: tokens.colorNeutralForeground3, fontSize: tokens.fontSizeBase200, marginBottom: '12px' }}>
+            <p className={styles.diagDescription}>
               {t('behavior_diag_desc')}
             </p>
             <div className={styles.statsGrid}>
               <div className={styles.diagCard}>
                 <div className={styles.diagLabel}>{t('behavior_diag_total_raw')}</div>
-                <div className={styles.diagValue} style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold }}>{etwDiagnostics?.totalRaw ?? 0}</div>
+                <div className={`${styles.diagValue} ${styles.diagValueLarge}`}>{etwDiagnostics?.totalRaw ?? 0}</div>
               </div>
               <div className={styles.diagCard}>
                 <div className={styles.diagLabel}>{t('behavior_diag_after_filter')}</div>
-                <div className={styles.diagValue} style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold }}>{etwDiagnostics?.totalAfterFilter ?? 0}</div>
+                <div className={`${styles.diagValue} ${styles.diagValueLarge}`}>{etwDiagnostics?.totalAfterFilter ?? 0}</div>
               </div>
               <div className={styles.diagCard}>
                 <div className={styles.diagLabel}>{t('behavior_diag_matched')}</div>
-                <div className={styles.diagValue} style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold }}>{etwDiagnostics?.totalMatched ?? 0}</div>
+                <div className={`${styles.diagValue} ${styles.diagValueLarge}`}>{etwDiagnostics?.totalMatched ?? 0}</div>
               </div>
               <div className={styles.diagCard}>
                 <div className={styles.diagLabel}>{t('behavior_diag_dropped')}</div>
-                <div className={styles.diagValue} style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold }}>{etwDiagnostics?.totalDroppedSystemPid ?? 0}</div>
+                <div className={`${styles.diagValue} ${styles.diagValueLarge}`}>{etwDiagnostics?.totalDroppedSystemPid ?? 0}</div>
               </div>
             </div>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', fontSize: tokens.fontSizeBase200 }}>
+            <div className={styles.diagCounterGrid}>
               <div>
-                <div style={{ color: tokens.colorNeutralForeground3, marginBottom: '4px' }}>{t('behavior_diag_provider_counts')}</div>
-                <div className={styles.textMono} style={{ wordBreak: 'break-word' }}>
+                <div className={styles.diagLabel}>{t('behavior_diag_provider_counts')}</div>
+                <div className={`${styles.textMono} ${styles.textWrap}`}>
                   {formatTopCounters(etwDiagnostics?.providerCounts)}
                 </div>
               </div>
               <div>
-                <div style={{ color: 'var(--muted-fg)', marginBottom: '4px' }}>{t('behavior_diag_operation_counts')}</div>
-                <div className="text-mono" style={{ wordBreak: 'break-word' }}>
+                <div className={styles.diagLabel}>{t('behavior_diag_operation_counts')}</div>
+                <div className={`${styles.textMono} ${styles.textWrap}`}>
                   {formatTopCounters(etwDiagnostics?.operationCounts)}
                 </div>
               </div>
               <div>
-                <div style={{ color: 'var(--muted-fg)', marginBottom: '4px' }}>{t('behavior_diag_rule_counts')}</div>
-                <div className="text-mono" style={{ wordBreak: 'break-word' }}>
+                <div className={styles.diagLabel}>{t('behavior_diag_rule_counts')}</div>
+                <div className={`${styles.textMono} ${styles.textWrap}`}>
                   {formatTopCounters(etwDiagnostics?.ruleCounts)}
                 </div>
               </div>
               <div>
-                <div style={{ color: 'var(--muted-fg)', marginBottom: '4px' }}>{t('behavior_diag_recent_counts')}</div>
-                <div className="text-mono">
+                <div className={styles.diagLabel}>{t('behavior_diag_recent_counts')}</div>
+                <div className={styles.textMono}>
                   {t('behavior_diag_recent_raw')} {etwDiagnostics?.recentRaw.length ?? 0} / {t('behavior_diag_recent_normalized')} {etwDiagnostics?.recentNormalized.length ?? 0} / {t('behavior_diag_capacity')} {etwDiagnostics?.capacity ?? 0}
                 </div>
               </div>
             </div>
-            <div style={{ marginTop: '12px' }}>
-              <div style={{ color: 'var(--muted-fg)', marginBottom: '8px', fontSize: '12px' }}>
+            <div className={styles.diagSection}>
+              <div className={styles.diagSectionTitle}>
                 {t('behavior_diag_hot_buckets')} {etwDiagnostics?.aggregateCapacity ?? 0} / {etwDiagnostics?.aggregateEvictions ?? 0}
               </div>
-              <div style={{ display: 'grid', gap: '8px' }}>
+              <div className={styles.bucketGrid}>
                 {aggregateBuckets.length === 0 ? (
-                  <div className="text-mono" style={{ color: 'var(--muted-fg)' }}>
+                  <div className={`${styles.textMono} ${styles.mutedText}`}>
                     -
                   </div>
                 ) : (
                   aggregateBuckets.map((bucket) => (
                     <div
                       key={bucket.key}
-                      style={{
-                        padding: '10px 12px',
-                        background: 'var(--input-bg)',
-                        borderRadius: 'var(--radius-medium)',
-                        border: '1px solid var(--border-color)',
-                        display: 'grid',
-                        gap: '4px'
-                      }}
+                      className={styles.bucketCard}
                     >
-                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                      <div className={styles.bucketBadges}>
                         <Badge appearance="filled" color="informative">{bucket.stage}</Badge>
                         <Badge appearance="filled" color="warning">{bucket.count}</Badge>
                         {bucket.provider && <Badge appearance="filled" color="success">{bucket.provider}</Badge>}
@@ -599,13 +702,13 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
                         {bucket.ruleId && <Badge appearance="filled" color="warning">{bucket.ruleId}</Badge>}
                         {bucket.threatType && <Badge appearance="filled" color="danger">{bucket.threatType}</Badge>}
                       </div>
-                      <div className={styles.textMono} style={{ fontSize: tokens.fontSizeBase200, wordBreak: 'break-word' }}>
+                      <div className={`${styles.textMono} ${styles.textWrap}`}>
                         {bucket.key}
                       </div>
-                      <div style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3 }}>
+                      <div className={`${styles.textMono} ${styles.mutedText}`}>
                         {bucket.firstSeen} → {bucket.lastSeen}
                       </div>
-                      <div style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3, wordBreak: 'break-word' }}>
+                      <div className={`${styles.textMono} ${styles.mutedText} ${styles.textWrap}`}>
                         {bucket.sample.path || bucket.pathKey || '-'}
                       </div>
                     </div>
@@ -614,31 +717,32 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
               </div>
             </div>
             {diagnosticsMessage && (
-              <div style={{ marginTop: '12px', fontSize: tokens.fontSizeBase200, color: tokens.colorNeutralForeground3, wordBreak: 'break-all' }}>
+              <div className={styles.diagnosticsMessage}>
                 {diagnosticsMessage}
               </div>
             )}
           </div>
+          )}
 
           {/* 事件统计 / Event statistics */}
           <div className={styles.card}>
-            <div style={{ fontWeight: tokens.fontWeightSemibold, fontSize: tokens.fontSizeBase300, marginBottom: '12px' }}>{t('behavior_event_stats')}</div>
+            <div className={styles.sectionHeader}>{t('behavior_event_stats')}</div>
             <div className={styles.statsGrid}>
               <div className={styles.statCard}>
                 <div className={styles.statLabel}>{t('behavior_stats_total')}</div>
                 <div className={styles.statValue}>{stats.total}</div>
               </div>
-              <div className={styles.statCard} style={{ backgroundColor: tokens.colorPaletteBlueBorderActive }}>
-                <div style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteBlueForeground2 }}>{t('behavior_stats_process')}</div>
-                <div style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold, color: tokens.colorPaletteBlueForeground2 }}>{stats.processCount}</div>
+              <div className={`${styles.statCard} ${styles.statCardProcess}`}>
+                <div className={`${styles.statLabel} ${styles.statLabelProcess}`}>{t('behavior_stats_process')}</div>
+                <div className={`${styles.statValue} ${styles.statValueProcess}`}>{stats.processCount}</div>
               </div>
-              <div className={styles.statCard} style={{ backgroundColor: tokens.colorPaletteYellowBackground2 }}>
-                <div style={{ fontSize: tokens.fontSizeBase200, color: tokens.colorPaletteYellowForeground2 }}>{t('behavior_stats_file')}</div>
-                <div style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold, color: tokens.colorPaletteYellowForeground2 }}>{stats.fileCount}</div>
+              <div className={`${styles.statCard} ${styles.statCardFile}`}>
+                <div className={`${styles.statLabel} ${styles.statLabelFile}`}>{t('behavior_stats_file')}</div>
+                <div className={`${styles.statValue} ${styles.statValueFile}`}>{stats.fileCount}</div>
               </div>
-              <div className={styles.statCard} style={{ backgroundColor: 'rgba(143,112,177,0.13)' }}>
-                <div style={{ fontSize: tokens.fontSizeBase200, color: '#8F70B1' }}>{t('behavior_stats_registry')}</div>
-                <div style={{ fontSize: tokens.fontSizeBase500, fontWeight: tokens.fontWeightSemibold, color: '#8F70B1' }}>{stats.registryCount}</div>
+              <div className={`${styles.statCard} ${styles.statCardRegistry}`}>
+                <div className={`${styles.statLabel} ${styles.statLabelRegistry}`}>{t('behavior_stats_registry')}</div>
+                <div className={`${styles.statValue} ${styles.statValueRegistry}`}>{stats.registryCount}</div>
               </div>
             </div>
           </div>
@@ -647,7 +751,7 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
           {viewMode === 'events' && (
             <div className={styles.tableContainer}>
               <div className={styles.tableToolbar}>
-                <span style={{ fontWeight: tokens.fontWeightSemibold, fontSize: tokens.fontSizeBase300 }}>{t('behavior_realtime_events')}</span>
+                <span className={styles.sectionHeader}>{t('behavior_realtime_events')}</span>
                 <Badge appearance="filled" color="informative">{events.length} {t('behavior_event_count_unit')}</Badge>
               </div>
 
@@ -655,8 +759,8 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
                 {loading ? (
                   <div>
                     {[1, 2, 3, 4, 5].map((i) => (
-                      <Skeleton key={i} style={{ marginBottom: '8px' }}>
-                        <SkeletonItem style={{ height: '40px' }} />
+                      <Skeleton key={i} className={styles.skeletonRow}>
+                        <SkeletonItem className={styles.skeletonItem} />
                       </Skeleton>
                     ))}
                   </div>
@@ -666,32 +770,32 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
                     <p>{t('behavior_empty')}</p>
                   </div>
                 ) : (
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>{t('behavior_th_ts')}</th>
-                        <th>{t('behavior_label_pid')}</th>
-                        <th>{t('behavior_th_type')}</th>
-                        <th>{t('behavior_th_provider')}</th>
-                        <th>{t('behavior_th_op')}</th>
-                        <th>{t('behavior_th_target')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHeaderCell>{t('behavior_th_ts')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_label_pid')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_th_type')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_th_provider')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_th_op')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_th_target')}</TableHeaderCell>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {events.map((event, index) => (
-                        <tr key={index}>
-                          <td className={styles.textMono}>{event.timestamp}</td>
-                          <td>{event.pid}</td>
-                          <td>
+                        <TableRow key={index}>
+                          <TableCell className={styles.textMono}>{event.timestamp}</TableCell>
+                          <TableCell>{event.pid}</TableCell>
+                          <TableCell>
                             <Badge
                               appearance="filled"
                               color={event.type === 'Process' ? 'informative' : event.type === 'File' ? 'warning' : event.type === 'Network' ? 'success' : 'informative'}
-                              style={getTypeBadgeStyle(event.type)}
+                              className={getTypeBadgeClassName(event.type)}
                             >
                               {event.type}
                             </Badge>
-                          </td>
-                          <td>
+                          </TableCell>
+                          <TableCell>
                             <Badge
                               appearance="filled"
                               color={event.provider?.toLowerCase().includes('hook') ? 'warning' : 'informative'}
@@ -699,17 +803,17 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
                             >
                               {event.provider}
                             </Badge>
-                          </td>
-                          <td className={`${styles.textMono} ${styles.truncate}`} title={event.operation}>
+                          </TableCell>
+                          <TableCell className={`${styles.textMono} ${styles.truncate}`} title={event.operation}>
                             {event.operation || '-'}
-                          </td>
-                          <td className={`${styles.textMono} ${styles.truncate}`} title={event.path}>
+                          </TableCell>
+                          <TableCell className={`${styles.textMono} ${styles.truncate}`} title={event.path}>
                             {event.path || '-'}
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 )}
               </div>
             </div>
@@ -719,7 +823,7 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
           {viewMode === 'processes' && (
             <div className={styles.tableContainer}>
               <div className={styles.tableToolbar}>
-                <span style={{ fontWeight: tokens.fontWeightSemibold, fontSize: tokens.fontSizeBase300 }}>{t('behavior_label_processes')}</span>
+                <span className={styles.sectionHeader}>{t('behavior_label_processes')}</span>
                 <Badge appearance="filled" color="informative">{processes.length} {t('behavior_process_count_unit')}</Badge>
               </div>
 
@@ -730,36 +834,43 @@ const BehaviorPage: React.FC<BehaviorPageProps> = ({ onOpenLifecycle }) => {
                     <p>{t('behavior_empty')}</p>
                   </div>
                 ) : (
-                  <table className={styles.table}>
-                    <thead>
-                      <tr>
-                        <th>{t('behavior_th_last_activity')}</th>
-                        <th>{t('behavior_label_pid')}</th>
-                        <th>{t('behavior_th_event_count')}</th>
-                        <th>{t('behavior_th_process_name')}</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHeaderCell>{t('behavior_th_last_activity')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_label_pid')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_th_event_count')}</TableHeaderCell>
+                        <TableHeaderCell>{t('behavior_th_process_name')}</TableHeaderCell>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {processes.map((proc, index) => (
-                        <tr
+                        <TableRow
                           key={index}
-                          style={{ cursor: onOpenLifecycle ? 'pointer' : 'default' }}
+                          tabIndex={onOpenLifecycle ? 0 : undefined}
+                          className={onOpenLifecycle ? styles.processRowInteractive : undefined}
                           onClick={() => onOpenLifecycle?.(proc.pid, proc.processName)}
+                          onKeyDown={(e) => {
+                            if (onOpenLifecycle && (e.key === 'Enter' || e.key === ' ')) {
+                              e.preventDefault()
+                              onOpenLifecycle(proc.pid, proc.processName)
+                            }
+                          }}
                         >
-                          <td className={styles.textMono}>{proc.lastSeen}</td>
-                          <td>{proc.pid}</td>
-                          <td>
+                          <TableCell className={styles.textMono}>{proc.lastSeen}</TableCell>
+                          <TableCell>{proc.pid}</TableCell>
+                          <TableCell>
                             <Badge appearance="filled" color="informative">
                               {proc.eventCount}
                             </Badge>
-                          </td>
-                          <td>
+                          </TableCell>
+                          <TableCell>
                             <strong>{proc.processName}</strong>
-                          </td>
-                        </tr>
+                          </TableCell>
+                        </TableRow>
                       ))}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 )}
               </div>
             </div>

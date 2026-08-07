@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="安芯安全 AnXin Security 功能特性详解：Axon/Raven 双引擎实时文件扫描、ETW 行为监控与可配置匹配规则、威胁拦截与进程控制、AES-128-GCM 加密隔离区，以及功能全景与 Fluent 2 设计系统。" />
+  <meta name="theme-color" content="#f5f5f5" />
+  <meta property="og:title" content="功能特性 — 安芯安全 AnXin Security" />
+  <meta property="og:description" content="详解安芯安全四大能力域：双引擎实时扫描、ETW 行为监控、威胁拦截与进程控制、AES-128-GCM 加密隔离，附功能全景与技术架构。" />
+  <meta property="og:type" content="website" />
+  <title>功能特性 — 安芯安全 AnXin Security</title>
+  <link rel="icon" type="image/x-icon" href="assets/img/favicon.ico" />
+  <link rel="stylesheet" href="assets/css/tokens.css" />
+  <link rel="stylesheet" href="assets/css/site.css" />
+</head>
+<body data-animations="on">
+
+  <!-- ==================== 图标库（复用应用内「安芯」图标集路径） ==================== -->
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M8.5 11.6L11 14.1L15.5 9.4"/></symbol>
+    <symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M12 7.6V12.6"/><circle cx="12" cy="15.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M5.6 5.2L18.4 18"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><path d="M9 6.6H15L17.4 9V15L15 17.4H9L6.6 15V9Z"/><path d="M10.3 10.3H13.7V13.7H10.3Z"/><path d="M10.5 6.6V3.2"/><path d="M13.5 6.6V3.2"/><path d="M10.5 17.4V20.8"/><path d="M13.5 17.4V20.8"/><path d="M6.6 10.5H3.2"/><path d="M6.6 13.5H3.2"/><path d="M17.4 10.5H20.8"/><path d="M17.4 13.5H20.8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.7" cy="10.7" r="6.7"/><path d="M15.5 15.5L20.8 20.8"/></symbol>
+    <symbol id="i-file-search" viewBox="0 0 24 24"><path d="M12.4 3.2H6.2L4.8 4.6V17.4L6.2 18.8H9.6"/><path d="M12.4 3.2V7.6H16.8"/><path d="M16.8 7.6V11"/><circle cx="14.8" cy="15.2" r="3.7"/><path d="M17.4 17.8L20.6 21"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.4V15.4"/><path d="M6.9 10.3L12 15.4L17.1 10.3"/><path d="M4.2 17.6V19.4L5.6 20.8H18.4L19.8 19.4V17.6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.21 6.02L9.89 2.84H14.11L14.79 6.02L15.79 6.59L18.87 5.59L20.99 9.25L18.57 11.42V12.58L20.99 14.75L18.87 18.41L15.79 17.41L14.79 17.98L14.11 21.16H9.89L9.21 17.98L8.21 17.41L5.13 18.41L3.01 14.75L5.43 12.58V11.42L3.01 9.25L5.13 5.59L8.21 6.59Z"/><circle cx="12" cy="12" r="3.05"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><path d="M3.4 4.8L4.8 3.4H9.4L10.8 4.8V10.6L9.4 12H4.8L3.4 10.6Z"/><path d="M13.2 4.8L14.6 3.4H19.2L20.6 4.8V7L19.2 8.4H14.6L13.2 7Z"/><path d="M13.2 12.4L14.6 11H19.2L20.6 12.4V19.2L19.2 20.6H14.6L13.2 19.2Z"/><path d="M3.4 16L4.8 14.6H9.4L10.8 16V19.2L9.4 20.6H4.8L3.4 19.2Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.6 6.4H20.4"/><path d="M9.4 6.4V4.6L10.4 3.6H13.6L14.6 4.6V6.4"/><path d="M5.8 6.4V19.4L7.2 20.8H16.8L18.2 19.4V6.4"/><path d="M10.2 10.4V16.8"/><path d="M13.8 10.4V16.8"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.4 19.4V6.6L4.8 5.2H9.4L11.6 7.6H18.6L20 9V12.2"/><path d="M3.4 19.4L6.4 12.2H21.2L18.2 19.4Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M11.5 4.6H6L4.6 6V18L6 19.4H18L19.4 18V12.5"/><path d="M14.4 4.6H19.4V9.6"/><path d="M19.4 4.6L11.8 12.2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.6 12.6L9.6 17.6L19.4 6.4"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M7.9 12.4L10.9 15.4L16.3 9.3"/></symbol>
+    <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M12 3.4L21.4 19.8H2.6Z"/><path d="M12 9.6V13.8"/><circle cx="12" cy="17" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.3" cy="15.7" r="4.4"/><path d="M11.4 12.6L20.6 3.4"/><path d="M16.6 7.4L19 9.8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.6 5.1V18.9L19.4 12.6C19.9 12.3 19.9 11.7 19.4 11.4Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.6 4.6H10L11 5.6V18.4L10 19.4H8.6L7.6 18.4V5.6Z" fill="currentColor" stroke="none"/><path d="M14 4.6H15.4L16.4 5.6V18.4L15.4 19.4H14L13 18.4V5.6Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.2V11.8"/><path d="M6.9 6.4A7.9 7.9 0 1 0 17.1 6.4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M5.6 5.6L18.4 18.4"/><path d="M18.4 5.6L5.6 18.4"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M4.6 12H19.4"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><path d="M5.6 5.6H18.4V18.4H5.6Z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12H21"/><path d="M12 3A5.4 9 0 0 1 12 21"/><path d="M12 3A5.4 9 0 0 0 12 21"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.8"/><path d="M18.4 12H21.2"/><path d="M16.53 16.53L18.51 18.51"/><path d="M12 18.4V21.2"/><path d="M7.47 16.53L5.49 18.51"/><path d="M5.6 12H2.8"/><path d="M7.47 7.47L5.49 5.49"/><path d="M12 5.6V2.8"/><path d="M16.53 7.47L18.51 5.49"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.6A9 9 0 1 1 9.4 3.6A7.2 7.2 0 0 0 20.4 14.6Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><path d="M4.6 4.2H19.4L20.8 5.6V15.4L19.4 16.8H4.6L3.2 15.4V5.6Z"/><path d="M12 16.8V20.4"/><path d="M9.4 20.4H14.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3.4 12A8.6 8.6 0 0 1 17.9 5.7L20.6 8.2"/><path d="M20.6 3.6V8.5H15.7"/><path d="M20.6 12A8.6 8.6 0 0 1 6.1 18.3L3.4 15.8"/><path d="M3.4 20.4V15.5H8.3"/></symbol>
+    <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3.5 3.6V9.4H9.3"/><path d="M3.6 9.3A8.7 8.7 0 1 1 3.9 15.4"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6.6V12H16.4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11V16.4"/><circle cx="12" cy="7.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9.4L12 15.4L18 9.4"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4.6 7H19.4"/><path d="M4.6 12H19.4"/><path d="M4.6 17H19.4"/></symbol>
+    <symbol id="i-motion-off" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/><path d="M4.2 4.2L19.8 19.8"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.75 2.69 1.25 3.35.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.59.23 2.76.11 3.05.73.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.25 5.66.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.21.67.8.55A10.99 10.99 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">跳转到主要内容</a>
+  <div class="scroll-progress" data-progress></div>
+
+  <!-- ==================== 背景光效 ==================== -->
+  <div class="aurora" aria-hidden="true">
+    <div class="aurora__blob aurora__blob--a"></div>
+    <div class="aurora__blob aurora__blob--b"></div>
+    <div class="aurora__blob aurora__blob--c"></div>
+    <div class="aurora__blob aurora__blob--d"></div>
+    <div class="aurora__grid"></div>
+    <div class="aurora__noise"></div>
+    <div class="aurora__veil"></div>
+  </div>
+
+  <!-- ==================== 顶栏 ==================== -->
+  <header class="topbar" data-topbar>
+    <div class="wrap topbar__inner">
+      <a class="brand" href="index.html" aria-label="安芯安全 首页">
+        <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+        <span>
+          <span class="brand__name">安芯安全</span>
+          <span class="brand__sub">AnXin Security</span>
+        </span>
+      </a>
+
+      <nav class="nav" data-nav aria-label="主导航">
+        <a class="nav__link" href="index.html">首页</a>
+        <a class="nav__link is-active" href="features.html" aria-current="page">功能特性</a>
+        <a class="nav__link" href="demo.html">功能演示</a>
+        <a class="nav__link" href="download.html">下载安装</a>
+        <a class="nav__link" href="opensource.html">开源与许可</a>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="icon-btn" type="button" data-theme-btn>
+          <svg class="icon-btn__glyph is-shown" data-theme-glyph="system" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="light" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="dark" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
+        </button>
+        <button class="icon-btn" type="button" data-motion-btn aria-pressed="true">
+          <svg class="icon-btn__glyph is-shown" data-motion-glyph="on" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>
+          <svg class="icon-btn__glyph" data-motion-glyph="off" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion-off"/></svg>
+        </button>
+        <a class="icon-btn" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener" title="GitHub 仓库" aria-label="GitHub 仓库">
+          <svg width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+        </a>
+        <a class="btn btn--primary" href="download.html">
+          <svg class="btn__icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+          免费下载
+        </a>
+        <button class="icon-btn nav-toggle" type="button" data-drawer-btn aria-expanded="false" aria-controls="drawer" aria-label="打开导航菜单">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-menu"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 移动端抽屉 -->
+  <nav class="drawer" id="drawer" data-drawer aria-hidden="true" aria-label="移动端导航">
+    <a class="drawer__link" href="index.html">首页</a>
+    <a class="drawer__link is-active" href="features.html" aria-current="page">功能特性</a>
+    <a class="drawer__link" href="demo.html">功能演示</a>
+    <a class="drawer__link" href="download.html">下载安装</a>
+    <a class="drawer__link" href="opensource.html">开源与许可</a>
+    <a class="drawer__link" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-external"/></svg>
+    </a>
+  </nav>
+
+  <main class="page" id="main">
+
+    <!-- ==================== 页头 ==================== -->
+    <section class="pagehero">
+      <div class="wrap">
+        <nav class="breadcrumb" data-reveal="up" aria-label="面包屑导航">
+          <a href="index.html">首页</a>
+          <span aria-hidden="true">›</span>
+          <span aria-current="page">功能特性</span>
+        </nav>
+        <h1 class="pagehero__title" data-reveal="up">功能特性<span class="gradient-text">，逐项拆解</span></h1>
+        <p class="pagehero__lead" data-reveal="up">
+          安芯安全（AnXin Security）围绕四大能力域构建完整防线：<strong>Axon / Raven 双引擎实时文件扫描</strong>、
+          <strong>ETW 行为监控</strong>与生命周期追踪、<strong>威胁拦截与进程控制</strong>，以及
+          <strong>AES-128-GCM 加密隔离区</strong>。本页逐一拆解每项能力的原理与实现，并附上功能全景、
+          技术架构与 Fluent 2 设计系统速览。
+        </p>
+        <nav class="toc" data-reveal="up" aria-label="页内导航">
+          <a href="#scanning"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-file-search"/></svg>实时扫描</a>
+          <a href="#monitoring"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>行为监控</a>
+          <a href="#interception"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>威胁拦截</a>
+          <a href="#quarantine"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg>加密隔离区</a>
+          <a href="#matrix"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-layout"/></svg>功能全景</a>
+          <a href="#architecture"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>技术架构</a>
+          <a href="#design"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>设计系统</a>
+        </nav>
+        <div class="badgerow" data-reveal="up">
+          <span class="chip chip--brand"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>Axon ML · Apache 2.0</span>
+          <span class="chip chip--brand"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>Raven 签名引擎</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>ETW 实时监控</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg>AES-128-GCM 隔离</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>NIST SP 800-88 擦除</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 实时文件扫描 ==================== -->
+    <section class="section" id="scanning">
+      <div class="wrap split">
+        <div>
+          <span class="eyebrow" data-reveal="up"><span class="eyebrow__dot"></span>能力域 01 · 实时扫描</span>
+          <h2 class="section__title" data-reveal="up">双引擎研判，<br/>恶意文件无处落脚<span class="en">Real-time File Scanning</span></h2>
+          <ul class="checklist">
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">Axon ML 机器学习引擎</span><span class="checklist__desc">以 Apache 2.0 协议独立开源的机器学习引擎（Machine Learning Engine），预编译 DLL 在本机运行，判定不出本地。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">Raven 引擎 + 签名引擎</span><span class="checklist__desc">基于签名数据库（Signature Database）的精准匹配，与 Axon 组成双引擎交叉研判，两者均为与应用深度集成的引擎 DLL。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">文件与进程内存扫描</span><span class="checklist__desc">既检查落盘文件，也支持进程内存扫描（Memory Scanning），潜伏在运行中进程里的威胁同样难逃检测。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">扫描判决缓存</span><span class="checklist__desc">由 <span class="mono">scan_result_cache_service</span> 维护判决缓存（Verdict Cache），重复检测近乎零开销。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">扫描限制可配置</span><span class="checklist__desc">扫描限制集中在 <span class="mono">config/app.json</span>，例如 <span class="mono">maxFileSizeMB</span> 控制参与扫描的单文件大小上限。</span></span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="split__visual" data-reveal="right">
+          <div class="card card--pad glow">
+            <div class="pane__head">
+              <div class="pane__title">检出列表 · Detections</div>
+              <div class="pane__desc">Axon / Raven 双引擎 · 文件与进程内存扫描</div>
+            </div>
+            <div class="rows">
+              <div class="row">
+                <span class="row__icon row__icon--danger"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-alert"/></svg></span>
+                <span class="row__text">
+                  <span class="row__name">Trojan.Win32.Generic</span>
+                  <span class="row__path">C:\Users\demo\Downloads\invoice_scan.exe</span>
+                </span>
+                <span class="row__end chip chip--danger" style="height:20px">高危</span>
+              </div>
+              <div class="row">
+                <span class="row__icon row__icon--warn"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert-triangle"/></svg></span>
+                <span class="row__text">
+                  <span class="row__name">Suspicious.Packer</span>
+                  <span class="row__path">C:\Temp\update_helper.dll</span>
+                </span>
+                <span class="row__end chip chip--warn" style="height:20px">可疑</span>
+              </div>
+              <div class="row">
+                <span class="row__icon row__icon--ok"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg></span>
+                <span class="row__text">
+                  <span class="row__name">powershell.exe · 进程内存</span>
+                  <span class="row__path">PID 7412 · memory scan</span>
+                </span>
+                <span class="row__end chip chip--success" style="height:20px">安全</span>
+              </div>
+              <div class="row">
+                <span class="row__icon row__icon--ok"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg></span>
+                <span class="row__text">
+                  <span class="row__name">system32 目录</span>
+                  <span class="row__path">C:\Windows\System32\* · 判决缓存命中</span>
+                </span>
+                <span class="row__end chip chip--success" style="height:20px">安全</span>
+              </div>
+              <div class="mini-btns" style="justify-content:flex-end">
+                <span class="mini-btn mini-btn--danger"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>清除威胁</span>
+                <span class="mini-btn"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-check"/></svg>添加信任</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== ETW 行为监控 ==================== -->
+    <section class="section section--alt" id="monitoring">
+      <div class="wrap split split--visual-first">
+        <div>
+          <span class="eyebrow" data-reveal="up"><span class="eyebrow__dot"></span>能力域 02 · 行为监控</span>
+          <h2 class="section__title" data-reveal="up">看得见每个进程的<br/>一举一动<span class="en">ETW Behavior Monitoring</span></h2>
+          <ul class="checklist">
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">ETW 实时会话</span><span class="checklist__desc">基于 Event Tracing for Windows 的会话（Session）实时捕获系统事件，监控进程行为，由 <span class="mono">etw_service</span> 管理会话、规则与解析。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">可配置匹配规则</span><span class="checklist__desc"><span class="mono">config/etw_match_rules.json</span> 定义 <span class="mono">provider</span>、<span class="mono">operation</span>、<span class="mono">severity</span>、<span class="mono">threatType</span>、<span class="mono">recommendAction</span> 与目标匹配条件——规则可解释、可复现。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">行为数据落地 SQLite</span><span class="checklist__desc">行为事件经 <span class="mono">behavior_service</span> 写入 SQLite（sqlx ORM），行为数据库路径可在主配置中调整。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">单进程行为时间线</span><span class="checklist__desc">行为生命周期追踪（Behavior Lifecycle）为单个进程构建完整时间线：进程创建、注册表写入、文件落盘一览无余。</span></span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="split__visual" data-reveal="left">
+          <div class="card card--pad glow">
+            <div class="pane__head">
+              <div class="pane__title">进程行为时间线</div>
+              <div class="pane__desc">powershell.exe · PID 7412 · ETW 实时事件</div>
+            </div>
+            <div class="timeline">
+              <div class="tl-item">
+                <span class="tl-item__time">10:24:01</span><span class="tl-item__rail"></span>
+                <span><span class="tl-item__op">进程创建</span><br/><span class="tl-item__target">cmd.exe /c reg query ...</span></span>
+                <span class="chip" style="height:20px">低</span>
+              </div>
+              <div class="tl-item tl-item--mid">
+                <span class="tl-item__time">10:24:03</span><span class="tl-item__rail"></span>
+                <span><span class="tl-item__op">注册表写入</span><br/><span class="tl-item__target">HKCU\...\CurrentVersion\Run</span></span>
+                <span class="chip chip--warn" style="height:20px">中</span>
+              </div>
+              <div class="tl-item tl-item--high">
+                <span class="tl-item__time">10:24:07</span><span class="tl-item__rail"></span>
+                <span><span class="tl-item__op">可执行文件落盘</span><br/><span class="tl-item__target">C:\Temp\stage2.exe</span></span>
+                <span class="chip chip--danger" style="height:20px">高</span>
+              </div>
+              <div class="tl-item">
+                <span class="tl-item__time">10:24:08</span><span class="tl-item__rail"></span>
+                <span><span class="tl-item__op">规则命中 · recommendAction</span><br/><span class="tl-item__target">interception_service · 进程已挂起</span></span>
+                <span class="chip chip--brand" style="height:20px">拦截</span>
+              </div>
+            </div>
+            <p class="demo-caption">行为事件写入 SQLite · 匹配规则来自 etw_match_rules.json</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 威胁拦截与进程控制 ==================== -->
+    <section class="section" id="interception">
+      <div class="wrap split">
+        <div>
+          <span class="eyebrow" data-reveal="up"><span class="eyebrow__dot"></span>能力域 03 · 威胁拦截</span>
+          <h2 class="section__title" data-reveal="up">先挂起，再决策，<br/>处置权交还给你<span class="en">Threat Interception</span></h2>
+          <ul class="checklist">
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">实时拦截</span><span class="checklist__desc">实时拦截并隔离恶意文件，由 <span class="mono">interception_service</span> 串联检测与响应链路。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">进程挂起 / 恢复 / 终止</span><span class="checklist__desc">支持对可疑进程执行挂起（Suspend）、恢复（Resume）与终止（Terminate），拦截先冻结、后处置。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">用户决策弹窗</span><span class="checklist__desc">关键处置不擅自代劳：拦截发生时弹出用户决策弹窗（User Decision Dialog），给出建议动作，由你定夺。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">受保护系统进程边界</span><span class="checklist__desc">csrss.exe、smss.exe、wininit.exe 等关键系统进程禁止操作，防护动作绝不动摇系统根基。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">自身保护</span><span class="checklist__desc">拒绝操作自身进程（Self-protection），恶意样本无法借刀杀人让防护自我了断。</span></span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="split__visual" data-reveal="right">
+          <div class="card card--pad glow">
+            <div class="pane__head">
+              <div class="pane__title">用户决策 · Interception</div>
+              <div class="pane__desc">process-intercepted · 可疑进程已被挂起，等待处置</div>
+            </div>
+            <div class="engine-card">
+              <div class="engine-card__status">
+                <span class="row__icon row__icon--danger"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-alert"/></svg></span>
+                <span>
+                  <span class="engine-card__label">stage2.exe 已挂起</span><br/>
+                  <span class="engine-card__sub">C:\Temp\stage2.exe · 可执行文件落盘触发拦截</span>
+                </span>
+              </div>
+              <span class="chip chip--danger" style="height:20px">高危</span>
+            </div>
+            <div class="mini-btns" style="justify-content:flex-end">
+              <span class="mini-btn mini-btn--danger"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-x"/></svg>终止进程</span>
+              <span class="mini-btn"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75"><use href="#i-play"/></svg>恢复运行</span>
+              <span class="mini-btn"><svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-check"/></svg>添加信任</span>
+            </div>
+            <p class="demo-caption" style="text-align:left">受保护系统进程（csrss.exe / smss.exe / wininit.exe 等）与自身进程不受任何操作影响</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 加密隔离区 ==================== -->
+    <section class="section section--alt" id="quarantine">
+      <div class="wrap split split--visual-first">
+        <div>
+          <span class="eyebrow" data-reveal="up"><span class="eyebrow__dot"></span>能力域 04 · 加密隔离</span>
+          <h2 class="section__title" data-reveal="up">封得住，也擦得净，<br/>误报还能救回来<span class="en">Encrypted Quarantine</span></h2>
+          <ul class="checklist">
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">AES-128-GCM 加密封存</span><span class="checklist__desc">恶意文件以 AES-128-GCM 加密隔离，封存期间无法运行，由 <span class="mono">quarantine_service</span> 统一管理。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">密钥经 DPAPI 保护</span><span class="checklist__desc">默认生成本机随机 AES 密钥，经 Windows DPAPI 加密后保存到 APPDATA runtime；也可通过 <span class="mono">ANXIN_SECURITY_QUARANTINE_KEY</span> 显式指定 32 位 hex 密钥。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">NIST SP 800-88 三次覆写</span><span class="checklist__desc">永久删除执行三次覆写安全擦除（随机数据 → 0x00 → 0xFF），符合 NIST SP 800-88 建议，不给样本复活机会。</span></span>
+            </li>
+            <li data-reveal="up">
+              <span class="checklist__mark"><svg width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span>
+              <span><span class="checklist__title">误报可恢复</span><span class="checklist__desc">确认为误报（False Positive）后可一键恢复到原路径；只有你主动选择「永久删除」时才执行不可逆擦除。</span></span>
+            </li>
+          </ul>
+        </div>
+
+        <div class="split__visual" data-reveal="left">
+          <div class="vault glow">
+            <div class="vault__head">
+              <span class="vault__title">
+                <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg>
+                隔离区 · Quarantine Vault
+              </span>
+              <span class="chip chip--success"><span class="chip__dot"></span>已加密</span>
+            </div>
+            <div class="vault__file">
+              <svg width="16" height="16" fill="none" stroke="var(--colorPaletteRedForeground2)" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-alert"/></svg>
+              <span class="row__text">
+                <span class="row__name">invoice_scan.exe</span>
+                <span class="row__path">C:\Users\demo\Downloads → 隔离区</span>
+              </span>
+              <span class="chip chip--danger" style="height:20px">已封存</span>
+            </div>
+            <div class="vault__cipher" aria-hidden="true">
+              <span>9f2c 41ab e07d 5c33 b8a1 f6d2 0e94 7c15</span>
+              <span>2b6e d90f 83c4 a75b 1e08 4f6a c2d9 b03e</span>
+              <span>e51a 7f28 c9b6 04d3 8a2f 61e7 f5c0 3d9b</span>
+              <span>0c47 b2e9 5d18 af63 74c8 e0b5 29f1 8d4a</span>
+            </div>
+            <div class="wipe">
+              <div class="wipe__label"><span>安全擦除 · NIST SP 800-88</span><span class="mono">3-pass</span></div>
+              <div class="wipe__bar"><span class="wipe__pass"></span><span class="wipe__pass"></span><span class="wipe__pass"></span></div>
+              <div class="wipe__legend"><span>PASS 1 · random</span><span>PASS 2 · 0x00</span><span>PASS 3 · 0xFF</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 功能全景 ==================== -->
+    <section class="section" id="matrix">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>功能全景</span>
+          <h2 class="section__title">每项功能，都有名有姓<span class="en">Feature Matrix</span></h2>
+          <p class="section__desc">安芯安全的每项能力都对应 Rust 服务层中明确的业务服务模块——20+ 个服务各司其职，边界清晰、可测试、可审计。</p>
+        </div>
+        <div class="tablewrap" data-reveal="up">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th>功能</th>
+                <th>说明</th>
+                <th>相关服务模块</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>实时文件扫描</strong></td>
+                <td>Axon / Raven 双引擎签名数据库扫描，支持文件与进程内存扫描，判决缓存加速重复检测</td>
+                <td><span class="mono">engine_service</span> · <span class="mono">native_engine_service</span> · <span class="mono">scan_result_cache_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>ETW 行为监控</strong></td>
+                <td>ETW 会话实时监控进程行为，可配置匹配规则，行为数据写入 SQLite</td>
+                <td><span class="mono">etw_service</span> · <span class="mono">behavior_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>加密隔离区</strong></td>
+                <td>AES-128-GCM 加密隔离恶意文件，NIST SP 800-88 三次覆写安全擦除，误报可恢复</td>
+                <td><span class="mono">quarantine_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>威胁拦截</strong></td>
+                <td>实时拦截恶意文件，进程挂起 / 恢复 / 终止，用户决策弹窗定夺处置</td>
+                <td><span class="mono">interception_service</span> · <span class="mono">process_control_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>风险分析</strong></td>
+                <td>基于多维度特征的风险分级评估，把零散事件聚合成可行动的结论</td>
+                <td><span class="mono">risk_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>启动快照扫描</strong></td>
+                <td>系统启动时自动扫描运行中进程，快速检测潜伏威胁</td>
+                <td><span class="mono">snapshot_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>信任项目管理</strong></td>
+                <td>统一管理启动允许与扫描 / 监控排除，运行时数据 DPAPI 加密存储</td>
+                <td><span class="mono">trust_service</span> · <span class="mono">path_policy_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>进程与文件监控</strong></td>
+                <td>监控系统进程活动与文件操作（创建、修改、删除），Detours 文件钩子监听文件 API</td>
+                <td><span class="mono">process_monitor_service</span> · <span class="mono">file_monitor_service</span> · <span class="mono">hook_service</span></td>
+              </tr>
+              <tr>
+                <td><strong>系统托盘</strong></td>
+                <td>托盘常驻与退出确认（tray-exit-requested 事件），托盘行为可在主配置中调整</td>
+                <td><span class="mono">tray_service</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 技术架构 ==================== -->
+    <section class="section section--alt" id="architecture">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>技术架构</span>
+          <h2 class="section__title">清晰分层，各司其职<span class="en">Layered Architecture</span></h2>
+          <p class="section__desc">前端只渲染，命令层只透传，服务层编排业务，原生层贴近系统——上文的每项功能都落在这四层的明确位置上。</p>
+        </div>
+
+        <div class="layers">
+          <div class="layer layer--frontend glow" data-reveal="left">
+            <span><span class="layer__name">前端层</span><br/><span class="layer__path">src/</span></span>
+            <span>
+              <span class="layer__desc">React 18 + TypeScript + Fluent UI React v9，6 个 Zustand Store 管理状态，页面经 Tauri Events 接收实时推送。</span>
+              <span class="layer__tags"><span class="chip">React 18</span><span class="chip">Fluent UI v9</span><span class="chip">Zustand</span></span>
+            </span>
+          </div>
+          <div class="layer layer--command glow" data-reveal="left">
+            <span><span class="layer__name">命令层</span><br/><span class="layer__path">src-tauri/src/commands/</span></span>
+            <span>
+              <span class="layer__desc">57+ 个 Tauri 命令分布在 24 个命令模块中：只做输入校验与透传，不携带业务逻辑。</span>
+              <span class="layer__tags"><span class="chip">Tauri 2.0</span><span class="chip">capabilities 权限</span></span>
+            </span>
+          </div>
+          <div class="layer layer--service glow" data-reveal="left">
+            <span><span class="layer__name">服务层</span><br/><span class="layer__path">src-tauri/src/services/</span></span>
+            <span>
+              <span class="layer__desc">20+ 个业务服务编排领域逻辑：引擎、ETW、隔离、拦截、风险、快照、信任——即上表中的服务模块。</span>
+              <span class="layer__tags"><span class="chip">Rust</span><span class="chip">Tokio</span><span class="chip">sqlx · SQLite</span></span>
+            </span>
+          </div>
+          <div class="layer layer--native glow" data-reveal="left">
+            <span><span class="layer__name">原生层</span><br/><span class="layer__path">native/ · Engine/</span></span>
+            <span>
+              <span class="layer__desc">C++ DLL 文件钩子（Detours 4.0.1）与预编译扫描引擎（Axon / Raven），贴近系统 API 完成感知与检测。</span>
+              <span class="layer__tags"><span class="chip">C++ DLL</span><span class="chip">Detours</span><span class="chip">Axon · Raven</span></span>
+            </span>
+          </div>
+        </div>
+
+        <div class="code" data-reveal="up" style="margin-top:clamp(24px, 3vw, 40px)">
+          <div class="code__head">
+            <span class="code__title">
+              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>
+              Tauri Events · 后端 → 前端实时推送
+            </span>
+            <button class="copy-btn" type="button" data-copy="#events-code">
+              <span data-copy-label>复制</span>
+            </button>
+          </div>
+          <pre class="code__body" id="events-code"><code><span class="tok-c">// Rust 后端通过 Tauri Events 向前端推送实时事件</span>
+<span class="tok-k">import</span> { listen } <span class="tok-k">from</span> <span class="tok-s">'@tauri-apps/api/event'</span><span class="tok-p">;</span>
+
+<span class="tok-k">await</span> <span class="tok-f">listen</span>(<span class="tok-s">'etw-event'</span>, onEtwEvent)<span class="tok-p">;</span>                <span class="tok-c">// ETW 行为事件</span>
+<span class="tok-k">await</span> <span class="tok-f">listen</span>(<span class="tok-s">'scan-progress'</span>, onScanProgress)<span class="tok-p">;</span>       <span class="tok-c">// 扫描进度</span>
+<span class="tok-k">await</span> <span class="tok-f">listen</span>(<span class="tok-s">'quarantine-updated'</span>, onQuarantine)<span class="tok-p">;</span>    <span class="tok-c">// 隔离区变更</span>
+<span class="tok-k">await</span> <span class="tok-f">listen</span>(<span class="tok-s">'process-intercepted'</span>, onIntercepted)<span class="tok-p">;</span>  <span class="tok-c">// 进程拦截 · 弹出用户决策</span>
+<span class="tok-k">await</span> <span class="tok-f">listen</span>(<span class="tok-s">'tray-exit-requested'</span>, onTrayExit)<span class="tok-p">;</span>     <span class="tok-c">// 托盘退出确认</span></code></pre>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== Fluent 2 设计系统 ==================== -->
+    <section class="section" id="design">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>设计系统</span>
+          <h2 class="section__title">Fluent 2，从应用到官网<span class="en">Fluent 2 Design System</span></h2>
+          <p class="section__desc">应用已迁移到官方 Fluent UI React v9 组件体系，通过 FluentProvider、官方 Web 主题、makeStyles 与 Fluent tokens 统一视觉语言。你正在浏览的这个官网也遵循同一套设计令牌体系——深浅色主题、圆角、阴影与动效开关一脉相承。</p>
+        </div>
+        <div class="tablewrap" data-reveal="up">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th>Token 类别</th>
+                <th>说明</th>
+                <th>值 · 示例</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>品牌色</strong></td>
+                <td>Fluent 默认品牌蓝</td>
+                <td><span class="mono">#0f6cbd</span></td>
+              </tr>
+              <tr>
+                <td><strong>主题</strong></td>
+                <td>官方 Web 主题，深色 / 浅色 + 跟随系统</td>
+                <td><span class="mono">webLightTheme</span> / <span class="mono">webDarkTheme</span></td>
+              </tr>
+              <tr>
+                <td><strong>组件</strong></td>
+                <td>官方 Fluent 组件</td>
+                <td><span class="mono">Button</span> / <span class="mono">Dialog</span> / <span class="mono">Table</span> / <span class="mono">Toaster</span></td>
+              </tr>
+              <tr>
+                <td><strong>样式</strong></td>
+                <td>组件内 <span class="mono">makeStyles</span> + Fluent tokens</td>
+                <td><span class="mono">tokens.colorNeutralForeground1</span></td>
+              </tr>
+              <tr>
+                <td><strong>圆角与阴影</strong></td>
+                <td>统一使用 Fluent token</td>
+                <td><span class="mono">tokens.borderRadiusLarge</span> / <span class="mono">tokens.shadow8</span></td>
+              </tr>
+              <tr>
+                <td><strong>动画开关</strong></td>
+                <td>全局壳层 CSS + 减少动画开关，一键关闭全部动效</td>
+                <td><span class="mono">body[data-animations="off"]</span></td>
+              </tr>
+              <tr>
+                <td><strong>无边框窗口</strong></td>
+                <td>自定义 TitleBar 组件替代系统标题栏</td>
+                <td><span class="mono">tauri.conf.json</span> · <span class="mono">decorations: false</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 行动区 ==================== -->
+    <section class="section">
+      <div class="wrap">
+        <div class="cta" data-reveal="scale">
+          <h2 class="cta__title">功能看完了，<span class="gradient-text">该上手了</span></h2>
+          <p class="cta__desc">下载 NSIS 安装包即刻体验全部防护能力，或先去了解各组件的开源协议与第三方声明。</p>
+          <div class="cta__actions">
+            <a class="btn btn--primary btn--lg" href="download.html">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+              下载安装
+            </a>
+            <a class="btn btn--secondary btn--lg" href="opensource.html">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg>
+              开源与许可
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 页脚 ==================== -->
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer__grid">
+          <div>
+            <a class="brand" href="index.html">
+              <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+              <span>
+                <span class="brand__name">安芯安全</span>
+                <span class="brand__sub">AnXin Security</span>
+              </span>
+            </a>
+            <p class="footer__about">基于 Tauri 2.0 的 Windows 安全防护桌面应用，提供实时文件扫描、ETW 行为监控和威胁防护功能。以 Fluent 2 设计语言呈现。</p>
+          </div>
+          <div class="footer__col">
+            <h3>产品</h3>
+            <ul>
+              <li><a href="features.html">功能特性</a></li>
+              <li><a href="features.html#architecture">技术架构</a></li>
+              <li><a href="download.html">下载安装</a></li>
+              <li><a href="download.html#faq">问题排查</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>资源</h3>
+            <ul>
+              <li><a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub 仓库</a></li>
+              <li><a href="https://github.com/kelomina/AnXinSecurity/issues" target="_blank" rel="noopener">问题反馈</a></li>
+              <li><a href="https://github.com/kelomina/Axon_ML" target="_blank" rel="noopener">Axon ML 引擎</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>开源</h3>
+            <ul>
+              <li><a href="opensource.html">开源组件</a></li>
+              <li><a href="opensource.html#license">MIT 许可证</a></li>
+              <li><a href="opensource.html#thirdparty">第三方声明</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer__bottom">
+          <span>© <span data-year>2026</span> AnXin Security Team · 基于 MIT 许可证开源</span>
+          <span class="footer__legal">
+            <a href="opensource.html#license">许可证</a>
+            <a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">源代码</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <script src="assets/js/site.js"></script>
+</body>
+</html>

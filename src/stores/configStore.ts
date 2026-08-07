@@ -27,6 +27,8 @@ interface ConfigState {
   monitoringRuntimeStatus: MonitoringRuntimeStatus | null
   monitoringControlPending: MonitoringControlKey | null
   monitoringControlError: string | null
+  devModeUnlocked: boolean
+  setDevModeUnlocked: (unlocked: boolean) => void
   loadConfig: () => Promise<void>
   setCurrentPage: (page: string) => void
   refreshMonitoringRuntimeStatus: () => Promise<void>
@@ -53,7 +55,6 @@ const fallbackConfig = (
   fileEnabled = true
 ): AppConfig => ({
   brand: '',
-  themeColor: '',
   defaultPage: '',
   minimizeToTray: false,
   behaviorMonitoring: { enabled: behaviorEnabled },
@@ -68,7 +69,11 @@ const fallbackConfig = (
     startupRevocationCheckTimeoutMs: 5000,
     startupRevocationCheckConcurrency: 4
   },
-  ui: { themeMode: 'system', animations: true }
+  ui: { themeMode: 'system', animations: true },
+  // 元核防护默认关闭：必须在用户显式开启并通过环境检查后才加载驱动
+  //  Hypervisor protection defaults to off: the driver is loaded only after the
+  //  user explicitly turns this on and the environment check passes
+  hypervisorProtection: { enabled: false }
 })
 
 const monitoringErrorMessage = (label: string, error: unknown) =>
@@ -153,6 +158,8 @@ export const useConfigStore = create<ConfigState>((set, get) => ({
   monitoringRuntimeStatus: null,
   monitoringControlPending: null,
   monitoringControlError: null,
+  devModeUnlocked: false,
+  setDevModeUnlocked: (unlocked: boolean) => set({ devModeUnlocked: unlocked }),
 
   loadConfig: async () => {
     try {

@@ -9,8 +9,29 @@ import React, { useEffect, useState } from 'react'
 import { useConfigStore } from '../stores/configStore'
 import { useThemeStore, ThemeMode } from '../stores/themeStore'
 import { useI18nStore } from '../stores/i18nStore'
-import { FolderOpen, FilePlus, Trash2, Shield, Plus, Key, Moon, Sun, Monitor } from 'lucide-react'
+import { useFirewallStore } from '../stores/firewallStore'
+import { useHypervisorStore } from '../stores/hypervisorStore'
+import {
+  Clock3,
+  Cpu,
+  ExternalLink,
+  FilePlus,
+  Firewall,
+  FolderOpen,
+  Globe2,
+  Info,
+  Key,
+  Monitor,
+  Moon,
+  Plus,
+  Shield,
+  ShieldAlert,
+  ShieldCheck,
+  Sun,
+  Trash2,
+} from './icons'
 import { open } from '@tauri-apps/plugin-dialog'
+import { ConfirmDialog } from './common/ConfirmDialog'
 import {
   Button,
   Switch,
@@ -18,6 +39,8 @@ import {
   Textarea,
   Radio,
   RadioGroup,
+  Dropdown,
+  Option,
   Text,
   makeStyles,
   shorthands,
@@ -66,6 +89,9 @@ const useStyles = makeStyles({
       borderBottomStyle: 'none',
     },
   },
+  settingsItemSpaced: {
+    marginTop: '8px',
+  },
   settingsItemIcon: {
     width: '36px',
     height: '36px',
@@ -76,6 +102,10 @@ const useStyles = makeStyles({
     backgroundColor: tokens.colorBrandBackground2,
     color: tokens.colorBrandForeground1,
     flexShrink: 0,
+  },
+  settingsItemIconWarning: {
+    backgroundColor: tokens.colorPaletteYellowBackground2,
+    color: tokens.colorPaletteYellowForeground2,
   },
   settingsItemText: {
     flex: 1,
@@ -109,11 +139,11 @@ const useStyles = makeStyles({
     transitionDuration: tokens.durationNormal,
     backgroundColor: tokens.colorNeutralBackground2,
     ':hover': {
-      borderColor: tokens.colorBrandStroke1 as any,
+      ...shorthands.borderColor(tokens.colorBrandStroke1),
     },
   },
   themeOptionSelected: {
-    borderColor: tokens.colorBrandStroke1 as any,
+    ...shorthands.borderColor(tokens.colorBrandStroke1),
     backgroundColor: tokens.colorBrandBackground2,
   },
   themeOptionIcon: {
@@ -131,6 +161,18 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     backgroundColor: tokens.colorNeutralBackground2,
     ...shorthands.borderRadius(tokens.borderRadiusMedium),
+  },
+  monitoringStatusValue: {
+    marginLeft: '10px',
+  },
+  monitoringStatusValueFirst: {
+    marginLeft: '6px',
+  },
+  monitoringStatusOk: {
+    color: tokens.colorPaletteGreenForeground2,
+  },
+  monitoringStatusWarn: {
+    color: tokens.colorPaletteYellowForeground2,
   },
   errorMessage: {
     ...shorthands.padding('12px'),
@@ -175,16 +217,63 @@ const useStyles = makeStyles({
     ...shorthands.padding('48px', '24px'),
     color: tokens.colorNeutralForeground3,
   },
-  inputField: {
-    width: '100%',
-  },
   flexRow: {
     display: 'flex',
     ...shorthands.gap('12px'),
     marginBottom: '12px',
   },
+  flexRowCenter: {
+    alignItems: 'center',
+  },
+  flexRowEnd: {
+    justifyContent: 'flex-end',
+    marginTop: '16px',
+  },
   flexGrow: {
     flex: 1,
+  },
+  fieldLabel: {
+    display: 'block',
+    marginBottom: '8px',
+  },
+  radioLabel: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shorthands.gap('8px'),
+  },
+  secondaryText: {
+    color: tokens.colorNeutralForeground3,
+  },
+  blockDescription: {
+    display: 'block',
+    color: tokens.colorNeutralForeground3,
+    marginBottom: '16px',
+  },
+  addTrustButton: {
+    marginLeft: 'auto',
+  },
+  trustItemsList: {
+    marginTop: '16px',
+  },
+  devMessage: {
+    ...shorthands.padding('12px'),
+    marginBottom: '12px',
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    fontSize: tokens.fontSizeBase300,
+  },
+  devMessageError: {
+    backgroundColor: tokens.colorPaletteRedBackground2,
+    color: tokens.colorPaletteRedForeground2,
+  },
+  devMessageSuccess: {
+    backgroundColor: tokens.colorPaletteGreenBackground2,
+    color: tokens.colorPaletteGreenForeground2,
+  },
+  devTextarea: {
+    width: '100%',
+    fontFamily: 'Consolas, "Courier New", monospace',
+    fontSize: '13px',
   },
 })
 
@@ -202,9 +291,24 @@ const SettingsPage: React.FC = () => {
     loadTrustItems,
     addTrustItem,
     removeTrustItem,
+    devModeUnlocked,
+    setDevModeUnlocked,
   } = useConfigStore()
   const { themeMode, setThemeMode, animationsEnabled, toggleAnimations } = useThemeStore()
   const { locale, setLocale, t } = useI18nStore()
+  const {
+    status: firewallStatus,
+    controlPending: firewallControlPending,
+    setEnabled: setFirewallEnabled,
+    refreshStatus: refreshFirewallStatus,
+  } = useFirewallStore()
+  const {
+    status: hypervisorStatus,
+    controlPending: hypervisorControlPending,
+    controlError: hypervisorControlError,
+    setEnabled: setHypervisorEnabled,
+    refreshStatus: refreshHypervisorStatus,
+  } = useHypervisorStore()
   const styles = useStyles()
 
   const [newTrustPath, setNewTrustPath] = useState('')
@@ -212,14 +316,27 @@ const SettingsPage: React.FC = () => {
   const [newTrustDesc, setNewTrustDesc] = useState('')
   const [devPassword, setDevPassword] = useState('')
   const [devData, setDevData] = useState('')
-  const [devUnlocked, setDevUnlocked] = useState(false)
   const [devMessage, setDevMessage] = useState('')
   const [devMessageIsError, setDevMessageIsError] = useState(false)
+  const [trustError, setTrustError] = useState('')
+  const [deleteConfirm, setDeleteConfirm] = useState<{ path: string; index: number } | null>(null)
 
   useEffect(() => {
     loadTrustItems()
     refreshMonitoringRuntimeStatus()
-  }, [loadTrustItems, refreshMonitoringRuntimeStatus])
+    // 防火墙开关必须显示后端的真实状态而不是配置文件里的值：
+    // 配置写着已启用但驱动没装时，开关应当能反映出来。
+    //  The firewall switch must reflect the backend's real state rather than the
+    //  config file: with the config saying enabled but no driver installed, the
+    //  switch needs to be able to show it.
+    void refreshFirewallStatus()
+    // 元核防护同理：配置写 enabled 但驱动未通过环境检查或未安装时，
+    // 开关必须显示真实状态而不是配置值。
+    //  Same for hypervisor protection: with the config saying enabled but the
+    //  driver missing or the environment check failing, the switch must show
+    //  the real state rather than the config value.
+    void refreshHypervisorStatus()
+  }, [loadTrustItems, refreshMonitoringRuntimeStatus, refreshFirewallStatus, refreshHypervisorStatus])
 
   const themeOptions: { value: ThemeMode; icon: React.ReactNode; labelKey: string }[] = [
     { value: 'dark', icon: <Moon size={20} />, labelKey: 'settings_theme_dark' },
@@ -245,24 +362,35 @@ const SettingsPage: React.FC = () => {
 
   const handleAddTrustItem = async () => {
     if (!newTrustPath.trim()) return
+    setTrustError('')
     try {
       await addTrustItem(newTrustPath, newTrustType, newTrustDesc || undefined)
       setNewTrustPath('')
       setNewTrustDesc('')
       setNewTrustType('file')
     } catch (e) {
-      alert(`${t('settings_dev_save_failed')}: ${e}`)
+      const msg = `${t('settings_dev_save_failed')}: ${e}`
+      console.warn('[SettingsPage] Add trust item failed:', e)
+      setTrustError(msg)
     }
   }
 
   const handleRemoveTrustItem = async (index: number) => {
     const entry = trustItems[index]
     if (!entry) return
-    if (!confirm(t('settings_confirm_delete_trust').replace('{path}', entry.path))) return
+    setDeleteConfirm({ path: entry.path, index })
+  }
+
+  const handleDeleteConfirm = async () => {
+    if (!deleteConfirm) return
+    setDeleteConfirm(null)
+    setTrustError('')
     try {
-      await removeTrustItem(entry.path)
+      await removeTrustItem(deleteConfirm.path)
     } catch (e) {
-      alert(`${t('delete_failed')}: ${e}`)
+      const msg = `${t('delete_failed')}: ${e}`
+      console.warn('[SettingsPage] Remove trust item failed:', e)
+      setTrustError(msg)
     }
   }
 
@@ -284,7 +412,7 @@ const SettingsPage: React.FC = () => {
     try {
       const result = await devSettingsUnlock(devPassword)
       setDevData(JSON.stringify(result, null, 2))
-      setDevUnlocked(true)
+      setDevModeUnlocked(true)
       setDevMessage(t('settings_dev_unlock_success'))
       setDevMessageIsError(false)
     } catch (e) {
@@ -305,6 +433,7 @@ const SettingsPage: React.FC = () => {
   }
 
   return (
+    <>
     <section id="page-settings" className={styles.page}>
       <h1 className={styles.pageTitle}>{t('settings_title')}</h1>
 
@@ -312,27 +441,30 @@ const SettingsPage: React.FC = () => {
       <div className={styles.settingsGroup}>
         <div className={styles.settingsGroupTitle}>{t('settings_group_appearance')}</div>
         <div className={styles.card}>
-          <Text weight="medium" size={300} style={{ marginBottom: 8 }}>
+          <Text weight="medium" size={300} className={styles.fieldLabel}>
             {t('settings_theme_mode')}
           </Text>
-          <div className={styles.themeSelector}>
+          <RadioGroup
+            value={themeMode}
+            onChange={(_, data) => setThemeMode(data.value as ThemeMode)}
+            className={styles.themeSelector}
+          >
             {themeOptions.map((o) => (
-              <div
+              <Radio
                 key={o.value}
-                className={`${styles.themeOption} ${themeMode === o.value ? styles.themeOptionSelected : ''}`}
-                onClick={() => setThemeMode(o.value)}
-              >
-                <div className={styles.themeOptionIcon}>{o.icon}</div>
-                <div className={styles.themeOptionLabel}>{t(o.labelKey)}</div>
-              </div>
+                value={o.value}
+                label={
+                  <span className={styles.radioLabel}>
+                    <span className={styles.themeOptionIcon}>{o.icon}</span>
+                    <span className={styles.themeOptionLabel}>{t(o.labelKey)}</span>
+                  </span>
+                }
+              />
             ))}
-          </div>
-          <div className={styles.settingsItem} style={{ marginTop: 8 }}>
-            <div className={styles.settingsItemIcon} style={{ backgroundColor: 'rgba(199,146,85,0.09)', color: 'var(--color-warning)' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 6v6l4 2" />
-              </svg>
+          </RadioGroup>
+          <div className={`${styles.settingsItem} ${styles.settingsItemSpaced}`}>
+            <div className={`${styles.settingsItemIcon} ${styles.settingsItemIconWarning}`}>
+              <Clock3 size={18} />
             </div>
             <div className={styles.settingsItemText}>
               <div className={styles.settingsItemTitle}>{t('settings_disable_animations')}</div>
@@ -352,21 +484,19 @@ const SettingsPage: React.FC = () => {
           {monitoringControlError && <div className={styles.errorMessage}>{monitoringControlError}</div>}
           <div className={styles.monitoringStatus}>
             {t('settings_monitoring_status')}
-            <strong style={{ marginLeft: '6px', color: monitoringRuntimeStatus?.etwCollecting ? tokens.colorPaletteGreenForeground2 : tokens.colorPaletteYellowForeground2 }}>
+            <strong className={`${styles.monitoringStatusValueFirst} ${monitoringRuntimeStatus?.etwCollecting ? styles.monitoringStatusOk : styles.monitoringStatusWarn}`}>
               ETW {monitoringRuntimeStatus ? (monitoringRuntimeStatus.etwCollecting ? t('settings_monitoring_collecting') : t('settings_monitoring_stopped')) : t('settings_monitoring_loading')}
             </strong>
-            <strong style={{ marginLeft: '10px', color: monitoringRuntimeStatus?.processWatcherRunning ? tokens.colorPaletteGreenForeground2 : tokens.colorPaletteYellowForeground2 }}>
+            <strong className={`${styles.monitoringStatusValue} ${monitoringRuntimeStatus?.processWatcherRunning ? styles.monitoringStatusOk : styles.monitoringStatusWarn}`}>
               APIHook {monitoringRuntimeStatus ? (monitoringRuntimeStatus.processWatcherRunning ? t('settings_monitoring_running') : t('settings_monitoring_stopped')) : t('settings_monitoring_loading')}
             </strong>
-            <strong style={{ marginLeft: '10px', color: monitoringRuntimeStatus?.hookRunning ? tokens.colorPaletteGreenForeground2 : tokens.colorPaletteYellowForeground2 }}>
+            <strong className={`${styles.monitoringStatusValue} ${monitoringRuntimeStatus?.hookRunning ? styles.monitoringStatusOk : styles.monitoringStatusWarn}`}>
               Hook {monitoringRuntimeStatus ? (monitoringRuntimeStatus.hookRunning ? t('settings_monitoring_running') : t('settings_monitoring_stopped')) : t('settings_monitoring_loading')}
             </strong>
           </div>
           <div className={styles.settingsItem}>
             <div className={styles.settingsItemIcon}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              </svg>
+              <ShieldCheck size={18} />
             </div>
             <div className={styles.settingsItemText}>
               <div className={styles.settingsItemTitle}>{t('settings_behavior_monitoring')}</div>
@@ -386,18 +516,7 @@ const SettingsPage: React.FC = () => {
           </div>
           <div className={styles.settingsItem}>
             <div className={styles.settingsItemIcon}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <rect x="4" y="4" width="16" height="16" rx="2" />
-                <rect x="9" y="9" width="6" height="6" />
-                <path d="M15 2v2" />
-                <path d="M15 20v2" />
-                <path d="M2 15h2" />
-                <path d="M2 9h2" />
-                <path d="M20 15h2" />
-                <path d="M20 9h2" />
-                <path d="M9 2v2" />
-                <path d="M9 20v2" />
-              </svg>
+              <Cpu size={18} />
             </div>
             <div className={styles.settingsItemText}>
               <div className={styles.settingsItemTitle}>{t('settings_process_monitoring')}</div>
@@ -416,12 +535,8 @@ const SettingsPage: React.FC = () => {
             </div>
           </div>
           <div className={styles.settingsItem}>
-            <div className={styles.settingsItemIcon} style={{ backgroundColor: 'rgba(199,146,85,0.09)', color: 'var(--color-warning)' }}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M15 3h6v6" />
-                <path d="M10 14 21 3" />
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
-              </svg>
+            <div className={`${styles.settingsItemIcon} ${styles.settingsItemIconWarning}`}>
+              <ExternalLink size={18} />
             </div>
             <div className={styles.settingsItemText}>
               <div className={styles.settingsItemTitle}>{t('settings_file_hook')}</div>
@@ -439,6 +554,80 @@ const SettingsPage: React.FC = () => {
               />
             </div>
           </div>
+          {/*
+            网络防火墙开关。与上面几个监控开关的区别在于：这个开关会真的切断
+            用户的网络连接，因此它的运行状态（尤其是"驱动未连接"）必须在防火墙
+            页面上有完整交代，这里只做最基本的启停。
+            Network firewall switch. Unlike the monitoring toggles above, this one
+            can genuinely cut the user's network, so its runtime state — above all
+            "driver not connected" — is spelled out in full on the firewall page.
+            This row only does the basic on/off.
+          */}
+          <div className={styles.settingsItem}>
+            <div className={`${styles.settingsItemIcon} ${styles.settingsItemIconWarning}`}>
+              <Firewall size={18} />
+            </div>
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_network_firewall')}</div>
+              <div className={styles.settingsItemDesc}>
+                {t('settings_network_firewall_desc')}
+              </div>
+            </div>
+            <div className={styles.settingsItemControl}>
+              <Switch
+                checked={firewallStatus.enabled}
+                onChange={(_, data) => {
+                  if (firewallControlPending === null) {
+                    void setFirewallEnabled(data.checked).catch(() => {
+                      // 错误由 firewallStore 记录，防火墙页面统一展示
+                      //  The error is recorded by firewallStore and shown on the firewall page
+                    })
+                  }
+                }}
+                disabled={firewallControlPending !== null}
+              />
+            </div>
+          </div>
+          {/*
+            元核防护开关。默认关闭，用户开启时会先做环境检查（驱动是否已安装、
+            服务是否可启动），通过后才真正拉起 hypervisor 驱动接管系统虚拟化。
+            这是改变系统虚拟化姿态的高风险动作，所以开关状态必须反映后端真实
+            接管情况，而不能只看配置文件里的 enabled 值。
+            Hypervisor protection switch. Defaults to off; turning it on runs an
+            environment check first (driver installed, service startable) and only
+            then brings up the hypervisor driver to take over system virtualization.
+            This is a high-risk action that alters the system's virtualization
+            posture, so the switch must reflect the real takeover state from the
+            backend rather than just the enabled flag in the config file.
+          */}
+          <div className={styles.settingsItem}>
+            <div className={`${styles.settingsItemIcon} ${styles.settingsItemIconWarning}`}>
+              <ShieldAlert size={18} />
+            </div>
+            <div className={styles.settingsItemText}>
+              <div className={styles.settingsItemTitle}>{t('settings_hypervisor_protection')}</div>
+              <div className={styles.settingsItemDesc}>
+                {t('settings_hypervisor_protection_desc')}
+              </div>
+            </div>
+            <div className={styles.settingsItemControl}>
+              <Switch
+                checked={hypervisorStatus.driverConnected}
+                onChange={(_, data) => {
+                  if (!hypervisorControlPending) {
+                    void setHypervisorEnabled(data.checked).catch(() => {
+                      // 错误由 hypervisorStore 记录并在下方统一展示
+                      //  The error is recorded by hypervisorStore and shown below
+                    })
+                  }
+                }}
+                disabled={hypervisorControlPending}
+              />
+            </div>
+          </div>
+          {hypervisorControlError && (
+            <div className={styles.errorMessage}>{hypervisorControlError}</div>
+          )}
         </div>
       </div>
 
@@ -448,49 +637,36 @@ const SettingsPage: React.FC = () => {
         <div className={`${styles.card} ${styles.cardNoPadding}`}>
           <div className={styles.settingsItem}>
             <div className={styles.settingsItemIcon}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20" />
-                <path d="M2 12h20" />
-              </svg>
+              <Globe2 size={18} />
             </div>
             <div className={styles.settingsItemText}>
-              <div className={styles.settingsItemTitle}>{t('settings_language')}</div>
+              <div className={styles.settingsItemTitle} id="settings-language-label">{t('settings_language')}</div>
               <div className={styles.settingsItemDesc}>{t('settings_language_desc')}</div>
             </div>
             <div className={styles.settingsItemControl}>
-              <select
-                className="custom-select"
-                value={locale}
-                onChange={(e) => void setLocale(e.target.value)}
-                style={{
-                  padding: '6px 12px',
-                  backgroundColor: tokens.colorNeutralBackground2,
-                  border: `1px solid ${tokens.colorNeutralStroke1}`,
-                  borderRadius: tokens.borderRadiusMedium,
-                  color: tokens.colorNeutralForeground1,
-                  fontSize: tokens.fontSizeBase200,
+              <Dropdown
+                value={locale === 'zh-CN' ? t('locale_zh_CN') : t('locale_en_US')}
+                selectedOptions={[locale]}
+                onOptionSelect={(_, data) => {
+                  if (data.optionValue) void setLocale(data.optionValue)
                 }}
+                aria-labelledby="settings-language-label"
               >
-                <option value="zh-CN">{t('locale_zh_CN')}</option>
-                <option value="en-US">{t('locale_en_US')}</option>
-              </select>
+                <Option value="zh-CN">{t('locale_zh_CN')}</Option>
+                <Option value="en-US">{t('locale_en_US')}</Option>
+              </Dropdown>
             </div>
           </div>
           <div className={styles.settingsItem}>
             <div className={styles.settingsItemIcon}>
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="10" />
-                <path d="M12 16v-4" />
-                <path d="M12 8h.01" />
-              </svg>
+              <Info size={18} />
             </div>
             <div className={styles.settingsItemText}>
               <div className={styles.settingsItemTitle}>{t('settings_version')}</div>
               <div className={styles.settingsItemDesc}>{t('settings_version_desc')}</div>
             </div>
             <div className={styles.settingsItemControl}>
-              <Text size={200} style={{ color: tokens.colorNeutralForeground3 }}>
+              <Text size={200} className={styles.secondaryText}>
                 v1.0.0
               </Text>
             </div>
@@ -499,12 +675,15 @@ const SettingsPage: React.FC = () => {
       </div>
 
       {/* 信任项目 */}
-      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroup}>
         <div className={styles.settingsGroupTitle}>{t('settings_group_trust')}</div>
         <div className={styles.card}>
-          <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: '16px', display: 'block' }}>
+          <Text size={300} className={styles.blockDescription}>
             {t('settings_trust_desc')}
           </Text>
+          {trustError && (
+            <div className={styles.errorMessage}>{trustError}</div>
+          )}
           <div className={styles.flexRow}>
             <Input
               className={styles.flexGrow}
@@ -512,8 +691,8 @@ const SettingsPage: React.FC = () => {
               onChange={(_, data) => setNewTrustPath(data.value)}
               placeholder={t('settings_trust_path_placeholder')}
             />
-            <Button appearance="secondary" icon={<FolderOpen size={18} />} onClick={handleSelectTrustDir} />
-            <Button appearance="secondary" icon={<FilePlus size={18} />} onClick={handleSelectTrustFile} />
+            <Button appearance="secondary" icon={<FolderOpen size={18} />} onClick={handleSelectTrustDir} aria-label={t('settings_select_directory')} />
+            <Button appearance="secondary" icon={<FilePlus size={18} />} onClick={handleSelectTrustFile} aria-label={t('settings_select_file')} />
           </div>
           <div className={styles.flexRow}>
             <Input
@@ -523,16 +702,16 @@ const SettingsPage: React.FC = () => {
               placeholder={t('settings_trust_desc_placeholder')}
             />
           </div>
-          <div className={styles.flexRow} style={{ alignItems: 'center' }}>
+          <div className={`${styles.flexRow} ${styles.flexRowCenter}`}>
             <RadioGroup value={newTrustType} onChange={(_, data) => setNewTrustType(data.value as 'file' | 'directory')}>
               <Radio value="file" label={t('settings_trust_type_file')} />
               <Radio value="directory" label={t('settings_trust_type_directory')} />
             </RadioGroup>
-            <Button appearance="primary" icon={<Plus size={16} />} onClick={handleAddTrustItem} disabled={!newTrustPath.trim()} style={{ marginLeft: 'auto' }}>
+            <Button appearance="primary" icon={<Plus size={16} />} onClick={handleAddTrustItem} disabled={!newTrustPath.trim()} className={styles.addTrustButton}>
               {t('settings_trust_add')}
             </Button>
           </div>
-          <div style={{ marginTop: '16px' }}>
+          <div className={styles.trustItemsList}>
             {trustItems.length === 0 ? (
               <div className={styles.emptyState}>
                 <Shield size={48} />
@@ -552,7 +731,7 @@ const SettingsPage: React.FC = () => {
                         {entry.description && ` · ${entry.description}`}
                       </div>
                     </div>
-                    <Button appearance="subtle" icon={<Trash2 size={16} />} onClick={() => handleRemoveTrustItem(index)} />
+                    <Button appearance="subtle" icon={<Trash2 size={16} />} onClick={() => handleRemoveTrustItem(index)} aria-label={t('settings_delete_trust')} />
                   </div>
                 ))}
               </div>
@@ -562,27 +741,20 @@ const SettingsPage: React.FC = () => {
       </div>
 
       {/* 开发者设置 */}
-      <div className={styles.settingsGroup}>
+        <div className={styles.settingsGroup}>
         <div className={styles.settingsGroupTitle}>{t('settings_group_developer')}</div>
         <div className={styles.card}>
-          <Text size={300} style={{ color: tokens.colorNeutralForeground3, marginBottom: '16px', display: 'block' }}>
+          <Text size={300} className={styles.blockDescription}>
             {t('settings_dev_desc')}
           </Text>
           {devMessage && (
             <div
-              style={{
-                padding: '12px',
-                marginBottom: '12px',
-                borderRadius: tokens.borderRadiusMedium,
-                background: devMessageIsError ? tokens.colorPaletteRedBackground2 : tokens.colorPaletteGreenBackground2,
-                color: devMessageIsError ? tokens.colorPaletteRedForeground2 : tokens.colorPaletteGreenForeground2,
-                fontSize: tokens.fontSizeBase300,
-              }}
+              className={`${styles.devMessage} ${devMessageIsError ? styles.devMessageError : styles.devMessageSuccess}`}
             >
               {devMessage}
             </div>
           )}
-          {!devUnlocked ? (
+          {!devModeUnlocked ? (
             <div className={styles.flexRow}>
               <Input
                 type="password"
@@ -601,13 +773,13 @@ const SettingsPage: React.FC = () => {
                 value={devData}
                 onChange={(_, data) => setDevData(data.value)}
                 rows={15}
-                style={{ width: '100%', fontFamily: 'var(--font-mono)', fontSize: '13px' }}
+                className={styles.devTextarea}
               />
-              <div className={styles.flexRow} style={{ justifyContent: 'flex-end', marginTop: '16px' }}>
+              <div className={`${styles.flexRow} ${styles.flexRowEnd}`}>
                 <Button
                   appearance="secondary"
                   onClick={() => {
-                    setDevUnlocked(false)
+                    setDevModeUnlocked(false)
                     setDevMessage('')
                     setDevMessageIsError(false)
                   }}
@@ -623,6 +795,18 @@ const SettingsPage: React.FC = () => {
         </div>
       </div>
     </section>
+
+    <ConfirmDialog
+      open={deleteConfirm !== null}
+      title={t('settings_confirm_delete_trust_title')}
+      message={deleteConfirm ? t('settings_confirm_delete_trust').replace('{path}', deleteConfirm.path) : ''}
+      confirmText={t('quarantine_confirm_delete')}
+      cancelText={t('common_cancel')}
+      intent="danger"
+      onConfirm={handleDeleteConfirm}
+      onCancel={() => setDeleteConfirm(null)}
+    />
+    </>
   )
 }
 

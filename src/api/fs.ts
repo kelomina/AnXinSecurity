@@ -54,14 +54,20 @@ export function onWalkFileBatch(
   callback: (files: string[]) => void
 ): () => void {
   let unlisten: UnlistenFn | null = null
+  let disposed = false
 
   listen<string[]>('walk-file-batch', (event) => {
     callback(event.payload)
   }).then((fn) => {
-    unlisten = fn
+    if (disposed) {
+      fn()
+    } else {
+      unlisten = fn
+    }
   })
 
   return () => {
+    disposed = true
     if (unlisten) {
       unlisten()
     }
@@ -81,14 +87,20 @@ export function onWalkComplete(
   callback: (payload: { path: string }) => void
 ): () => void {
   let unlisten: UnlistenFn | null = null
+  let disposed = false
 
   listen('walk-complete', (event) => {
     callback(event.payload as { path: string })
   }).then((fn) => {
-    unlisten = fn
+    if (disposed) {
+      fn()
+    } else {
+      unlisten = fn
+    }
   })
 
   return () => {
+    disposed = true
     if (unlisten) {
       unlisten()
     }

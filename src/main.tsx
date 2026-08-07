@@ -9,7 +9,13 @@ import { customLightTheme, customDarkTheme } from './theme/customTheme'
 import './styles/global.css'
 
 const currentWindow = getCurrentWindow()
-const RootComponent = currentWindow.label === 'interception' ? InterceptionWindowApp : App
+const isInterceptionWindow = currentWindow.label === 'interception'
+const RootComponent = isInterceptionWindow ? InterceptionWindowApp : App
+
+// 拦截窗口标记：用于全局 CSS 覆盖 Fluent Dialog 默认 padding/backdrop
+if (isInterceptionWindow) {
+  document.body.classList.add('interception-window')
+}
 
 // Fluent 2 Provider wrapper with theme detection
 const Root = () => {

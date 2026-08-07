@@ -22,6 +22,45 @@ test('TitleBar handles close button properly (minimize to tray)', () => {
   assert.match(titleBarSource, /const handleClose = async \(\) => \{[\s\S]*try \{[\s\S]*const \{ invoke \} = await import\('@tauri-apps\/api\/core'\)[\s\S]*await invoke\('minimize_to_tray'\)[\s\S]*\} catch \{[\s\S]*await appWindow\.hide\(\)[\s\S]*\}/)
 })
 
+test('App lazily loads non-splash pages to reduce startup bundle pressure', () => {
+  const appSource = readFileSync(resolve(projectRoot, 'src/App.tsx'), 'utf8')
+
+  assert.match(appSource, /const OverviewPage = lazy\(\(\) => import\('\.\/components\/OverviewPage'\)\)/)
+  assert.match(appSource, /const ScanPage = lazy\(\(\) => import\('\.\/components\/ScanPage'\)\)/)
+  assert.match(appSource, /const QuarantinePage = lazy\(\(\) => import\('\.\/components\/QuarantinePage'\)\)/)
+  assert.match(appSource, /const BehaviorPage = lazy\(\(\) => import\('\.\/components\/BehaviorPage'\)\)/)
+  assert.match(appSource, /const SettingsPage = lazy\(\(\) => import\('\.\/components\/SettingsPage'\)\)/)
+  assert.match(appSource, /const BehaviorLifecyclePage = lazy\(\(\) => import\('\.\/components\/BehaviorLifecyclePage'\)\)/)
+  assert.doesNotMatch(appSource, /import OverviewPage from '\.\/components\/OverviewPage'/)
+  assert.doesNotMatch(appSource, /import ScanPage from '\.\/components\/ScanPage'/)
+  assert.doesNotMatch(appSource, /import QuarantinePage from '\.\/components\/QuarantinePage'/)
+  assert.doesNotMatch(appSource, /import BehaviorPage from '\.\/components\/BehaviorPage'/)
+  assert.doesNotMatch(appSource, /import SettingsPage from '\.\/components\/SettingsPage'/)
+  assert.doesNotMatch(appSource, /import BehaviorLifecyclePage from '\.\/components\/BehaviorLifecyclePage'/)
+  assert.match(appSource, /<Suspense fallback=\{<div className="page-container" \/>\}>/)
+})
+
+test('App keeps the page shell stable without page transition animation residue', () => {
+  const appSource = readFileSync(resolve(projectRoot, 'src/App.tsx'), 'utf8')
+  const globalCssSource = readFileSync(resolve(projectRoot, 'src/styles/global.css'), 'utf8')
+
+  // 允许该标签带 data-low-power / data-remote 等其它真实属性，
+  // 但仍要求 className 与 data-current-page 在同一个标签上。
+  //  Tolerates other genuine attributes (data-low-power / data-remote) on the tag while still
+  //  requiring className and data-current-page to sit on the same element.
+  assert.match(appSource, /<div className="page-container"[^>]*\sdata-current-page=\{currentPage\}[^>]*>/)
+  assert.doesNotMatch(appSource, /key=\{currentPage\}/)
+  assert.doesNotMatch(appSource, /pageContainerClassName|page-container--animated|framer-motion|MotionConfig|AnimatePresence|motion\./)
+  assert.doesNotMatch(globalCssSource, /pageFadeIn|page-container--animated/)
+})
+
+test('App keeps page shell stable and only animates when animations are enabled', () => {
+  const appSource = readFileSync(resolve(projectRoot, 'src/App.tsx'), 'utf8')
+  const globalCssSource = readFileSync(resolve(projectRoot, 'src/styles/global.css'), 'utf8')
+
+  assert.doesNotMatch(globalCssSource, /@media \(prefers-reduced-motion: no-preference\) \{[\s\S]*\.page-container/)
+})
+
 test('Tray exit destroys webview windows after backend cleanup', () => {
   // 托盘退出不能在 invoke 响应返回前关闭窗口；后台清理完成后应使用 destroy() 做最终窗口收口。
   assert.match(trayCommandSource, /tokio::time::sleep\(Duration::from_millis\(75\)\)\.await;[\s\S]*execute_exit_after_invoke_response/)
@@ -33,31 +72,19 @@ test('Tray exit destroys webview windows after backend cleanup', () => {
   assert.doesNotMatch(trayCommandSource, /window\.close\(\)/)
 })
 
-test('SettingsPage toggle switches use div-based implementation with keyboard support', () => {
-  // 验证开关组件不再使用 <input> 标签，而是使用 <div>
-  assert.doesNotMatch(settingsPageSource, /<input type="checkbox"[^>]*className="toggle-input"/)
-  
-  // 验证使用 div.toggle 并带有 on 状态类
-  assert.match(settingsPageSource, /<div[^>]*className={`toggle \$\{config\?\.behaviorMonitoring\?\.enabled \? 'on' : ''\}`}/)
-  
-  // 验证有 onClick 处理，并通过统一运行态控制入口触发
-  assert.match(settingsPageSource, /onClick=\{\(\) => \{[\s\S]*handleMonitoringToggle\('behavior', !\(config\?\.behaviorMonitoring\?\.enabled \|\| false\)\)[\s\S]*\}\}/)
-  
-  // 验证有 ARIA 标签
-  assert.match(settingsPageSource, /role="switch"/)
-  assert.match(settingsPageSource, /aria-checked=\{config\?\.behaviorMonitoring\?\.enabled \|\| false\}/)
-  
-  // 验证有键盘支持（Enter 和 Space）
-  assert.match(settingsPageSource, /onKeyDown=\{\(e\) => \{[\s\S]*if \(e\.key === 'Enter' \|\| e\.key === ' '\)[\s\S]*e\.preventDefault\(\)[\s\S]*handleMonitoringToggle\('behavior', !\(config\?\.behaviorMonitoring\?\.enabled \|\| false\)\)[\s\S]*\}\}/)
+test('SettingsPage uses Fluent Switch controls for monitoring toggles', () => {
+  assert.match(settingsPageSource, /<Switch[\s\S]*checked=\{config\?\.behaviorMonitoring\?\.enabled \|\| false\}[\s\S]*handleMonitoringToggle\('behavior', data\.checked\)[\s\S]*disabled=\{monitoringControlPending !== null\}/)
+  assert.match(settingsPageSource, /<Switch[\s\S]*checked=\{config\?\.processMonitoring\?\.enabled \|\| false\}[\s\S]*handleMonitoringToggle\('process', data\.checked\)[\s\S]*disabled=\{monitoringControlPending !== null\}/)
+  assert.match(settingsPageSource, /<Switch[\s\S]*checked=\{config\?\.fileMonitoring\?\.enabled \|\| false\}[\s\S]*handleMonitoringToggle\('file', data\.checked\)[\s\S]*disabled=\{monitoringControlPending !== null\}/)
+  assert.match(settingsPageSource, /<Switch checked=\{!animationsEnabled\} onChange=\{toggleAnimations\} \/>/)
 })
 
-test('SettingsPage has consistent toggle implementation for all monitoring switches', () => {
-  // 验证所有三个监控开关（行为、进程、文件）都有相同的实现模式
-  const behaviorTogglePattern = /实时行为监控[\s\S]*className={`toggle \$\{config\?\.behaviorMonitoring\?\.enabled \? 'on' : ''\}`[\s\S]*onClick[\s\S]*handleMonitoringToggle\('behavior'/
-  const processTogglePattern = /进程监控[\s\S]*className={`toggle \$\{config\?\.processMonitoring\?\.enabled \? 'on' : ''\}`[\s\S]*onClick[\s\S]*handleMonitoringToggle\('process'/
-  const fileTogglePattern = /文件 Hook 监控[\s\S]*className={`toggle \$\{config\?\.fileMonitoring\?\.enabled \? 'on' : ''\}`[\s\S]*onClick[\s\S]*handleMonitoringToggle\('file'/
-  const animationsTogglePattern = /关闭动效[\s\S]*className={`toggle \$\{!animationsEnabled \? 'on' : ''\}`[\s\S]*onClick[\s\S]*toggleAnimations/
-  
+test('SettingsPage has consistent Switch implementation for all monitoring switches', () => {
+  const behaviorTogglePattern = /settings_behavior_monitoring[\s\S]*<Switch[\s\S]*handleMonitoringToggle\('behavior', data\.checked\)/
+  const processTogglePattern = /settings_process_monitoring[\s\S]*<Switch[\s\S]*handleMonitoringToggle\('process', data\.checked\)/
+  const fileTogglePattern = /settings_file_hook[\s\S]*<Switch[\s\S]*handleMonitoringToggle\('file', data\.checked\)/
+  const animationsTogglePattern = /settings_disable_animations[\s\S]*<Switch checked=\{!animationsEnabled\} onChange=\{toggleAnimations\} \/>/
+
   assert.match(settingsPageSource, behaviorTogglePattern)
   assert.match(settingsPageSource, processTogglePattern)
   assert.match(settingsPageSource, fileTogglePattern)
@@ -75,7 +102,7 @@ test('configStore uses runtime control pattern for monitoring settings', () => {
 
 test('configStore provides default config when config is null', () => {
   // 验证当 state.config 为 null 时，会提供默认配置
-  assert.match(configStoreSource, /const fallbackConfig = \([\s\S]*\): AppConfig => \(\{[\s\S]*brand: '',[\s\S]*themeColor: '',[\s\S]*defaultPage: '',[\s\S]*minimizeToTray: false,[\s\S]*behaviorMonitoring: \{ enabled: behaviorEnabled \},[\s\S]*processMonitoring: \{ enabled: processEnabled \},[\s\S]*fileMonitoring: \{ enabled: fileEnabled \},[\s\S]*ui: \{ themeMode: 'system', animations: true \}[\s\S]*\}\)/)
+  assert.match(configStoreSource, /const fallbackConfig = \([\s\S]*\): AppConfig => \(\{[\s\S]*brand: '',[\s\S]*defaultPage: '',[\s\S]*minimizeToTray: false,[\s\S]*behaviorMonitoring: \{ enabled: behaviorEnabled \},[\s\S]*processMonitoring: \{ enabled: processEnabled \},[\s\S]*fileMonitoring: \{ enabled: fileEnabled \},[\s\S]*ui: \{ themeMode: 'system', animations: true \}[\s\S]*\}\)/)
 })
 
 test('ScanPage has error handling on file/directory selection', () => {

@@ -15,9 +15,12 @@ use tokio::time;
 
 use crate::services::app_lifecycle_service::app_is_exiting;
 use crate::services::engine_service::EngineService;
-use crate::services::interception_service::{InterceptionEntry, InterceptionService};
+use crate::services::interception_service::{
+    InterceptionEnqueueResult, InterceptionEntry, InterceptionService,
+};
 use crate::services::path_policy_service::should_skip_security_scan;
 use crate::services::scan_result_cache_service::{CachedScanResult, ScanResultCacheService};
+use crate::services::service_context::AppContext;
 
 const IMAGE_DOS_SIGNATURE: u16 = 0x5A4D; // MZ
 const IMAGE_NT_SIGNATURE: u32 = 0x0000_4550; // PE\0\0
@@ -914,18 +917,18 @@ fn enqueue_scan_interception(
 /// Calls: InterceptionService::enqueue, InterceptionService::try_show_next.
 /// 中文关键词：进程镂空，映像完整性，拦截队列，可信环境
 /// English keywords: process hollowing, image integrity, interception queue, trusted baseline
-pub(crate) fn enqueue_process_image_integrity_interception<R: Runtime>(
+pub(crate) fn enqueue_process_image_integrity_interception<C: AppContext>(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle<R>,
+    ctx: &C,
     pid: u32,
     source: &str,
     process_path: &str,
     main_module_path: Option<&str>,
     reason: &str,
     risk_level: &str,
-) {
-    if app_is_exiting(app_handle) {
-        return;
+) -> InterceptionEnqueueResult {
+    if ctx.is_exiting() {
+        return InterceptionEnqueueResult::Rejected;
     }
 
     let process_name = file_name_from_path(process_path).unwrap_or_else(|| format!("PID {}", pid));
@@ -948,25 +951,28 @@ pub(crate) fn enqueue_process_image_integrity_interception<R: Runtime>(
         payload: Some(payload.to_string()),
         timestamp: chrono::Utc::now().timestamp_millis() as u64,
     };
-    interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    let result = interception.enqueue(entry);
+    if result.is_enqueued() {
+        interception.try_show_next(ctx);
+    }
+    result
 }
 
 /// 函数名称：enqueue_module_chain_anomaly_interception
 /// 函数作用：把疑似 PEB/模块链被破坏导致的“映像内存存在但模块枚举缺失”结果推入拦截队列。
 /// Function name: enqueue_module_chain_anomaly_interception
 /// Purpose: Enqueues a module-chain anomaly where an executable image mapping exists but is absent from module enumeration.
-pub(crate) fn enqueue_module_chain_anomaly_interception<R: Runtime>(
+pub(crate) fn enqueue_module_chain_anomaly_interception<C: AppContext>(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle<R>,
+    ctx: &C,
     pid: u32,
     source: &str,
     process_path: &str,
     sample_mapped_path: Option<&str>,
     reason: &str,
-) {
-    if app_is_exiting(app_handle) {
-        return;
+) -> InterceptionEnqueueResult {
+    if ctx.is_exiting() {
+        return InterceptionEnqueueResult::Rejected;
     }
 
     let process_name = file_name_from_path(process_path).unwrap_or_else(|| format!("PID {}", pid));
@@ -989,8 +995,11 @@ pub(crate) fn enqueue_module_chain_anomaly_interception<R: Runtime>(
         payload: Some(payload.to_string()),
         timestamp: chrono::Utc::now().timestamp_millis() as u64,
     };
-    interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    let result = interception.enqueue(entry);
+    if result.is_enqueued() {
+        interception.try_show_next(ctx);
+    }
+    result
 }
 
 /// 函数名称：enqueue_process_memory_anomaly_interception
@@ -1933,16 +1942,18 @@ async fn scan_runtime_pid(
             status: ProcessImageIntegrityStatus::Suspicious,
             reason,
             main_module_path,
-        } => enqueue_process_image_integrity_interception(
-            interception,
-            app_handle,
-            pid,
-            source,
-            &path,
-            main_module_path.as_deref(),
-            &reason,
-            "high",
-        ),
+        } => {
+            let _ = enqueue_process_image_integrity_interception(
+                interception,
+                app_handle,
+                pid,
+                source,
+                &path,
+                main_module_path.as_deref(),
+                &reason,
+                "high",
+            );
+        }
         ProcessImageIntegrityResult {
             status: ProcessImageIntegrityStatus::Unknown,
             reason,
@@ -1964,15 +1975,17 @@ async fn scan_runtime_pid(
             status: ProcessImageIntegrityStatus::Suspicious,
             reason,
             main_module_path,
-        } => enqueue_module_chain_anomaly_interception(
-            interception,
-            app_handle,
-            pid,
-            source,
-            &path,
-            main_module_path.as_deref(),
-            &reason,
-        ),
+        } => {
+            let _ = enqueue_module_chain_anomaly_interception(
+                interception,
+                app_handle,
+                pid,
+                source,
+                &path,
+                main_module_path.as_deref(),
+                &reason,
+            );
+        }
         ProcessImageIntegrityResult {
             status: ProcessImageIntegrityStatus::Unknown,
             reason,

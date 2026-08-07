@@ -1,31 +1,35 @@
 // 日志命令 — 实时 ETW 日志流和历史日志查询
 // Log commands — real-time ETW log stream and historical log query
-use crate::services::app_lifecycle_service::app_is_exiting;
+use crate::services::service_context::AppContext;
 use once_cell::sync::Lazy;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use tauri::Emitter;
 
 /// 内存日志缓冲区 / In-memory log buffer
 /// 存储最近的事件日志供前端查询 / Stores recent event logs for frontend queries
-static LOG_BUFFER: Lazy<Arc<Mutex<Vec<String>>>> =
-    Lazy::new(|| Arc::new(Mutex::new(Vec::with_capacity(LOG_CAPACITY))));
+static LOG_BUFFER: Lazy<Arc<Mutex<VecDeque<String>>>> =
+    Lazy::new(|| Arc::new(Mutex::new(VecDeque::with_capacity(LOG_CAPACITY))));
 
 /// 日志缓冲区最大容量 / Log buffer max capacity
 const LOG_CAPACITY: usize = 500;
 
 /// 获取日志缓冲区 / Get log buffer
-fn get_log_buffer() -> Arc<Mutex<Vec<String>>> {
+fn get_log_buffer() -> Arc<Mutex<VecDeque<String>>> {
     LOG_BUFFER.clone()
 }
 
 /// 追加日志条目到缓冲区 / Append log entry to buffer
 pub fn append_log(entry: String) {
     if let Ok(mut buf) = LOG_BUFFER.lock() {
-        if buf.len() >= LOG_CAPACITY {
-            buf.remove(0); // 移除最旧条目 / Remove oldest entry
-        }
-        buf.push(entry);
+        append_log_entry(&mut buf, entry);
     }
+}
+
+fn append_log_entry(buffer: &mut VecDeque<String>, entry: String) {
+    if buffer.len() >= LOG_CAPACITY {
+        buffer.pop_front();
+    }
+    buffer.push_back(entry);
 }
 
 /// 函数名称：event_pid
@@ -33,6 +37,7 @@ pub fn append_log(entry: String) {
 /// Purpose: Extracts an explicit PID from unified event JSON, supporting top-level pid and nested event.pid.
 /// 中文关键词：日志过滤，PID提取，系统噪音
 /// English keywords: log filter, PID extraction, system noise
+#[allow(dead_code)]
 fn event_pid(value: &serde_json::Value) -> Option<u64> {
     value
         .get("pid")
@@ -40,6 +45,7 @@ fn event_pid(value: &serde_json::Value) -> Option<u64> {
         .and_then(|pid| pid.as_u64())
 }
 
+#[allow(dead_code)]
 const INVALID_WINDOWS_PID_U32_MAX: u64 = u32::MAX as u64;
 
 /// 函数名称：should_drop_system_log_event
@@ -47,6 +53,7 @@ const INVALID_WINDOWS_PID_U32_MAX: u64 = u32::MAX as u64;
 /// Purpose: Returns whether an event belongs to system/invalid PIDs and should be excluded from realtime logs.
 /// 中文关键词：PID过滤，实时日志，后端兜底
 /// English keywords: PID filter, realtime log, backend guard
+#[allow(dead_code)]
 fn should_drop_system_log_event(value: &serde_json::Value) -> bool {
     match event_pid(value) {
         Some(0 | 4) => true,
@@ -56,10 +63,17 @@ fn should_drop_system_log_event(value: &serde_json::Value) -> bool {
 }
 
 /// 追加日志条目并推送给前端 / Append log entry and emit it to frontend listeners
-pub fn append_log_and_emit(app_handle: &tauri::AppHandle, entry: String) {
+///
+/// 泛型化到 `AppContext` 而不是绑死 `tauri::AppHandle`：
+/// ETW / 文件 Hook 等防护组件在服务化后只持有 `ServiceContext`，
+/// 而 `AppHandle` 同样实现了 `AppContext`，因此两种进程共用这一个实现。
+///  Generic over `AppContext` instead of `tauri::AppHandle`: after the service split, protection
+///  components such as ETW and the file hook only hold a `ServiceContext`, while `AppHandle` also
+///  implements `AppContext`, so both processes share this single implementation.
+pub fn append_log_and_emit<C: AppContext>(ctx: &C, entry: String) {
     append_log(entry.clone());
-    if !app_is_exiting(app_handle) {
-        let _ = app_handle.emit("log-event", entry);
+    if !ctx.is_exiting() {
+        let _ = ctx.emit_event("log-event", entry);
     }
 }
 
@@ -72,14 +86,14 @@ pub fn append_log_and_emit(app_handle: &tauri::AppHandle, entry: String) {
 /// Returns: true when appended/emitted; false when filtered or serialization failed.
 /// 中文关键词：结构化日志，实时日志，PID过滤，性能保护
 /// English keywords: structured log, realtime log, PID filter, performance guard
-pub fn append_event_log_and_emit(app_handle: &tauri::AppHandle, event: &serde_json::Value) -> bool {
+pub fn append_event_log_and_emit<C: AppContext>(ctx: &C, event: &serde_json::Value) -> bool {
     if should_drop_system_log_event(event) {
         return false;
     }
 
     match serde_json::to_string(event) {
         Ok(entry) => {
-            append_log_and_emit(app_handle, entry);
+            append_log_and_emit(ctx, entry);
             true
         }
         Err(_) => false,
@@ -98,7 +112,7 @@ pub fn append_event_log_and_emit(app_handle: &tauri::AppHandle, event: &serde_js
 pub async fn get_recent_logs() -> Result<Vec<String>, String> {
     let buffer = get_log_buffer();
     let buf = buffer.lock().map_err(|e| e.to_string())?;
-    Ok(buf.clone())
+    Ok(buf.iter().cloned().collect())
 }
 
 /// 函数名称：clear_logs
@@ -171,5 +185,20 @@ mod tests {
         assert!(!should_drop_system_log_event(&json!({
             "provider": "Unknown"
         })));
+    }
+
+    #[test]
+    fn append_log_entry_evicts_oldest_when_capacity_is_reached() {
+        let mut buffer = VecDeque::with_capacity(LOG_CAPACITY);
+
+        for index in 0..LOG_CAPACITY {
+            append_log_entry(&mut buffer, format!("entry-{index}"));
+        }
+
+        append_log_entry(&mut buffer, "entry-new".to_string());
+
+        assert_eq!(buffer.len(), LOG_CAPACITY);
+        assert_eq!(buffer.front().map(|value| value.as_str()), Some("entry-1"));
+        assert_eq!(buffer.back().map(|value| value.as_str()), Some("entry-new"));
     }
 }

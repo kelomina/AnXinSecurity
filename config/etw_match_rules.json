@@ -3,63 +3,49 @@
     "ruleId": "registry_runkey_setvalue",
     "provider": "Registry",
     "op": "SetValue",
-    "severity": 4,
+    "severity": 3,
     "threatType": "启动项持久化",
-    "recommendAction": "block",
-    "targetContains": [
-      "currentversion\\\\run",
-      "hkcu\\\\",
-      "hklm\\\\"
+    "recommendAction": "alert",
+    "description": "检测到进程写入自启动持久化位置（Run / RunOnce / Winlogon）。仅告警并记录，不自动挂起进程。",
+    "targetPatterns": [
+      "*\\currentversion\\run",
+      "*\\currentversion\\runonce",
+      "*\\currentversion\\runonceex",
+      "*\\currentversion\\policies\\explorer\\run",
+      "*\\currentversion\\winlogon"
     ]
   },
   {
     "ruleId": "temp_dropper_create",
     "provider": "File",
     "op": "Create",
-    "severity": 4,
-    "threatType": "临时目录落地",
-    "recommendAction": "block",
-    "targetContains": [
-      "\\\\temp\\\\"
-    ]
-  },
-  {
-    "ruleId": "calc_probe_payload_image_load",
-    "provider": "Image",
-    "op": "Load",
-    "severity": 4,
-    "threatType": "DLL 注入测试样本加载",
+    "severity": 2,
+    "threatType": "临时目录可执行文件落地",
     "recommendAction": "alert",
-    "description": "检测到进程加载了受控 calc_probe_payload.dll，用于验证远程线程 DLL 注入检测链路。",
-    "targetContains": [
-      "calc_probe_payload.dll"
+    "description": "检测到在临时目录创建可执行或脚本文件，常见于落地后执行。安装器与更新程序也会命中，因此仅告警。",
+    "targetPatterns": [
+      "*\\temp\\*.exe",
+      "*\\temp\\*.dll",
+      "*\\temp\\*.scr",
+      "*\\temp\\*.sys",
+      "*\\temp\\*.ps1",
+      "*\\temp\\*.bat",
+      "*\\temp\\*.cmd",
+      "*\\temp\\*.js",
+      "*\\temp\\*.vbs"
     ]
   },
   {
-    "ruleId": "temp_unsigned_image_load",
+    "ruleId": "temp_image_load",
     "provider": "Image",
     "op": "Load",
     "severity": 3,
-    "threatType": "可疑模块加载",
+    "threatType": "临时目录模块加载",
     "recommendAction": "alert",
-    "description": "检测到进程加载来自临时目录的镜像模块，常见于落地后注入或旁加载验证场景。",
-    "targetContains": [
-      "\\\\temp\\\\"
-    ],
+    "description": "检测到进程加载来自临时目录的镜像模块，常见于落地后注入或旁加载。当前引擎不做签名判定，故不以“未签名”命名。",
     "targetPatterns": [
-      "*.dll",
-      "*.exe"
-    ]
-  },
-  {
-    "ruleId": "test_rule_trigger",
-    "provider": "File",
-    "op": "Rename",
-    "severity": 5,
-    "threatType": "规则引擎测试命中",
-    "recommendAction": "block",
-    "targetPatterns": [
-      "*\\anxin_rule_test_trigger.bin"
+      "*\\temp\\*.dll",
+      "*\\temp\\*.exe"
     ]
   }
 ]

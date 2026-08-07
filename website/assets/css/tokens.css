@@ -1,0 +1,289 @@
+/* =============================================================================
+   AnXin Security — 官方网站设计令牌 / Design Tokens
+   Fluent 2 (Fluent UI React v9) 令牌映射：品牌色阶、中性色、字体阶梯、
+   圆角、阴影、动效时长与曲线。与应用内 webLightTheme / webDarkTheme 对齐。
+   ============================================================================= */
+
+/* -----------------------------------------------------------------------------
+   1. 品牌色阶 / Brand ramp（Fluent 2 默认 Communication Blue）
+   -------------------------------------------------------------------------- */
+:root {
+  --brand-10: #061724;
+  --brand-20: #082338;
+  --brand-30: #0a2e4a;
+  --brand-40: #0c3b5c;
+  --brand-50: #0e4775;
+  --brand-60: #0f548c;
+  --brand-70: #115ea3;
+  --brand-80: #0f6cbd; /* colorBrandBackground（浅色主题主品牌色） */
+  --brand-90: #2886de;
+  --brand-100: #479ef5;
+  --brand-110: #62abf5;
+  --brand-120: #77b7f7;
+  --brand-130: #96c6fa;
+  --brand-140: #b4d6fa;
+  --brand-150: #cfe4fa;
+  --brand-160: #ebf3fc;
+}
+
+/* -----------------------------------------------------------------------------
+   2. 主题切换 / Theme switching
+   data-theme = light | dark | system（system 交给 color-scheme + light-dark()）
+   每个色值先给出浅色回退值，再用 light-dark() 覆盖，旧浏览器降级为浅色主题。
+   -------------------------------------------------------------------------- */
+:root[data-theme='light'] { color-scheme: light; }
+:root[data-theme='dark'] { color-scheme: dark; }
+:root, :root[data-theme='system'] { color-scheme: light dark; }
+
+:root {
+  /* ---- 中性前景 / Neutral foreground ---- */
+  --colorNeutralForeground1: #242424;
+  --colorNeutralForeground1: light-dark(#242424, #ffffff);
+  --colorNeutralForeground2: #424242;
+  --colorNeutralForeground2: light-dark(#424242, #d6d6d6);
+  --colorNeutralForeground3: #616161;
+  --colorNeutralForeground3: light-dark(#616161, #adadad);
+  --colorNeutralForeground4: #707070;
+  --colorNeutralForeground4: light-dark(#707070, #999999);
+  --colorNeutralForegroundDisabled: #bdbdbd;
+  --colorNeutralForegroundDisabled: light-dark(#bdbdbd, #5c5c5c);
+  --colorNeutralForegroundInverted: #ffffff;
+  --colorNeutralForegroundInverted: light-dark(#ffffff, #242424);
+  --colorNeutralForegroundOnBrand: #ffffff;
+
+  /* ---- 中性背景 / Neutral background ---- */
+  --colorNeutralBackground1: #ffffff;
+  --colorNeutralBackground1: light-dark(#ffffff, #292929);
+  --colorNeutralBackground1Hover: #f5f5f5;
+  --colorNeutralBackground1Hover: light-dark(#f5f5f5, #3d3d3d);
+  --colorNeutralBackground1Pressed: #e0e0e0;
+  --colorNeutralBackground1Pressed: light-dark(#e0e0e0, #1f1f1f);
+  --colorNeutralBackground2: #fafafa;
+  --colorNeutralBackground2: light-dark(#fafafa, #1f1f1f);
+  --colorNeutralBackground3: #f5f5f5;
+  --colorNeutralBackground3: light-dark(#f5f5f5, #141414);
+  --colorNeutralBackground4: #f0f0f0;
+  --colorNeutralBackground4: light-dark(#f0f0f0, #0a0a0a);
+  --colorNeutralBackground5: #ebebeb;
+  --colorNeutralBackground5: light-dark(#ebebeb, #000000);
+  --colorNeutralBackground6: #e6e6e6;
+  --colorNeutralBackground6: light-dark(#e6e6e6, #333333);
+  --colorSubtleBackgroundHover: #f5f5f5;
+  --colorSubtleBackgroundHover: light-dark(#f5f5f5, #383838);
+  --colorSubtleBackgroundPressed: #e0e0e0;
+  --colorSubtleBackgroundPressed: light-dark(#e0e0e0, #2e2e2e);
+
+  /* ---- 品牌语义色 / Brand semantic ---- */
+  --colorBrandBackground: #0f6cbd;
+  --colorBrandBackground: light-dark(#0f6cbd, #115ea3);
+  --colorBrandBackgroundHover: #115ea3;
+  --colorBrandBackgroundHover: light-dark(#115ea3, #0f6cbd);
+  --colorBrandBackgroundPressed: #0c3b5c;
+  --colorBrandBackgroundPressed: light-dark(#0c3b5c, #0c3b5c);
+  --colorBrandBackground2: #ebf3fc;
+  --colorBrandBackground2: light-dark(#ebf3fc, #082338);
+  --colorBrandBackground2Hover: #cfe4fa;
+  --colorBrandBackground2Hover: light-dark(#cfe4fa, #0a2e4a);
+  --colorBrandForeground1: #0f6cbd;
+  --colorBrandForeground1: light-dark(#0f6cbd, #479ef5);
+  --colorBrandForeground2: #115ea3;
+  --colorBrandForeground2: light-dark(#115ea3, #62abf5);
+  --colorBrandForegroundLink: #0f6cbd;
+  --colorBrandForegroundLink: light-dark(#0f6cbd, #479ef5);
+  --colorBrandForegroundLinkHover: #115ea3;
+  --colorBrandForegroundLinkHover: light-dark(#115ea3, #62abf5);
+  --colorBrandStroke1: #0f6cbd;
+  --colorBrandStroke1: light-dark(#0f6cbd, #479ef5);
+  --colorBrandStroke2: #b4d6fa;
+  --colorBrandStroke2: light-dark(#b4d6fa, #0e4775);
+
+  /* ---- 描边 / Stroke ---- */
+  --colorNeutralStroke1: #d1d1d1;
+  --colorNeutralStroke1: light-dark(#d1d1d1, #666666);
+  --colorNeutralStroke2: #e0e0e0;
+  --colorNeutralStroke2: light-dark(#e0e0e0, #525252);
+  --colorNeutralStroke3: #f0f0f0;
+  --colorNeutralStroke3: light-dark(#f0f0f0, #3d3d3d);
+  --colorNeutralStrokeAccessible: #616161;
+  --colorNeutralStrokeAccessible: light-dark(#616161, #adadad);
+  --colorStrokeFocus2: #000000;
+  --colorStrokeFocus2: light-dark(#000000, #ffffff);
+
+  /* ---- 状态色 / Status palette ---- */
+  --colorPaletteGreenForeground1: #0e700e;
+  --colorPaletteGreenForeground1: light-dark(#0e700e, #54b054);
+  --colorPaletteGreenForeground2: #107c10;
+  --colorPaletteGreenForeground2: light-dark(#107c10, #92c353);
+  --colorPaletteGreenBackground1: #f1faf1;
+  --colorPaletteGreenBackground1: light-dark(#f1faf1, #052505);
+  --colorPaletteGreenBorder1: #9fd89f;
+  --colorPaletteGreenBorder1: light-dark(#9fd89f, #237b4b);
+
+  --colorPaletteRedForeground1: #b10e1c;
+  --colorPaletteRedForeground1: light-dark(#b10e1c, #f1707b);
+  --colorPaletteRedForeground2: #d13438;
+  --colorPaletteRedForeground2: light-dark(#d13438, #e37d80);
+  --colorPaletteRedBackground1: #fdf3f4;
+  --colorPaletteRedBackground1: light-dark(#fdf3f4, #3b0509);
+  --colorPaletteRedBorder1: #f1bbbc;
+  --colorPaletteRedBorder1: light-dark(#f1bbbc, #8b2b2f);
+
+  --colorPaletteDarkOrangeForeground1: #bc4b09;
+  --colorPaletteDarkOrangeForeground1: light-dark(#bc4b09, #f4a08a);
+  --colorPaletteDarkOrangeBackground1: #fdf6f3;
+  --colorPaletteDarkOrangeBackground1: light-dark(#fdf6f3, #3b1502);
+  --colorPaletteDarkOrangeBorder1: #f4bfab;
+  --colorPaletteDarkOrangeBorder1: light-dark(#f4bfab, #8f3c11);
+
+  --colorPaletteTealForeground1: #006666;
+  --colorPaletteTealForeground1: light-dark(#006666, #4dc3c3);
+  --colorPaletteLavenderForeground1: #5b5fc7;
+  --colorPaletteLavenderForeground1: light-dark(#5b5fc7, #93a4f4);
+  --colorPalettePurpleForeground1: #7160e8;
+  --colorPalettePurpleForeground1: light-dark(#7160e8, #a49cf5);
+
+  /* ---- 阴影 / Elevation（由环境光 + 主光色合成，与 Fluent 一致） ---- */
+  --shadowAmbient: rgba(0, 0, 0, 0.12);
+  --shadowAmbient: light-dark(rgba(0, 0, 0, 0.12), rgba(0, 0, 0, 0.24));
+  --shadowKey: rgba(0, 0, 0, 0.14);
+  --shadowKey: light-dark(rgba(0, 0, 0, 0.14), rgba(0, 0, 0, 0.28));
+  --shadowAmbientHeavy: rgba(0, 0, 0, 0.2);
+  --shadowAmbientHeavy: light-dark(rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.4));
+  --shadowKeyHeavy: rgba(0, 0, 0, 0.24);
+  --shadowKeyHeavy: light-dark(rgba(0, 0, 0, 0.24), rgba(0, 0, 0, 0.48));
+
+  --shadow2: 0 1px 2px var(--shadowKey), 0 0 2px var(--shadowAmbient);
+  --shadow4: 0 2px 4px var(--shadowKey), 0 0 2px var(--shadowAmbient);
+  --shadow8: 0 4px 8px var(--shadowKey), 0 0 2px var(--shadowAmbient);
+  --shadow16: 0 8px 16px var(--shadowKey), 0 0 2px var(--shadowAmbient);
+  --shadow28: 0 14px 28px var(--shadowKeyHeavy), 0 0 8px var(--shadowAmbientHeavy);
+  --shadow64: 0 32px 64px var(--shadowKeyHeavy), 0 0 8px var(--shadowAmbientHeavy);
+  --shadowBrandKey: rgba(15, 108, 189, 0.28);
+  --shadowBrandKey: light-dark(rgba(15, 108, 189, 0.28), rgba(71, 158, 245, 0.24));
+
+  /* ---- 亚克力 / Acrylic（模拟 Fluent 材质层） ---- */
+  --acrylicBackground: rgba(255, 255, 255, 0.72);
+  --acrylicBackground: light-dark(rgba(255, 255, 255, 0.72), rgba(31, 31, 31, 0.72));
+  --acrylicBackgroundStrong: rgba(255, 255, 255, 0.9);
+  --acrylicBackgroundStrong: light-dark(rgba(255, 255, 255, 0.9), rgba(31, 31, 31, 0.92));
+  --acrylicHairline: rgba(255, 255, 255, 0.6);
+  --acrylicHairline: light-dark(rgba(255, 255, 255, 0.6), rgba(255, 255, 255, 0.08));
+
+  /* ---- 光效 / Reveal & glow ---- */
+  --revealGlow: rgba(15, 108, 189, 0.1);
+  --revealGlow: light-dark(rgba(15, 108, 189, 0.1), rgba(71, 158, 245, 0.14));
+  --revealEdge: rgba(15, 108, 189, 0.45);
+  --revealEdge: light-dark(rgba(15, 108, 189, 0.45), rgba(120, 183, 247, 0.55));
+  --auroraA: rgba(71, 158, 245, 0.4);
+  --auroraA: light-dark(rgba(71, 158, 245, 0.4), rgba(17, 94, 163, 0.5));
+  --auroraB: rgba(180, 214, 250, 0.55);
+  --auroraB: light-dark(rgba(180, 214, 250, 0.55), rgba(12, 59, 92, 0.6));
+  --auroraC: rgba(113, 96, 232, 0.22);
+  --auroraC: light-dark(rgba(113, 96, 232, 0.22), rgba(91, 95, 199, 0.3));
+  --auroraD: rgba(0, 102, 102, 0.16);
+  --auroraD: light-dark(rgba(0, 102, 102, 0.16), rgba(0, 102, 102, 0.32));
+  --gridLine: rgba(36, 36, 36, 0.055);
+  --gridLine: light-dark(rgba(36, 36, 36, 0.055), rgba(255, 255, 255, 0.05));
+}
+
+/* -----------------------------------------------------------------------------
+   3. 字体阶梯 / Type ramp（Fluent 2）
+   -------------------------------------------------------------------------- */
+:root {
+  --fontFamilyBase: 'Segoe UI Variable Text', 'Segoe UI Variable', 'Segoe UI',
+    -apple-system, BlinkMacSystemFont, system-ui, 'Microsoft YaHei UI',
+    'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif;
+  --fontFamilyDisplay: 'Segoe UI Variable Display', 'Segoe UI Variable', 'Segoe UI',
+    -apple-system, BlinkMacSystemFont, system-ui, 'Microsoft YaHei UI',
+    'Microsoft YaHei', 'PingFang SC', 'Noto Sans SC', sans-serif;
+  --fontFamilyMonospace: 'Cascadia Code', 'Cascadia Mono', ui-monospace, Consolas,
+    'Courier New', monospace;
+  --fontFamilyNumeric: 'Segoe UI Variable Display', 'Segoe UI', system-ui, sans-serif;
+
+  --fontSizeBase100: 10px;
+  --fontSizeBase200: 12px;
+  --fontSizeBase300: 14px;
+  --fontSizeBase400: 16px;
+  --fontSizeBase500: 20px;
+  --fontSizeBase600: 24px;
+  --fontSizeHero700: 28px;
+  --fontSizeHero800: 32px;
+  --fontSizeHero900: 40px;
+  --fontSizeHero1000: 68px;
+
+  --lineHeightBase100: 14px;
+  --lineHeightBase200: 16px;
+  --lineHeightBase300: 20px;
+  --lineHeightBase400: 22px;
+  --lineHeightBase500: 28px;
+  --lineHeightBase600: 32px;
+  --lineHeightHero700: 36px;
+  --lineHeightHero800: 40px;
+  --lineHeightHero900: 52px;
+  --lineHeightHero1000: 92px;
+
+  --fontWeightRegular: 400;
+  --fontWeightMedium: 500;
+  --fontWeightSemibold: 600;
+  --fontWeightBold: 700;
+}
+
+/* -----------------------------------------------------------------------------
+   4. 圆角与间距 / Corner radius & spacing
+   -------------------------------------------------------------------------- */
+:root {
+  --borderRadiusNone: 0;
+  --borderRadiusSmall: 2px;
+  --borderRadiusMedium: 4px;
+  --borderRadiusLarge: 6px;
+  --borderRadiusXLarge: 8px;
+  --borderRadiusCircular: 10000px;
+
+  --spacingXXS: 2px;
+  --spacingXS: 4px;
+  --spacingSNudge: 6px;
+  --spacingS: 8px;
+  --spacingMNudge: 10px;
+  --spacingM: 12px;
+  --spacingL: 16px;
+  --spacingXL: 20px;
+  --spacingXXL: 24px;
+  --spacingXXXL: 32px;
+}
+
+/* -----------------------------------------------------------------------------
+   5. 动效 / Motion（Fluent 2 时长与曲线）
+   -------------------------------------------------------------------------- */
+:root {
+  --durationUltraFast: 50ms;
+  --durationFaster: 100ms;
+  --durationFast: 150ms;
+  --durationNormal: 200ms;
+  --durationGentle: 250ms;
+  --durationSlow: 300ms;
+  --durationSlower: 400ms;
+  --durationUltraSlow: 500ms;
+  --durationScene: 700ms;
+
+  --curveAccelerateMax: cubic-bezier(0.9, 0.1, 1, 0.2);
+  --curveAccelerateMid: cubic-bezier(1, 0, 1, 1);
+  --curveAccelerateMin: cubic-bezier(0.8, 0, 0.78, 1);
+  --curveDecelerateMax: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --curveDecelerateMid: cubic-bezier(0, 0, 0, 1);
+  --curveDecelerateMin: cubic-bezier(0.33, 0, 0.67, 1);
+  --curveEasyEase: cubic-bezier(0.33, 0, 0.67, 1);
+  --curveEasyEaseMax: cubic-bezier(0.8, 0, 0.2, 1);
+  --curveLinear: cubic-bezier(0, 0, 1, 1);
+}
+
+/* -----------------------------------------------------------------------------
+   6. 层级 / z-index
+   -------------------------------------------------------------------------- */
+:root {
+  --zAurora: 0;
+  --zContent: 1;
+  --zSticky: 50;
+  --zTopbar: 100;
+  --zDrawer: 110;
+  --zProgress: 120;
+}

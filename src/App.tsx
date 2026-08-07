@@ -13,7 +13,7 @@
  * 中文关键词：根组件，布局，路由，页面切换，弹窗，拦截，托盘退出，启动画面
  * English keywords: root component, layout, routing, page switch, modal, intercept, tray exit, splash
  */
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, lazy, Suspense } from 'react'
 import { listen } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useConfigStore } from './stores/configStore'
@@ -25,18 +25,26 @@ import { startEngine, scannerHealth } from './api/scanner'
 import Sidebar from './components/Sidebar'
 import TitleBar from './components/TitleBar'
 import Toast from './components/Toast'
-import OverviewPage from './components/OverviewPage'
-import ScanPage from './components/ScanPage'
-import QuarantinePage from './components/QuarantinePage'
-import BehaviorPage from './components/BehaviorPage'
-import SettingsPage from './components/SettingsPage'
 import TrayExitPrompt from './components/TrayExitPrompt'
 import SplashScreen, {
   type StartupPhaseItem,
   type StartupPhaseStatus,
   type StartupSnapshotSummary,
 } from './components/SplashScreen'
-import BehaviorLifecyclePage from './components/BehaviorLifecyclePage'
+
+// 页面组件按需加载：闪屏期间只需要 SplashScreen / TitleBar / Sidebar，
+// 六个页面（合计数千行 + Fluent 组件）不该进入首屏 bundle 拖慢启动。
+// SplashScreen 必须保持静态导入——它就是加载期间要显示的东西。
+//  Pages are code-split: the splash phase only needs SplashScreen / TitleBar / Sidebar, so the
+//  six pages (several thousand lines plus Fluent components) must stay out of the initial
+//  bundle. SplashScreen itself stays statically imported - it is what shows while loading.
+const OverviewPage = lazy(() => import('./components/OverviewPage'))
+const ScanPage = lazy(() => import('./components/ScanPage'))
+const QuarantinePage = lazy(() => import('./components/QuarantinePage'))
+const BehaviorPage = lazy(() => import('./components/BehaviorPage'))
+const FirewallPage = lazy(() => import('./components/FirewallPage'))
+const SettingsPage = lazy(() => import('./components/SettingsPage'))
+const BehaviorLifecyclePage = lazy(() => import('./components/BehaviorLifecyclePage'))
 
 const PHASE_STATUS_RANK: Record<StartupPhaseStatus, number> = {
   pending: 0,
@@ -93,7 +101,13 @@ function buildStartupPhases(statuses: Record<string, StartupPhaseStatus>): Start
 
 const App: React.FC = () => {
   const { currentPage, loadConfig, setCurrentPage } = useConfigStore()
-  const { initializeTheme } = useThemeStore()
+  // 用 selector 只订阅 action 引用，避免整店订阅让根组件随 themeMode/actualTheme/
+  // animationsEnabled 的任何变化重渲染整棵页面树（zustand 的 action 引用是稳定的）。
+  //  Subscribe to the action references via selectors: a whole-store subscription would
+  //  re-render the entire page tree on every themeMode / actualTheme / animationsEnabled
+  //  change. zustand action references are stable, so the init effect will not re-run.
+  const initializeTheme = useThemeStore((state) => state.initializeTheme)
+  const syncFromConfig = useThemeStore((state) => state.syncFromConfig)
   const { loadTranslations, t } = useI18nStore()
   const [isExitPromptOpen, setIsExitPromptOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -236,10 +250,15 @@ const App: React.FC = () => {
       })
       cleanupFns.push(cleanupSnapshotResult)
 
+      // config 与 i18n 两次 IPC 往返互不依赖，先发起再统一 await，让它们重叠，
+      // 中间穿插纯本地的主题初始化，缩短闪屏时间。
+      // loadConfig / loadTranslations 内部都自行吞掉异常并回退，不会产生未处理拒绝。
+      //  The config and i18n round-trips are independent: kick both off and await them together
+      //  so they overlap, with the purely local theme init in between. Both loaders swallow their
+      //  own errors and fall back, so no unhandled rejection can escape here.
       setPhaseStatus('config', 'active')
       setStatusKey('splash_status_loading_config')
-      await loadConfig()
-      setPhaseStatus('config', 'complete')
+      const configPromise = loadConfig()
 
       setPhaseStatus('theme', 'active')
       setStatusKey('splash_status_theme')
@@ -251,7 +270,21 @@ const App: React.FC = () => {
 
       setPhaseStatus('i18n', 'active')
       setStatusKey('splash_status_i18n')
-      await loadTranslations()
+      const translationsPromise = loadTranslations()
+
+      // 配置就绪后把后端的外观设置同步到 themeStore。
+      // 顺序很重要：必须在 initializeTheme() 之后，否则 initializeTheme 的
+      // set({ actualTheme }) 会把配置推导出的主题覆盖掉。
+      // 用 getState() 而不是订阅值，避免在 effect 闭包里读到旧值。
+      //  Sync the backend appearance settings into themeStore once the config resolves.
+      //  Order matters: this must follow initializeTheme(), whose set({ actualTheme }) would
+      //  otherwise overwrite the config-derived theme. getState() avoids reading a stale value
+      //  captured by the effect closure.
+      await configPromise
+      setPhaseStatus('config', 'complete')
+      syncFromConfig(useConfigStore.getState().config)
+
+      await translationsPromise
       setPhaseStatus('i18n', 'complete')
 
       setPhaseStatus('listeners', 'active')
@@ -344,7 +377,7 @@ const App: React.FC = () => {
       }
       cleanupFns.forEach((cleanup) => cleanup())
     }
-  }, [loadConfig, initializeTheme, loadTranslations, t])
+  }, [loadConfig, initializeTheme, syncFromConfig, loadTranslations, t])
 
   /** 打开行为生命周期页 / Open behavior lifecycle page */
   const handleOpenLifecycle = useCallback((pid: number, processName: string) => {
@@ -374,6 +407,8 @@ const App: React.FC = () => {
         ) : (
           <BehaviorPage onOpenLifecycle={handleOpenLifecycle} />
         )
+      case 'firewall':
+        return <FirewallPage />
       case 'settings':
         return <SettingsPage />
       default:
@@ -411,9 +446,22 @@ const App: React.FC = () => {
             </button>
           </div>
         )}
-        <div className="page-container" data-low-power={isLowPowerMode ? 'true' : 'false'} data-remote={isRemoteSession ? 'true' : 'false'}>
-          {renderPage()}
-        </div>
+        {/*
+          页面外壳保持稳定：只用 data-current-page 标记当前页，不要给容器加 React key。
+          带 key 会让 React 在切页时卸载并重建整棵子树，丢掉页面状态并造成可见闪烁。
+          Keep the page shell stable: mark the active page with data-current-page and never give
+          this container a React key, which would unmount and rebuild the whole subtree on every
+          page switch, discarding page state and causing a visible flash.
+        */}
+        {/*
+          fallback 用同一个空的 page-container，保证代码分片加载期间布局尺寸不跳变。
+          Fallback reuses an empty page-container so the layout does not shift while a chunk loads.
+        */}
+        <Suspense fallback={<div className="page-container" />}>
+          <div className="page-container" data-current-page={currentPage} data-low-power={isLowPowerMode ? 'true' : 'false'} data-remote={isRemoteSession ? 'true' : 'false'}>
+            {renderPage()}
+          </div>
+        </Suspense>
       </main>
 
       {/* 托盘退出确认弹窗 */}

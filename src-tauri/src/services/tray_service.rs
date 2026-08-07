@@ -70,6 +70,9 @@ impl TrayService {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.show();
             let _ = window.set_focus();
+            // 通知前端退出内存节省模式，恢复定时刷新
+            //  Notify frontend to exit memory-saving mode and resume periodic refresh
+            let _ = app.emit("memory-mode-changed", false);
         }
     }
 
@@ -77,6 +80,9 @@ impl TrayService {
     pub fn hide_to_tray(app: &AppHandle) {
         if let Some(window) = app.get_webview_window("main") {
             let _ = window.hide();
+            // 通知前端进入内存节省模式，停止定时刷新（后台防护保持运行）
+            //  Notify frontend to enter memory-saving mode, stop periodic refresh (background protection continues)
+            let _ = app.emit("memory-mode-changed", true);
         }
     }
 }

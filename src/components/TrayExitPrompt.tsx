@@ -6,34 +6,26 @@
  * Called by: App.tsx (triggered via tray-exit-requested event setting isOpen)
  */
 import React, { useState } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { Power } from 'lucide-react'
+import { Power } from './icons'
 import { invoke } from '@tauri-apps/api/core'
 import { useI18nStore } from '../stores/i18nStore'
 import {
   Button,
   Checkbox,
+  Dialog,
+  DialogSurface,
+  DialogTitle,
+  DialogBody,
+  DialogContent,
+  DialogActions,
   makeStyles,
   shorthands,
   tokens,
 } from '@fluentui/react-components'
+import type { DialogOpenChangeData } from '@fluentui/react-components'
 
 const useStyles = makeStyles({
-  overlay: {
-    position: 'fixed',
-    inset: 0,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 9999,
-    backdropFilter: 'blur(4px)',
-  },
   surface: {
-    backgroundColor: tokens.colorNeutralBackground1,
-    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
-    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    boxShadow: tokens.shadow28,
     width: '420px',
     maxWidth: '90vw',
     overflow: 'hidden',
@@ -62,9 +54,6 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground1,
     flex: 1,
   },
-  body: {
-    ...shorthands.padding('16px', '24px'),
-  },
   message: {
     fontSize: tokens.fontSizeBase300,
     color: tokens.colorNeutralForeground2,
@@ -77,6 +66,16 @@ const useStyles = makeStyles({
     ...shorthands.gap('8px'),
     ...shorthands.padding('12px', '24px', '20px'),
     borderTop: `1px solid ${tokens.colorNeutralStroke1}`,
+  },
+  confirmButtonDanger: {
+    backgroundColor: tokens.colorPaletteRedBackground3,
+    color: tokens.colorNeutralForegroundOnBrand,
+    ':hover': {
+      backgroundColor: tokens.colorPaletteRedBackground2,
+    },
+    ':active': {
+      backgroundColor: tokens.colorPaletteRedBackground1,
+    },
   },
 })
 
@@ -106,58 +105,56 @@ const TrayExitPrompt: React.FC<TrayExitPromptProps> = ({ isOpen, onClose }) => {
     onClose()
   }
 
+  const handleOpenChange = (_: unknown, data: DialogOpenChangeData): void => {
+    if (!data.open) {
+      handleCancel()
+    }
+  }
+
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          className={styles.overlay}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={handleCancel}
-        >
-          <motion.div
-            className={styles.surface}
-            initial={{ scale: 0.95, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.95, opacity: 0 }}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            onClick={(e) => e.stopPropagation()}
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
+      <DialogSurface
+        className={styles.surface}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="tray-exit-prompt-title"
+      >
+        <div className={styles.header}>
+          <div className={styles.iconWrap}>
+            <Power size={20} />
+          </div>
+          <DialogTitle id="tray-exit-prompt-title" className={styles.title}>
+            {t('tray_exit_title')}
+          </DialogTitle>
+        </div>
+
+        <DialogBody>
+          <DialogContent>
+            <p className={styles.message}>{t('tray_exit_message')}</p>
+            <Checkbox
+              checked={confirmed}
+              onChange={(_, data) => setConfirmed(!!data.checked)}
+              disabled={isLoading}
+              label={t('tray_exit_confirm_label')}
+            />
+          </DialogContent>
+        </DialogBody>
+
+        <DialogActions className={styles.actions}>
+          <Button appearance="secondary" onClick={handleCancel} disabled={isLoading}>
+            {t('tray_exit_cancel')}
+          </Button>
+          <Button
+            appearance="primary"
+            className={styles.confirmButtonDanger}
+            onClick={handleConfirm}
+            disabled={!confirmed || isLoading}
           >
-            <div className={styles.header}>
-              <div className={styles.iconWrap}>
-                <Power size={20} />
-              </div>
-              <span className={styles.title}>{t('tray_exit_title')}</span>
-            </div>
-
-            <div className={styles.body}>
-              <p className={styles.message}>{t('tray_exit_message')}</p>
-              <Checkbox
-                checked={confirmed}
-                onChange={(_, data) => setConfirmed(!!data.checked)}
-                disabled={isLoading}
-                label={t('tray_exit_confirm_label')}
-              />
-            </div>
-
-            <div className={styles.actions}>
-              <Button appearance="secondary" onClick={handleCancel} disabled={isLoading}>
-                {t('tray_exit_cancel')}
-              </Button>
-              <Button
-                appearance="primary"
-                onClick={handleConfirm}
-                disabled={!confirmed || isLoading}
-                style={{ backgroundColor: tokens.colorPaletteRedBackground3, color: '#fff' }}
-              >
-                {isLoading ? t('tray_exit_exiting') : t('tray_exit_confirm_btn')}
-              </Button>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+            {isLoading ? t('tray_exit_exiting') : t('tray_exit_confirm_btn')}
+          </Button>
+        </DialogActions>
+      </DialogSurface>
+    </Dialog>
   )
 }
 

@@ -1,0 +1,26 @@
+[
+  {
+    "ruleId": "calc_probe_payload_image_load",
+    "provider": "Image",
+    "op": "Load",
+    "severity": 4,
+    "threatType": "DLL 注入测试样本加载",
+    "recommendAction": "alert",
+    "description": "检测到进程加载了受控 calc_probe_payload.dll，用于验证远程线程 DLL 注入检测链路。仅供测试与联调，不得进入生产配置。",
+    "targetContains": [
+      "calc_probe_payload.dll"
+    ]
+  },
+  {
+    "ruleId": "test_rule_trigger",
+    "provider": "File",
+    "op": "Rename",
+    "severity": 5,
+    "threatType": "规则引擎测试命中",
+    "recommendAction": "block",
+    "description": "规则引擎自测触发器。文件名公开可知，一旦进入生产配置即等同于给任意本地程序留下进程冻结开关，因此只允许在测试中加载。",
+    "targetPatterns": [
+      "*\\anxin_rule_test_trigger.bin"
+    ]
+  }
+]

@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 /// 函数名称：resolve_i18n_path
-/// 函数作用：解析 i18n 资源路径，优先 CWD，其次上级目录（兼容 tauri dev）。
-/// Purpose: Resolves i18n resource path, preferring CWD then parent dir (for tauri dev).
+/// 函数作用：解析 i18n 资源路径，优先 CWD，其次上级目录（兼容 tauri dev），最后 Tauri resource_dir。
+/// Purpose: Resolves i18n resource path: CWD → parent dir (for tauri dev) → Tauri resource_dir.
 fn resolve_i18n_path(locale: &str) -> std::path::PathBuf {
     let local = std::path::PathBuf::from(format!("config/i18n/{}.json", locale));
     if local.exists() {
@@ -13,6 +13,16 @@ fn resolve_i18n_path(locale: &str) -> std::path::PathBuf {
     let parent = std::path::PathBuf::from(format!("../config/i18n/{}.json", locale));
     if parent.exists() {
         return parent;
+    }
+    // 生产环境：Tauri resource_dir 下的 config/i18n/ 目录
+    //  Production: config/i18n/ under Tauri resource_dir
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            let resource_path = exe_dir.join("config/i18n").join(format!("{}.json", locale));
+            if resource_path.exists() {
+                return resource_path;
+            }
+        }
     }
     local
 }
@@ -70,7 +80,10 @@ pub async fn set_locale(
     config: tauri::State<'_, Arc<Mutex<crate::models::config::AppConfig>>>,
 ) -> Result<bool, String> {
     // 校验 locale 值，防止路径穿越 / Validate locale to prevent path traversal
-    if !locale.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+    if !locale
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
         return Err("Invalid locale format".to_string());
     }
     // 验证语言文件存在 / Verify language file exists

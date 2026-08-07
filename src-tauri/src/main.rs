@@ -18,18 +18,18 @@ use crate::services::interception_diagnostics_service::append_interception_diagn
 use crate::services::interception_recovery_service::recover_suspended_processes_from_ledger;
 use crate::services::interception_service::InterceptionService;
 use crate::services::interception_window_service::prepare_interception_window;
+use crate::services::ipc_bridge_service::IpcBridgeService;
+use crate::services::privilege_service::PrivilegeService;
 use crate::services::process_monitor_service::ProcessMonitorService;
 use crate::services::process_scanner_service::ProcessScannerService;
-use crate::services::privilege_service::PrivilegeService;
 use crate::services::quarantine_service::QuarantineService;
 use crate::services::remote_session_service::RemoteSessionService;
 use crate::services::risk_service::RiskService;
 use crate::services::scan_result_cache_service::ScanResultCacheService;
-use crate::services::snapshot_service::{SnapshotScanOptions, SnapshotService};
+use crate::services::snapshot_service::{SnapshotContext, SnapshotScanOptions, SnapshotService};
 use crate::services::tray_service::TrayService;
 use crate::services::trust_service::TrustService;
 use crate::services::windows_service;
-use crate::services::ipc_bridge_service::IpcBridgeService;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -212,6 +212,87 @@ fn start_runtime_process_scanner_before_snapshot(
 /// Error handling: Missing managed state or startup failures are logged and do not abort app startup.
 /// 中文关键词：启动顺序，启动快照，APIHook，自身注入，误报控制
 /// English keywords: startup order, startup snapshot, APIHook, self injection, false-positive control
+/// 函数名称：start_network_firewall
+/// 函数作用：按配置启动网络防火墙；未启用或驱动缺失时静默跳过。
+/// Function name: start_network_firewall
+/// Purpose: Starts the network firewall per config; skips silently when it is
+///          disabled or the driver is absent.
+/// 调用方：background_init 的独立模式初始化路径。
+/// Called by: the standalone-mode path of background_init.
+/// 被调用方：FirewallService::start。
+/// Calls: FirewallService::start.
+/// 参数说明：app_handle 用于读取 Tauri managed state；config 提供 networkFirewall 段。
+/// Parameters: app_handle reads Tauri managed state; config supplies the networkFirewall section.
+/// 错误处理：驱动未安装是预期情况而非故障 —— 整套防护的其余部分必须照常运行，
+///          因此这里只记录日志，绝不阻断启动。
+/// Error handling: an uninstalled driver is expected, not a fault. The rest of the
+///          protection suite must keep running, so failures are logged only and
+///          never abort startup.
+/// 中文关键词：防火墙启动，可选模块，降级运行，驱动缺失
+/// English keywords: firewall startup, optional module, graceful degradation, missing driver
+fn start_network_firewall(app_handle: &tauri::AppHandle, config: &AppConfig) {
+    if !config.network_firewall.enabled {
+        eprintln!("[main] Network firewall disabled by config");
+        return;
+    }
+
+    let Some(firewall) =
+        app_handle.try_state::<Arc<crate::services::firewall_service::FirewallService>>()
+    else {
+        eprintln!("[main] FirewallService not managed, skipping firewall startup");
+        return;
+    };
+
+    let ctx = crate::services::service_context::build_etw_service_context(app_handle);
+    match firewall.start(ctx, &config.network_firewall) {
+        Ok(()) => eprintln!(
+            "[main] Network firewall started (mode={})",
+            config.network_firewall.mode
+        ),
+        Err(e) => eprintln!(
+            "[main] Network firewall unavailable (non-fatal): {}. \
+             Install and start the AnXinNetFilter driver to enable traffic control.",
+            e
+        ),
+    }
+}
+
+/// 启动元核防护（仅当配置显式启用时）。
+///  Starts hypervisor protection (only when the config explicitly enables it).
+///
+/// 元核防护会改变系统虚拟化姿态，必须由 app.json 的 hypervisorProtection.enabled
+/// 显式打开后才拉起。驱动缺失、服务启动失败、设备连接失败都不是致命错误，
+/// 只打印日志，不影响其他模块启动。
+///  Hypervisor protection alters the system's virtualization posture, so it is
+///  only brought up once hypervisorProtection.enabled is set in app.json. A
+///  missing driver, a service start failure or a device connection failure are
+///  all non-fatal: they are logged and do not block other modules.
+fn start_hypervisor_if_enabled(app_handle: &tauri::AppHandle, config: &AppConfig) {
+    if !config.hypervisor_protection.enabled {
+        eprintln!("[main] Hypervisor protection disabled by config");
+        return;
+    }
+
+    let Some(hypervisor) =
+        app_handle.try_state::<Arc<crate::services::hypervisor_service::HypervisorService>>()
+    else {
+        eprintln!("[main] HypervisorService not managed, skipping hypervisor startup");
+        return;
+    };
+
+    match hypervisor.start() {
+        Ok(status) => eprintln!(
+            "[main] Hypervisor protection started (mode={}, vendor={}, cpus={})",
+            status.modeName, status.cpuVendor, status.cpuCount
+        ),
+        Err(e) => eprintln!(
+            "[main] Hypervisor protection unavailable (non-fatal): {}. \
+             Install AnXinHypervisor driver to enable hypervisor protection.",
+            e
+        ),
+    }
+}
+
 fn start_apihook_process_watcher_after_snapshot(
     app_handle: &tauri::AppHandle,
     process_monitoring_enabled: bool,
@@ -240,7 +321,117 @@ fn start_apihook_process_watcher_after_snapshot(
     }
 }
 
+/// 处理安装/卸载程序调用的驱动相关子命令。
+///  Handles the driver subcommands invoked by the installer and uninstaller.
+///
+/// 返回 Some(exit_code) 表示本次进程是来执行子命令的，主流程不应继续启动 UI。
+///  Some(exit_code) means this process was launched to run a subcommand and must not go on to
+///  start the UI.
+///
+/// 设计原则：**安装期的驱动动作绝不能让安装失败**。
+/// 内核驱动是纵深防御的一层，加载不了（签名、策略、旧系统）时用户态防护仍然完整可用，
+/// 因此除了显式的卸载动作，其余子命令一律返回 0，只把原因打到 stderr 供安装日志记录。
+///  Design rule: driver work during installation must never fail the install. The kernel driver is
+///  one layer of defence in depth; if it cannot load (signing, policy, older systems) the user-mode
+///  protection is still fully functional. Every subcommand except uninstall therefore returns 0 and
+///  merely reports the reason on stderr for the installer log.
+///
+/// 中文关键词：命令行，驱动安装，安装程序，卸载，退出码
+/// English keywords: CLI, driver install, installer, uninstall, exit code
+fn handle_driver_cli() -> Option<i32> {
+    use crate::services::driver_install_service::{self, DriverKind};
+
+    let args: Vec<String> = std::env::args().collect();
+    let value_after = |flag: &str| -> Option<String> {
+        args.iter()
+            .position(|arg| arg == flag)
+            .and_then(|index| args.get(index + 1))
+            .cloned()
+    };
+
+    if let Some(kind_arg) = value_after("--install-driver") {
+        let Some(kind) = DriverKind::parse(&kind_arg) else {
+            eprintln!("[DriverCLI] Unknown driver kind: {}", kind_arg);
+            return Some(0);
+        };
+        let staging = value_after("--from").map(std::path::PathBuf::from);
+        match driver_install_service::install_driver(kind, staging.as_deref()) {
+            Ok(()) => eprintln!("[DriverCLI] Driver {:?} installed and started", kind),
+            Err(err) => eprintln!(
+                "[DriverCLI] Driver {:?} unavailable: {} (installation continues; \
+                 user-mode protection is unaffected)",
+                kind, err
+            ),
+        }
+        return Some(0);
+    }
+
+    if let Some(pid_arg) = value_after("--protect-pid") {
+        match pid_arg.parse::<u32>() {
+            Ok(pid) => match driver_install_service::protect_pid(pid) {
+                Ok(()) => eprintln!("[DriverCLI] PID {} is now protected", pid),
+                Err(err) => eprintln!("[DriverCLI] Could not protect PID {}: {}", pid, err),
+            },
+            Err(_) => eprintln!("[DriverCLI] Invalid PID: {}", pid_arg),
+        }
+        return Some(0);
+    }
+
+    if let Some(dir_arg) = value_after("--protect-dir") {
+        let dir = std::path::PathBuf::from(&dir_arg);
+        match driver_install_service::protect_directory(&dir) {
+            Ok(()) => eprintln!("[DriverCLI] Directory {} is now protected", dir.display()),
+            Err(err) => eprintln!(
+                "[DriverCLI] Could not protect directory {}: {}",
+                dir.display(),
+                err
+            ),
+        }
+        // 驱动自身服务键的注册表保护由 AnXinFileProtect.sys 在加载时硬编码保护
+        // （SVC_KEY_*_STR），不再需要安装期用死的 REG_KEY IOCTL 逐键登记。
+        //  The driver service keys are protected at load time by AnXinFileProtect.sys's
+        //  hardcoded CmCallback list (SVC_KEY_*_STR); no per-key registration needed here.
+        return Some(0);
+    }
+
+    if args.iter().any(|arg| arg == "--query-file-protect") {
+        eprintln!("[DriverCLI] Querying file protection driver...");
+        let paths = crate::utils::driver_client::query_file_protection_paths();
+        if paths.is_empty() {
+            eprintln!("[DriverCLI] No protected paths found (driver may not be running or path registration failed)");
+        } else {
+            eprintln!(
+                "[DriverCLI] Found {} protected path(s):",
+                paths.len()
+            );
+            for (i, p) in paths.iter().enumerate() {
+                eprintln!("  [{}] {}", i, p);
+            }
+        }
+        return Some(0);
+    }
+
+    if args.iter().any(|arg| arg == "--uninstall-drivers") {
+        // 用户主动卸载：把每一步的结果都打出来，方便卸载日志追查残留
+        //  User-initiated uninstall: report every step so leftovers are traceable in the log
+        for line in driver_install_service::uninstall_drivers() {
+            eprintln!("[DriverCLI] {}", line);
+        }
+        return Some(0);
+    }
+
+    None
+}
+
 fn main() {
+    // 安装/卸载程序会以子命令方式调用本程序执行驱动动作，这些调用不启动 UI。
+    // 必须放在最前面：此时不需要 Tauri 运行时，也不该初始化任何防护组件。
+    //  The installer and uninstaller invoke this binary with driver subcommands that must not start
+    //  the UI. Handled first: no Tauri runtime is needed and no protection component should start.
+    if let Some(code) = handle_driver_cli() {
+        std::process::exit(code);
+    }
+
     // 检查是否以服务模式启动（--service 参数）
     //  Check if launched in service mode (--service argument)
     if windows_service::is_service_mode() {
@@ -282,9 +473,11 @@ fn main() {
             app.manage(AppLifecycleService::new());
 
             // 初始化托盘（轻量级，可保留在主线程）
-            TrayService::create_tray(app.handle()).map_err(|e| {
-                eprintln!("Failed to create tray: {}", e);
-            }).ok();
+            TrayService::create_tray(app.handle())
+                .map_err(|e| {
+                    eprintln!("Failed to create tray: {}", e);
+                })
+                .ok();
 
             // 初始化配置（轻量级 JSON 读取）
             let config = AppConfig::load().unwrap_or_default();
@@ -337,6 +530,33 @@ fn main() {
             //  Actual start happens in background_init; here only registered to Tauri state for commands
             let ipc_bridge = Arc::new(IpcBridgeService::new());
             app.manage(ipc_bridge);
+
+            // 网络防火墙服务 — 只注册，不自动启动。
+            //  Network firewall service - registered only, never auto-started.
+            // 防火墙会切断用户网络，必须由 app.json 的 networkFirewall.enabled
+            // 显式打开后才由 background_init 拉起；单纯升级到带这个模块的版本
+            // 绝不能默默开始拦截流量。
+            //  A firewall can cut the user off the network, so it is only brought
+            //  up by background_init once networkFirewall.enabled is set in
+            //  app.json. Merely upgrading to a build containing this module must
+            //  never start blocking traffic on its own.
+            let firewall_service =
+                Arc::new(crate::services::firewall_service::FirewallService::new());
+            app.manage(firewall_service);
+
+            // 元核防护服务 — 只注册，不自动启动。
+            //  Hypervisor service - registered only, never auto-started.
+            // 元核防护会改变系统虚拟化姿态，必须由 app.json 的
+            // hypervisorProtection.enabled 显式打开后才由 background_init 拉起；
+            // 单纯升级到带这个模块的版本绝不能默默开始虚拟化。
+            //  Hypervisor protection alters the system's virtualization posture,
+            //  so it is only brought up by background_init once
+            //  hypervisorProtection.enabled is set in app.json. Merely upgrading
+            //  to a build containing this module must never start virtualizing
+            //  on its own.
+            let hypervisor_service =
+                Arc::new(crate::services::hypervisor_service::HypervisorService::new());
+            app.manage(hypervisor_service);
 
             // 将所有重量级初始化移到后台异步任务，让窗口立即创建显示加载页面
             // Move all heavyweight initialization to background async task so window shows immediately
@@ -417,6 +637,25 @@ fn main() {
             commands::interception::get_interception_status,
             commands::interception::get_interception_signer_info,
             commands::interception::peek_current_interception,
+            // 网络防火墙 (11) — 新增
+            commands::firewall::get_firewall_status,
+            commands::firewall::start_firewall,
+            commands::firewall::stop_firewall,
+            commands::firewall::set_firewall_enabled,
+            commands::firewall::set_firewall_mode,
+            commands::firewall::reload_firewall_rules,
+            commands::firewall::flush_firewall_cache,
+            commands::firewall::handle_network_decision,
+            commands::firewall::get_network_pending,
+            commands::firewall::get_network_events,
+            commands::firewall::get_network_stats,
+            commands::firewall::is_netfilter_installed,
+            commands::firewall::install_netfilter_driver,
+            // 元核防护 (4) — 新增
+            commands::hypervisor::get_hypervisor_status,
+            commands::hypervisor::start_hypervisor,
+            commands::hypervisor::stop_hypervisor,
+            commands::hypervisor::set_hypervisor_enabled,
             // 风险分析 (1) — 新增
             commands::risk::get_risk_status,
             // 进程快照 (2) — 新增
@@ -526,7 +765,8 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
     };
 
     // 运行迁移 - events 表
-    if let Err(e) = sqlx::query(r#"
+    if let Err(e) = sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS events (
             id TEXT PRIMARY KEY,
             pid INTEGER,
@@ -536,7 +776,11 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
             timestamp TEXT,
             details TEXT
         )
-    "#).execute(&pool).await {
+    "#,
+    )
+    .execute(&pool)
+    .await
+    {
         eprintln!("[main] Failed to create events table: {}", e);
         return;
     }
@@ -570,7 +814,10 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
                     false
                 }
                 Err(e) => {
-                    eprintln!("[main] IPC bridge start failed: {} - falling back to standalone mode", e);
+                    eprintln!(
+                        "[main] IPC bridge start failed: {} - falling back to standalone mode",
+                        e
+                    );
                     false
                 }
             }
@@ -607,7 +854,10 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
         eprintln!("[main] Skipping local protection startup (service process mode)");
         // 通知前端连接已建立
         //  Notify frontend that connection is established
-        let _ = app_handle.emit("ipc-connection-status", serde_json::json!({"connected": true}));
+        let _ = app_handle.emit(
+            "ipc-connection-status",
+            serde_json::json!({"connected": true}),
+        );
         eprintln!("[main] Background initialization completed (service mode)");
         return;
     }
@@ -639,7 +889,21 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
     let hook_service = HookService::new();
     let hook_ctx = crate::services::service_context::build_etw_service_context(&app_handle);
     if let Err(e) = hook_service.start("anxin_security_filehook", hook_ctx) {
-        eprintln!("[main] Failed to start file hook pipe service: {}", e);
+        // 管道起不来意味着 APIHook 上报链路整条失效，必须留下可追查的记录，
+        // 而不是只打一行 stderr —— 生产环境没人看得到控制台。
+        //  A dead pipe means the whole APIHook reporting path is down; it must leave a traceable
+        //  record rather than a single stderr line nobody sees in production.
+        append_interception_diagnostic(
+            "hook_pipe_service_failed",
+            serde_json::json!({
+                "pipeName": r"\\.\pipe\anxin_security_filehook",
+                "pipeError": e.to_string(),
+            }),
+        );
+        eprintln!(
+            "[main] Failed to start file hook pipe service: pipeError={}",
+            e
+        );
     } else {
         append_interception_diagnostic(
             "hook_pipe_service_started",
@@ -654,10 +918,15 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
     }
 
     // 启动进程扫描器
-    start_runtime_process_scanner_before_snapshot(
-        &app_handle,
-        config.process_monitoring.enabled,
-    );
+    start_runtime_process_scanner_before_snapshot(&app_handle, config.process_monitoring.enabled);
+
+    // 启动网络防火墙（仅当配置显式启用时）
+    //  Start the network firewall, only when the config explicitly enables it
+    start_network_firewall(&app_handle, &config);
+
+    // 启动元核防护（仅当配置显式启用时）
+    //  Start hypervisor protection, only when the config explicitly enables it
+    start_hypervisor_if_enabled(&app_handle, &config);
 
     // 启动文件监控服务
     if config.file_monitoring.enabled {
@@ -670,7 +939,10 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
                 ) {
                     let etw_rx = etw.subscribe();
                     if let Some(file_monitor) = app_handle.try_state::<FileMonitorService>() {
-                        let file_monitor_ctx = crate::services::service_context::build_etw_service_context(&app_handle);
+                        let file_monitor_ctx =
+                            crate::services::service_context::build_etw_service_context(
+                                &app_handle,
+                            );
                         file_monitor.start(
                             engine.inner().clone(),
                             cache.inner().clone(),
@@ -709,8 +981,14 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
     };
     let process_monitoring_enabled_after_snapshot = config.process_monitoring.enabled;
 
-    // 等待引擎和前端就绪
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    // 等待引擎和前端就绪。
+    // 这段等待直接计入用户可见的启动可信基线时间，必须保持短：
+    // 后续的启动快照本身还要跑十几秒，前端在此期间显示分阶段进度，
+    // 不需要在开始前先空等一秒。
+    //  This wait counts directly against the user-visible startup baseline time and must stay
+    //  short: the startup snapshot itself still takes tens of seconds while the frontend shows
+    //  staged progress, so there is no reason to idle for a full second beforehand.
+    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
 
     if let (Some(trust), Some(snapshot), Some(engine), Some(cache)) = (
         app_handle.try_state::<Arc<TrustService>>(),
@@ -723,7 +1001,7 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
                 trust.inner().clone(),
                 engine.inner().clone(),
                 cache.inner().clone(),
-                &app_handle,
+                &SnapshotContext::Tauri(app_handle.clone()),
                 snapshot_scan_options,
             )
             .await

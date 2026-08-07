@@ -6,9 +6,8 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter};
+use tauri::AppHandle;
 
-use crate::services::app_lifecycle_service::app_is_exiting;
 use crate::services::engine_service::EngineService;
 use crate::services::interception_service::{InterceptionEntry, InterceptionService};
 use crate::services::path_policy_service::{
@@ -22,6 +21,7 @@ use crate::services::process_scanner_service::{
     ProcessImageIntegrityStatus, ProcessModuleInfo,
 };
 use crate::services::scan_result_cache_service::{CachedScanResult, ScanResultCacheService};
+use crate::services::service_context::{AppContext, ServiceContext};
 use crate::services::trust_service::{SignatureVerdict, TrustService};
 
 const DEFAULT_STARTUP_SNAPSHOT_SLOW_WARN_MS: u64 = 30_000;
@@ -224,6 +224,66 @@ pub struct SnapshotPerformanceStats {
     pub revocation_targets_scheduled: u32,
 }
 
+/// 快照运行上下文 — 统一 AppHandle 和 ServiceContext，使启动快照既能运行在 UI 进程也能运行在服务进程。
+///  Snapshot runtime context - unifies AppHandle and ServiceContext so the startup snapshot
+///  can run in both the UI process and the service process.
+///
+/// - `Tauri` 变体用于 UI 进程：事件通过 Tauri emit 直接发给前端。
+/// - `Service` 变体用于服务进程：事件通过 event_bus → IPC 桥接转发给 UI 进程。
+///  - `Tauri` variant for UI process: events go directly to frontend via Tauri emit.
+///  - `Service` variant for service process: events forwarded to UI via event_bus → IPC bridge.
+#[derive(Clone)]
+pub enum SnapshotContext {
+    Tauri(AppHandle),
+    Service(ServiceContext),
+}
+
+impl AppContext for SnapshotContext {
+    fn is_exiting(&self) -> bool {
+        match self {
+            SnapshotContext::Tauri(h) => h.is_exiting(),
+            SnapshotContext::Service(c) => c.is_exiting(),
+        }
+    }
+
+    fn emit_event<S: serde::Serialize + Clone + Send + 'static>(
+        &self,
+        event: &str,
+        payload: S,
+    ) -> Result<(), String> {
+        match self {
+            SnapshotContext::Tauri(h) => h.emit_event(event, payload),
+            SnapshotContext::Service(c) => c.emit_event(event, payload),
+        }
+    }
+
+    fn emit_to<S: serde::Serialize + Clone + Send + 'static>(
+        &self,
+        label: &str,
+        event: &str,
+        payload: S,
+    ) -> Result<(), String> {
+        match self {
+            SnapshotContext::Tauri(h) => h.emit_to(label, event, payload),
+            SnapshotContext::Service(c) => c.emit_to(label, event, payload),
+        }
+    }
+
+    fn show_interception_window(&self) -> Result<(), String> {
+        match self {
+            SnapshotContext::Tauri(h) => h.show_interception_window(),
+            SnapshotContext::Service(c) => c.show_interception_window(),
+        }
+    }
+
+    fn hide_interception_window(&self) {
+        match self {
+            SnapshotContext::Tauri(h) => h.hide_interception_window(),
+            SnapshotContext::Service(c) => c.hide_interception_window(),
+        }
+    }
+}
+
 /// 进程快照拦截服务 — 启动时安全评估
 /// Process snapshot interception service — startup security assessment
 ///
@@ -280,17 +340,17 @@ impl SnapshotService {
     ///   Counts unopenable non-full paths as unknown so names such as svchost.exe do not repeatedly trigger guaranteed SHA-256 scan failures but are not counted as trusted.
     /// Called by: main.rs setup() at startup (after ETW monitoring starts)
     /// 参数 trust: 信任验证服务 / Trust verification service
-    /// 参数 app_handle: Tauri 应用句柄 / Tauri app handle
-    /// 副作用：向前端 emit("snapshot-progress") 和 emit("snapshot-result"); 高/中风险进程入拦截队列
-    /// Side effects: emits "snapshot-progress" and "snapshot-result" to frontend; high/medium risk processes enqueued
-    /// 中文关键词：启动快照，进程扫描，签名验证，进程镂空，映像完整性，DLL枚举，去重扫描，批量缓存，日志节流，路径策略，启动监控
-    /// English keywords: startup snapshot, process scan, signature verification, process hollowing, image integrity, DLL enumeration, deduplicated scan, batched cache, log throttle, path policy, startup monitor
+    /// 参数 ctx: 快照运行上下文（UI 进程用 AppHandle，服务进程用 ServiceContext）/ Snapshot runtime context (AppHandle for UI process, ServiceContext for service process)
+    /// 副作用：通过 ctx 发射 "snapshot-progress" 和 "snapshot-result" 事件; 高/中风险进程入拦截队列
+    /// Side effects: emits "snapshot-progress" and "snapshot-result" via ctx; high/medium risk processes enqueued
+    /// 中文关键词：启动快照，进程扫描，签名验证，进程镂空，映像完整性，DLL枚举，去重扫描，批量缓存，日志节流，路径策略，启动监控，事件总线
+    /// English keywords: startup snapshot, process scan, signature verification, process hollowing, image integrity, DLL enumeration, deduplicated scan, batched cache, log throttle, path policy, startup monitor, event bus
     pub async fn take_startup_snapshot(
         &self,
         trust: Arc<TrustService>,
         engine: Arc<EngineService>,
         cache: Arc<ScanResultCacheService>,
-        app_handle: &AppHandle,
+        ctx: &SnapshotContext,
         options: SnapshotScanOptions,
     ) -> Result<SnapshotResult, String> {
         let start_time = Instant::now();
@@ -324,8 +384,8 @@ impl SnapshotService {
         let total = processes.len() as u32;
 
         // 通知前端进度 / Notify frontend of progress
-        if !app_is_exiting(app_handle) {
-            let _ = app_handle.emit(
+        if !ctx.is_exiting() {
+            let _ = ctx.emit_event(
                 "snapshot-progress",
                 serde_json::json!({
                     "stage": "scanning",
@@ -466,7 +526,7 @@ impl SnapshotService {
                     if let Some(ref interception) = interception_ref {
                         enqueue_process_masquerade_interception(
                             interception,
-                            app_handle,
+                            ctx,
                             proc_info.pid,
                             &proc_info.name,
                             &actual,
@@ -606,18 +666,21 @@ impl SnapshotService {
                     main_module_path,
                 } => {
                     image_integrity_alerts += 1;
-                    paused += 1;
                     if let Some(ref interception) = interception_ref {
-                        enqueue_process_image_integrity_interception(
+                        if enqueue_process_image_integrity_interception(
                             interception,
-                            app_handle,
+                            ctx,
                             proc_info.pid,
                             "startup_snapshot",
                             &proc_info.path,
                             main_module_path.as_deref(),
                             reason,
                             "high",
-                        );
+                        )
+                        .is_enqueued()
+                        {
+                            paused += 1;
+                        }
                     }
                 }
                 ProcessImageIntegrityResult {
@@ -652,17 +715,20 @@ impl SnapshotService {
                     main_module_path,
                 } => {
                     image_integrity_alerts += 1;
-                    paused += 1;
                     if let Some(ref interception) = interception_ref {
-                        enqueue_module_chain_anomaly_interception(
+                        if enqueue_module_chain_anomaly_interception(
                             interception,
-                            app_handle,
+                            ctx,
                             proc_info.pid,
                             "startup_snapshot",
                             &proc_info.path,
                             main_module_path.as_deref(),
                             reason,
-                        );
+                        )
+                        .is_enqueued()
+                        {
+                            paused += 1;
+                        }
                     }
                 }
                 ProcessImageIntegrityResult {
@@ -715,7 +781,7 @@ impl SnapshotService {
                     &engine,
                     &cache,
                     interception_ref.as_ref(),
-                    app_handle,
+                    ctx,
                     proc_info.pid,
                     &proc_info.name,
                     "process",
@@ -835,8 +901,8 @@ impl SnapshotService {
 
             // 每10个进程更新一次进度 / Update progress every 10 processes
             if (i + 1) % 10 == 0 || i == processes.len() - 1 {
-                if !app_is_exiting(app_handle) {
-                    let _ = app_handle.emit(
+                if !ctx.is_exiting() {
+                    let _ = ctx.emit_event(
                         "snapshot-progress",
                         serde_json::json!({
                             "stage": "scanning",
@@ -1006,13 +1072,13 @@ impl SnapshotService {
         *self.last_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(result.clone());
 
         // 通知前端完成 / Notify frontend of completion
-        if !app_is_exiting(app_handle) {
-            let _ = app_handle.emit("snapshot-result", &result);
+        if !ctx.is_exiting() {
+            let _ = ctx.emit_event("snapshot-result", result.clone());
         }
 
         // 尝试显示第一个拦截弹窗 / Try to show first interception modal
         if let Some(ref interception) = interception_ref {
-            interception.try_show_next(app_handle);
+            interception.try_show_next(ctx);
         }
 
         if !deep_scan_completed {
@@ -1024,7 +1090,7 @@ impl SnapshotService {
                 active_run_id: self.revocation_run_id.clone(),
                 run_id: revocation_run_id,
                 interception: interception_ref.clone(),
-                app_handle: app_handle.clone(),
+                ctx: ctx.clone(),
                 targets: all_modules_requiring_signature,
                 deferred_processes: deferred_process_module_checks,
                 path_policy,
@@ -1046,7 +1112,7 @@ impl SnapshotService {
             self.revocation_run_id.clone(),
             revocation_run_id,
             interception_ref,
-            app_handle.clone(),
+            ctx.clone(),
             revocation_targets,
             revocation_check_timeout,
             revocation_check_concurrency,
@@ -1098,6 +1164,7 @@ enum StartupScanCachedOutcome {
 #[derive(Debug, Clone)]
 struct TimedSignatureVerdict {
     trusted: bool,
+    #[allow(dead_code)]
     status: i32,
     timed_out: bool,
 }
@@ -1187,7 +1254,7 @@ struct StartupModuleDeepCheckContext {
     active_run_id: Arc<AtomicU64>,
     run_id: u64,
     interception: Option<Arc<InterceptionService>>,
-    app_handle: AppHandle,
+    ctx: SnapshotContext,
     targets: Vec<StartupModuleSignatureTarget>,
     deferred_processes: Vec<StartupDeferredProcessModuleCheck>,
     path_policy: PathPolicySnapshot,
@@ -1398,7 +1465,7 @@ fn spawn_startup_module_deep_checks(context: StartupModuleDeepCheckContext) {
             active_run_id,
             run_id,
             interception,
-            app_handle,
+            ctx,
             targets,
             deferred_processes,
             path_policy,
@@ -1484,18 +1551,21 @@ fn spawn_startup_module_deep_checks(context: StartupModuleDeepCheckContext) {
                     main_module_path,
                 } => {
                     image_integrity_alerts_delta = image_integrity_alerts_delta.saturating_add(1);
-                    paused_processes_delta = paused_processes_delta.saturating_add(1);
                     if let Some(ref interception) = interception {
-                        enqueue_process_image_integrity_interception(
+                        if enqueue_process_image_integrity_interception(
                             interception,
-                            &app_handle,
+                            &ctx,
                             deferred.pid,
                             "startup_snapshot_deep",
                             &deferred.process_path,
                             main_module_path.as_deref(),
                             reason,
                             "high",
-                        );
+                        )
+                        .is_enqueued()
+                        {
+                            paused_processes_delta = paused_processes_delta.saturating_add(1);
+                        }
                     }
                 }
                 ProcessImageIntegrityResult {
@@ -1533,17 +1603,20 @@ fn spawn_startup_module_deep_checks(context: StartupModuleDeepCheckContext) {
                     main_module_path,
                 } => {
                     image_integrity_alerts_delta = image_integrity_alerts_delta.saturating_add(1);
-                    paused_processes_delta = paused_processes_delta.saturating_add(1);
                     if let Some(ref interception) = interception {
-                        enqueue_module_chain_anomaly_interception(
+                        if enqueue_module_chain_anomaly_interception(
                             interception,
-                            &app_handle,
+                            &ctx,
                             deferred.pid,
                             "startup_snapshot_deep",
                             &deferred.process_path,
                             main_module_path.as_deref(),
                             reason,
-                        );
+                        )
+                        .is_enqueued()
+                        {
+                            paused_processes_delta = paused_processes_delta.saturating_add(1);
+                        }
                     }
                 }
                 ProcessImageIntegrityResult {
@@ -1581,7 +1654,7 @@ fn spawn_startup_module_deep_checks(context: StartupModuleDeepCheckContext) {
                         &engine,
                         &cache,
                         interception.as_ref(),
-                        &app_handle,
+                        &ctx,
                         deferred.pid,
                         &deferred.process_name,
                         "process",
@@ -1782,7 +1855,7 @@ fn spawn_startup_module_deep_checks(context: StartupModuleDeepCheckContext) {
                         &engine,
                         &cache,
                         interception.as_ref(),
-                        &app_handle,
+                        &ctx,
                         module_pid,
                         &module_process_name,
                         "module",
@@ -2028,13 +2101,13 @@ fn spawn_startup_module_deep_checks(context: StartupModuleDeepCheckContext) {
         );
 
         if let Some(result) = updated {
-            if !app_is_exiting(&app_handle) {
-                let _ = app_handle.emit("snapshot-result", &result);
+            if !ctx.is_exiting() {
+                let _ = ctx.emit_event("snapshot-result", result.clone());
             }
         }
 
         if let Some(interception) = interception.as_ref() {
-            interception.try_show_next(&app_handle);
+            interception.try_show_next(&ctx);
         }
     });
 }
@@ -2436,7 +2509,7 @@ fn spawn_startup_revocation_checks(
     active_run_id: Arc<AtomicU64>,
     run_id: u64,
     interception: Option<Arc<InterceptionService>>,
-    app_handle: AppHandle,
+    ctx: SnapshotContext,
     targets: Vec<RevocationCheckTarget>,
     timeout: Duration,
     concurrency: usize,
@@ -2532,7 +2605,7 @@ fn spawn_startup_revocation_checks(
             for (target, status) in &revoked {
                 enqueue_certificate_revocation_interception(
                     interception,
-                    &app_handle,
+                    &ctx,
                     target.pid,
                     &target.process_name,
                     &target.path,
@@ -2542,7 +2615,7 @@ fn spawn_startup_revocation_checks(
             for (target, current_path, current_write_time) in &image_changed {
                 enqueue_revocation_target_changed_interception(
                     interception,
-                    &app_handle,
+                    &ctx,
                     target,
                     current_path.as_deref(),
                     *current_write_time,
@@ -2567,13 +2640,13 @@ fn spawn_startup_revocation_checks(
         };
 
         if let Some(result) = updated {
-            if !app_is_exiting(&app_handle) {
-                let _ = app_handle.emit("snapshot-result", &result);
+            if !ctx.is_exiting() {
+                let _ = ctx.emit_event("snapshot-result", result.clone());
             }
         }
 
         if let Some(interception) = interception.as_ref() {
-            interception.try_show_next(&app_handle);
+            interception.try_show_next(&ctx);
         }
     });
 }
@@ -2592,7 +2665,7 @@ async fn scan_startup_target(
     engine: &Arc<EngineService>,
     cache: &Arc<ScanResultCacheService>,
     interception: Option<&Arc<InterceptionService>>,
-    app_handle: &AppHandle,
+    ctx: &SnapshotContext,
     pid: u32,
     process_name: &str,
     target_type: &str,
@@ -2707,7 +2780,7 @@ async fn scan_startup_target(
                 if let Some(interception) = interception {
                     enqueue_startup_scan_interception(
                         interception,
-                        app_handle,
+                        ctx,
                         pid,
                         process_name,
                         target_type,
@@ -2980,7 +3053,7 @@ fn startup_module_is_process_image(module_scan_key: &str, process_scan_key: &str
 
 fn enqueue_startup_scan_interception(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle,
+    ctx: &SnapshotContext,
     pid: u32,
     process_name: &str,
     target_type: &str,
@@ -2988,7 +3061,7 @@ fn enqueue_startup_scan_interception(
     process_path: Option<&str>,
     scan_result: &CachedScanResult,
 ) {
-    if app_is_exiting(app_handle) {
+    if ctx.is_exiting() {
         return;
     }
 
@@ -3030,24 +3103,24 @@ fn enqueue_startup_scan_interception(
         timestamp: chrono::Utc::now().timestamp_millis() as u64,
     };
     interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    interception.try_show_next(ctx);
 }
 
 fn enqueue_process_masquerade_interception(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle,
+    ctx: &SnapshotContext,
     pid: u32,
     process_name: &str,
     actual_path: &str,
     expected_paths: &[String],
 ) {
-    if app_is_exiting(app_handle) {
+    if ctx.is_exiting() {
         return;
     }
 
     let entry = build_process_masquerade_entry(pid, process_name, actual_path, expected_paths);
     interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    interception.try_show_next(ctx);
 }
 
 fn build_process_masquerade_entry(
@@ -3087,35 +3160,35 @@ fn build_process_masquerade_entry(
 
 fn enqueue_certificate_revocation_interception(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle,
+    ctx: &SnapshotContext,
     pid: u32,
     process_name: &str,
     target_path: &str,
     status: i32,
 ) {
-    if app_is_exiting(app_handle) {
+    if ctx.is_exiting() {
         return;
     }
 
     let entry = build_certificate_revocation_entry(pid, process_name, target_path, status);
     interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    interception.try_show_next(ctx);
 }
 
 fn enqueue_revocation_target_changed_interception(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle,
+    ctx: &SnapshotContext,
     target: &RevocationCheckTarget,
     current_path: Option<&str>,
     current_write_time: Option<i64>,
 ) {
-    if app_is_exiting(app_handle) {
+    if ctx.is_exiting() {
         return;
     }
 
     let entry = build_revocation_target_changed_entry(target, current_path, current_write_time);
     interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    interception.try_show_next(ctx);
 }
 
 fn build_certificate_revocation_entry(

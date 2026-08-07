@@ -35,21 +35,21 @@ pub fn show_interception_window<R: Runtime>(
         }),
     );
     let window = prepare_interception_window(app_handle)?;
-    window
-        .show()
-        .map_err(|err| {
-            let message = format!("Failed to show interception window: {}", err);
-            append_interception_diagnostic(
-                "show_interception_window_error",
-                serde_json::json!({
-                    "label": INTERCEPTION_WINDOW_LABEL,
-                    "step": "show",
-                    "error": message,
-                }),
-            );
-            message
-        })?;
-    let always_on_top_result = window.set_always_on_top(true).map_err(|err| err.to_string());
+    window.show().map_err(|err| {
+        let message = format!("Failed to show interception window: {}", err);
+        append_interception_diagnostic(
+            "show_interception_window_error",
+            serde_json::json!({
+                "label": INTERCEPTION_WINDOW_LABEL,
+                "step": "show",
+                "error": message,
+            }),
+        );
+        message
+    })?;
+    let always_on_top_result = window
+        .set_always_on_top(true)
+        .map_err(|err| err.to_string());
     let focus_result = window.set_focus().map_err(|err| err.to_string());
     append_interception_diagnostic(
         "show_interception_window_ok",

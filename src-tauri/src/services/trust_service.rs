@@ -1,7 +1,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::io::Read;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use libloading::{Library, Symbol};
@@ -158,6 +158,7 @@ struct CacheEntry {
 struct ScanHashEntry {
     write_time: i64,
     hash_hex: String,
+    cached_at_ms: u64,
 }
 
 struct ScanVerdictEntry {
@@ -179,8 +180,11 @@ pub struct TrustService {
 
 struct ScanCacheInner {
     path_to_hash: HashMap<String, ScanHashEntry>,
+    path_lru: VecDeque<String>,
     hash_to_verdict: HashMap<String, ScanVerdictEntry>,
+    verdict_lru: VecDeque<String>,
     ttl_ms: u64,
+    max_entries: usize,
 }
 
 pub struct SignatureVerdict {
@@ -205,8 +209,11 @@ impl TrustService {
             }),
             scan_cache: Mutex::new(ScanCacheInner {
                 path_to_hash: HashMap::new(),
+                path_lru: VecDeque::new(),
                 hash_to_verdict: HashMap::new(),
+                verdict_lru: VecDeque::new(),
                 ttl_ms: DEFAULT_SCAN_VERDICT_TTL_MS,
+                max_entries: DEFAULT_MAX_ENTRIES,
             }),
         }
     }
@@ -337,24 +344,47 @@ impl TrustService {
         let wt = file_write_time(file_path).unwrap_or(0);
         let key = normalize_path(file_path);
         let now_ms = monotonic_ms();
+        let ttl_ms = {
+            let cache = self.scan_cache.lock().unwrap();
+            cache.ttl_ms
+        };
 
-        let hash_hex = {
+        let path_cache_entry = {
             let cache = self.scan_cache.lock().unwrap();
             cache
                 .path_to_hash
                 .get(&key)
-                .filter(|e| e.write_time == wt && !e.hash_hex.is_empty())
-                .map(|e| e.hash_hex.clone())
-                .unwrap_or_default()
+                .map(|entry| (entry.write_time, entry.hash_hex.clone(), entry.cached_at_ms))
+        };
+
+        let hash_hex = if let Some((entry_write_time, entry_hash_hex, entry_cached_at_ms)) =
+            path_cache_entry
+        {
+            let fresh = entry_write_time == wt
+                && !entry_hash_hex.is_empty()
+                && now_ms >= entry_cached_at_ms
+                && (now_ms - entry_cached_at_ms) <= ttl_ms;
+            let mut cache = self.scan_cache.lock().unwrap();
+            if fresh {
+                cache.touch_path_lru(&key);
+                entry_hash_hex
+            } else {
+                cache.remove_path_hash(&key);
+                String::new()
+            }
+        } else {
+            String::new()
         };
 
         let hash_hex = if hash_hex.is_empty() {
             let h = sha256_hex_of_file(file_path)?;
-            self.scan_cache.lock().unwrap().path_to_hash.insert(
+            let mut cache = self.scan_cache.lock().unwrap();
+            cache.upsert_path_hash(
                 key,
                 ScanHashEntry {
                     write_time: wt,
                     hash_hex: h.clone(),
+                    cached_at_ms: now_ms,
                 },
             );
             h
@@ -363,13 +393,18 @@ impl TrustService {
         };
 
         let mut cache = self.scan_cache.lock().unwrap();
-        if let Some(entry) = cache.hash_to_verdict.get(&hash_hex) {
+        if let Some((entry_verdict, entry_cached_at_ms)) = cache
+            .hash_to_verdict
+            .get(&hash_hex)
+            .map(|entry| (entry.verdict, entry.cached_at_ms))
+        {
             let fresh =
-                now_ms >= entry.cached_at_ms && (now_ms - entry.cached_at_ms) <= cache.ttl_ms;
+                now_ms >= entry_cached_at_ms && (now_ms - entry_cached_at_ms) <= cache.ttl_ms;
             if fresh {
-                return Ok(Some((entry.verdict, hash_hex)));
+                cache.touch_verdict_lru(&hash_hex);
+                return Ok(Some((entry_verdict, hash_hex)));
             } else {
-                cache.hash_to_verdict.remove(&hash_hex);
+                cache.remove_verdict(&hash_hex);
             }
         }
         Ok(None)
@@ -388,7 +423,7 @@ impl TrustService {
         }
         let now_ms = monotonic_ms();
         let mut cache = self.scan_cache.lock().unwrap();
-        cache.hash_to_verdict.insert(
+        cache.upsert_verdict(
             hash_hex.to_string(),
             ScanVerdictEntry {
                 verdict,
@@ -422,6 +457,63 @@ impl InnerCache {
         while self.entries.len() > self.max_entries {
             if let Some(back) = self.lru.pop_back() {
                 self.entries.remove(&back);
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+impl ScanCacheInner {
+    fn touch_lru(lru: &mut VecDeque<String>, key: &str) {
+        lru.retain(|item| item != key);
+        lru.push_front(key.to_string());
+    }
+
+    fn touch_path_lru(&mut self, key: &str) {
+        Self::touch_lru(&mut self.path_lru, key);
+    }
+
+    fn touch_verdict_lru(&mut self, key: &str) {
+        Self::touch_lru(&mut self.verdict_lru, key);
+    }
+
+    fn remove_path_hash(&mut self, key: &str) {
+        self.path_to_hash.remove(key);
+        self.path_lru.retain(|item| item != key);
+    }
+
+    fn remove_verdict(&mut self, key: &str) {
+        self.hash_to_verdict.remove(key);
+        self.verdict_lru.retain(|item| item != key);
+    }
+
+    fn upsert_path_hash(&mut self, key: String, entry: ScanHashEntry) {
+        self.path_to_hash.insert(key.clone(), entry);
+        self.touch_path_lru(&key);
+        self.evict_path_if_needed();
+    }
+
+    fn upsert_verdict(&mut self, key: String, entry: ScanVerdictEntry) {
+        self.hash_to_verdict.insert(key.clone(), entry);
+        self.touch_verdict_lru(&key);
+        self.evict_verdict_if_needed();
+    }
+
+    fn evict_path_if_needed(&mut self) {
+        while self.path_to_hash.len() > self.max_entries {
+            if let Some(oldest) = self.path_lru.pop_back() {
+                self.path_to_hash.remove(&oldest);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn evict_verdict_if_needed(&mut self) {
+        while self.hash_to_verdict.len() > self.max_entries {
+            if let Some(oldest) = self.verdict_lru.pop_back() {
+                self.hash_to_verdict.remove(&oldest);
             } else {
                 break;
             }
@@ -506,7 +598,11 @@ fn file_write_time(file_path: &str) -> Option<i64> {
 /// 函数作用：返回自系统启动以来的单调时钟毫秒数，用于缓存 TTL 计算。
 /// Purpose: Returns monotonic clock milliseconds since system boot, used for cache TTL.
 fn monotonic_ms() -> u64 {
-    Instant::now().elapsed().as_millis() as u64
+    static MONOTONIC_START: OnceLock<Instant> = OnceLock::new();
+    MONOTONIC_START
+        .get_or_init(Instant::now)
+        .elapsed()
+        .as_millis() as u64
 }
 
 /// 函数名称：verify_file_no_cache
@@ -1124,7 +1220,11 @@ fn is_hex_lower_64(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{signature_cache_key, TrustService};
+    use super::{
+        monotonic_ms, signature_cache_key, ScanCacheInner, ScanHashEntry, ScanVerdictEntry,
+        TrustService, DEFAULT_SCAN_VERDICT_TTL_MS,
+    };
+    use std::collections::{HashMap, VecDeque};
 
     #[test]
     fn signature_cache_key_separates_revocation_modes() {
@@ -1145,5 +1245,61 @@ mod tests {
         let revocation_key = signature_cache_key(r"C:\Windows\System32\kernel32.dll", true);
 
         assert_ne!(normal_key, revocation_key);
+    }
+
+    #[test]
+    fn monotonic_ms_is_non_decreasing_within_process() {
+        let first = monotonic_ms();
+        let second = monotonic_ms();
+
+        assert!(second >= first);
+    }
+
+    #[test]
+    fn scan_cache_entries_are_bounded() {
+        let mut cache = ScanCacheInner {
+            path_to_hash: HashMap::new(),
+            path_lru: VecDeque::new(),
+            hash_to_verdict: HashMap::new(),
+            verdict_lru: VecDeque::new(),
+            ttl_ms: DEFAULT_SCAN_VERDICT_TTL_MS,
+            max_entries: 1,
+        };
+
+        cache.upsert_path_hash(
+            "c:\\temp\\first.exe".to_string(),
+            ScanHashEntry {
+                write_time: 1,
+                hash_hex: "a".repeat(64),
+                cached_at_ms: 1,
+            },
+        );
+        cache.upsert_path_hash(
+            "c:\\temp\\second.exe".to_string(),
+            ScanHashEntry {
+                write_time: 2,
+                hash_hex: "b".repeat(64),
+                cached_at_ms: 2,
+            },
+        );
+        cache.upsert_verdict(
+            "a".repeat(64),
+            ScanVerdictEntry {
+                verdict: 1,
+                cached_at_ms: 1,
+            },
+        );
+        cache.upsert_verdict(
+            "b".repeat(64),
+            ScanVerdictEntry {
+                verdict: 2,
+                cached_at_ms: 2,
+            },
+        );
+
+        assert_eq!(cache.path_to_hash.len(), 1);
+        assert_eq!(cache.hash_to_verdict.len(), 1);
+        assert!(cache.path_to_hash.contains_key("c:\\temp\\second.exe"));
+        assert!(cache.hash_to_verdict.contains_key(&"b".repeat(64)));
     }
 }

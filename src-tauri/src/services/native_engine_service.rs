@@ -14,10 +14,14 @@ use std::sync::Mutex;
 
 use libloading::Library;
 
-/// kvd_config 结构体（对应 C 头文件 kvd/api.h）
-/// kvd_config struct (corresponds to C header kvd/api.h)
+/// kvd_config 结构体（对应 C 头文件 axon_onnx_predict.h，Axon v2.6Exp Loop151 ABI）
+/// kvd_config struct (corresponds to C header axon_onnx_predict.h, Axon v2.6Exp Loop151 ABI)
+///
+/// x64 上 96 字节：旧 LightGBM 字段保留用于 ABI 兼容但引擎忽略，
+/// 实际使用 stage2_model_json_path 指向 runtime/loop151_native_runtime.json
 #[repr(C)]
 struct KvdConfig {
+    // 旧字段（ABI 兼容，Axon 忽略）
     model_path: *const std::os::raw::c_char,
     model_normal_path: *const std::os::raw::c_char,
     model_packed_path: *const std::os::raw::c_char,
@@ -25,7 +29,20 @@ struct KvdConfig {
     allowed_scan_root: *const std::os::raw::c_char,
     max_file_size: std::os::raw::c_uint,
     prediction_threshold: std::os::raw::c_float,
+    // Axon v2.6Exp 新增字段
+    onnx_model_path: *const std::os::raw::c_char,
+    onnx_model_normal_path: *const std::os::raw::c_char,
+    onnx_model_packed_path: *const std::os::raw::c_char,
+    stage2_model_json_path: *const std::os::raw::c_char,
+    archive_scanner_path: *const std::os::raw::c_char,
+    scan_nested: std::os::raw::c_int,
 }
+
+// 编译期断言：KvdConfig 在 x64 上必须为 96 字节
+const _: () = assert!(
+    std::mem::size_of::<KvdConfig>() == 96,
+    "KvdConfig must be 96 bytes on x64 (see axon_onnx_predict.h)"
+);
 
 type KvdHandle = std::ffi::c_void;
 
@@ -154,77 +171,67 @@ impl NativeEngineService {
                 .map_err(|e| format!("Failed to find kvd_validate_models: {}", e))?
         };
 
-        // 构建模型文件路径 / Build model file paths
-        let models_dir = engine_root.join("saved_models");
-        let hdbscan_dir = engine_root.join("hdbscan_cluster_results");
+        // 构建运行时配置路径 / Build runtime config path
+        // Axon v2.6Exp 只需 stage2_model_json_path 指向 runtime/loop151_native_runtime.json
+        // 引擎通过该 JSON 自行定位所有 ONNX 模型（见 axon_onnx_predict.h 说明）
+        let runtime_config_path = engine_root
+            .join("runtime")
+            .join("loop151_native_runtime.json");
 
-        let model_path = models_dir.join("lightgbm_model.train.txt");
-        let model_normal_path = models_dir.join("lightgbm_model_normal.train.txt");
-        let model_packed_path = models_dir.join("lightgbm_model_packed.train.txt");
-        let family_classifier_path = hdbscan_dir.join("family_classifier.json");
-
-        // 验证模型文件存在（不验证内容）
-        for p in [
-            &model_path,
-            &model_normal_path,
-            &model_packed_path,
-            &family_classifier_path,
-        ] {
-            if !p.exists() {
-                return Err(format!("Model file not found: {:?}", p));
-            }
+        if !runtime_config_path.exists() {
+            return Err(format!(
+                "Runtime config not found: {:?}. Axon v2.6Exp requires runtime/loop151_native_runtime.json",
+                runtime_config_path
+            ));
         }
 
         // 构造 kvd_config / Build kvd_config
-        let model_path_c = CString::new(model_path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("Invalid model path: {}", e))?;
-        let model_normal_path_c = CString::new(model_normal_path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("Invalid normal model path: {}", e))?;
-        let model_packed_path_c = CString::new(model_packed_path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("Invalid packed model path: {}", e))?;
-        let family_classifier_path_c =
-            CString::new(family_classifier_path.to_string_lossy().as_bytes())
-                .map_err(|e| format!("Invalid family classifier path: {}", e))?;
+        // 按示例做法：只设置 stage2_model_json_path，其他字段置零/null
+        let runtime_config_c = CString::new(runtime_config_path.to_string_lossy().as_bytes())
+            .map_err(|e| format!("Invalid runtime config path: {}", e))?;
 
         let cfg = KvdConfig {
-            model_path: model_path_c.as_ptr(),
-            model_normal_path: model_normal_path_c.as_ptr(),
-            model_packed_path: model_packed_path_c.as_ptr(),
-            family_classifier_json_path: family_classifier_path_c.as_ptr(),
+            model_path: std::ptr::null(),
+            model_normal_path: std::ptr::null(),
+            model_packed_path: std::ptr::null(),
+            family_classifier_json_path: std::ptr::null(),
             allowed_scan_root: std::ptr::null(),
-            max_file_size: 65536,
-            prediction_threshold: 0.98,
+            max_file_size: 0,
+            prediction_threshold: 0.5,
+            onnx_model_path: std::ptr::null(),
+            onnx_model_normal_path: std::ptr::null(),
+            onnx_model_packed_path: std::ptr::null(),
+            stage2_model_json_path: runtime_config_c.as_ptr(),
+            archive_scanner_path: std::ptr::null(),
+            scan_nested: 0,
         };
 
-        // 第一次验证模型 / First validation
+        // 验证模型 / Validate models
+        // Axon v2.6Exp: KVD_MODEL_OK = 0 表示成功，非零表示失败（按示例做法）
         let mut err_ptr: *mut std::os::raw::c_char = std::ptr::null_mut();
         let mut err_len: usize = 0;
         let check = unsafe { kvd_validate_models(&cfg, &mut err_ptr, &mut err_len) };
 
-        if check != 0 {
-            let err_msg = if !err_ptr.is_null() {
-                let msg = unsafe { CStr::from_ptr(err_ptr).to_string_lossy().into_owned() };
-                unsafe {
-                    kvd_free(err_ptr);
-                }
-                msg
-            } else {
-                format!("kvd_validate_models failed with code: {}", check)
-            };
-            eprintln!(
-                "[NativeEngine] Model validation warning (non-fatal): {}",
-                err_msg
-            );
-        } else {
-            if !err_ptr.is_null() {
-                let msg = unsafe { CStr::from_ptr(err_ptr).to_string_lossy().into_owned() };
-                eprintln!("[NativeEngine] Model validation message: {}", msg);
-                unsafe {
-                    kvd_free(err_ptr);
-                }
+        let err_msg = if !err_ptr.is_null() {
+            let msg = unsafe { CStr::from_ptr(err_ptr).to_string_lossy().into_owned() };
+            unsafe {
+                kvd_free(err_ptr);
             }
-            eprintln!("[NativeEngine] Model validation passed");
+            msg
+        } else {
+            String::new()
+        };
+
+        if check != 0 {
+            return Err(format!(
+                "kvd_validate_models failed with code {}: {}",
+                check, err_msg
+            ));
         }
+        eprintln!(
+            "[NativeEngine] Model validation passed: {}",
+            if err_msg.is_empty() { "<ok>" } else { &err_msg }
+        );
 
         // 创建引擎句柄 / Create engine handle
         let handle = unsafe { kvd_create(&cfg) };
@@ -329,7 +336,7 @@ impl NativeEngineService {
         }
 
         match serde_json::from_str::<serde_json::Value>(&result_str) {
-            Ok(val) => Ok(val),
+            Ok(val) => Ok(Self::convert_loop151_result(val)),
             Err(e) => {
                 eprintln!("[NativeEngine] Failed to parse scan result: {}", e);
                 Ok(serde_json::json!({
@@ -340,6 +347,46 @@ impl NativeEngineService {
                 }))
             }
         }
+    }
+
+    /// 函数名称：convert_loop151_result
+    /// 函数作用：将 Axon v2.6Exp Loop151 原始结果转换为上层兼容格式。
+    /// Purpose: Converts Axon v2.6Exp Loop151 raw result to upper-layer compatible format.
+    ///
+    /// 转换规则：
+    ///   - 如果已有 is_malware 字段，直接返回（引擎返回兼容格式）
+    ///   - 否则从 prediction 字段提取判定（0=benign, 1=malware）
+    ///   - confidence 优先取响应中的 confidence/probability/score 字段
+    ///
+    /// 中文关键词：结果转换，Loop151，prediction，格式兼容
+    /// English keywords: result conversion, Loop151, prediction, format compatibility
+    fn convert_loop151_result(mut raw: serde_json::Value) -> serde_json::Value {
+        if raw.get("is_malware").is_some() {
+            return raw;
+        }
+
+        let is_malware = raw
+            .get("prediction")
+            .and_then(|v| v.as_i64())
+            .map(|p| p == 1)
+            .unwrap_or(false);
+
+        let confidence = raw
+            .get("confidence")
+            .and_then(|v| v.as_f64())
+            .or_else(|| raw.get("probability").and_then(|v| v.as_f64()))
+            .or_else(|| raw.get("score").and_then(|v| v.as_f64()))
+            .or_else(|| raw.get("malware_probability").and_then(|v| v.as_f64()))
+            .unwrap_or(1.0);
+
+        if let Some(obj) = raw.as_object_mut() {
+            obj.insert(
+                "is_malware".to_string(),
+                serde_json::Value::Bool(is_malware),
+            );
+            obj.insert("confidence".to_string(), serde_json::json!(confidence));
+        }
+        raw
     }
 
     /// 函数名称：scan_bytes
@@ -390,7 +437,9 @@ impl NativeEngineService {
             (self.kvd_free)(out_json);
         }
 
-        serde_json::from_str(&result_str).map_err(|e| format!("Failed to parse scan result: {}", e))
+        serde_json::from_str::<serde_json::Value>(&result_str)
+            .map(Self::convert_loop151_result)
+            .map_err(|e| format!("Failed to parse scan result: {}", e))
     }
 
     /// 函数名称：is_malware
@@ -400,6 +449,7 @@ impl NativeEngineService {
     /// Called by: process_scanner_service / file_monitor_service (quick check)
     /// 中文关键词：恶意判断，快速检测，布尔结果
     /// English keywords: malware check, quick detection, boolean result
+    #[allow(dead_code)]
     pub fn is_malware(&self, file_path: &str) -> Result<(bool, f64), String> {
         let result = self.scan_file(file_path, serde_json::json!({}))?;
         let is_malware = result

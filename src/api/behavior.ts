@@ -357,14 +357,20 @@ export function onEtwEvent(
   callback: (event: EtwEvent) => void
 ): () => void {
   let unlisten: UnlistenFn | null = null
+  let disposed = false
 
   listen('etw-event', (event) => {
     callback(event.payload as EtwEvent)
   }).then((fn) => {
-    unlisten = fn
+    if (disposed) {
+      fn()
+    } else {
+      unlisten = fn
+    }
   })
 
   return () => {
+    disposed = true
     if (unlisten) {
       unlisten()
     }
@@ -388,14 +394,20 @@ export function onFileHookEvent(
   callback: (event: FileHookEvent) => void
 ): () => void {
   let unlisten: UnlistenFn | null = null
+  let disposed = false
 
   listen<FileHookEvent>('file-hook-event', (event) => {
     callback(event.payload)
   }).then((fn) => {
-    unlisten = fn
+    if (disposed) {
+      fn()
+    } else {
+      unlisten = fn
+    }
   })
 
   return () => {
+    disposed = true
     if (unlisten) {
       unlisten()
     }

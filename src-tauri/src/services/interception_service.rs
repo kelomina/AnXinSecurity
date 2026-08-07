@@ -14,8 +14,44 @@ use crate::services::interception_recovery_service::{
 use crate::services::interception_window_service::{
     hide_interception_window, show_interception_window,
 };
-use crate::services::process_control_service::query_process_identity;
+use crate::services::process_control_service::{
+    is_current_process_or_ancestor, query_process_identity,
+};
 use crate::services::process_control_service::{resume_process_by_pid, suspend_process_by_pid};
+use crate::services::service_context::AppContext;
+
+// 为 AppHandle<R> 实现 AppContext trait，使其能与 ServiceContext 统一使用
+//  Implement AppContext trait for AppHandle<R> so it can be used interchangeably with ServiceContext
+impl<R: Runtime> AppContext for AppHandle<R> {
+    fn is_exiting(&self) -> bool {
+        app_is_exiting(self)
+    }
+
+    fn emit_event<S: serde::Serialize + Clone + Send + 'static>(
+        &self,
+        event: &str,
+        payload: S,
+    ) -> Result<(), String> {
+        Emitter::emit(self, event, payload).map_err(|e| e.to_string())
+    }
+
+    fn emit_to<S: serde::Serialize + Clone + Send + 'static>(
+        &self,
+        label: &str,
+        event: &str,
+        payload: S,
+    ) -> Result<(), String> {
+        Emitter::emit_to(self, label, event, payload).map_err(|e| e.to_string())
+    }
+
+    fn show_interception_window(&self) -> Result<(), String> {
+        show_interception_window(self).map(|_| ())
+    }
+
+    fn hide_interception_window(&self) {
+        hide_interception_window(self);
+    }
+}
 
 pub trait InterceptionProcessControl: Send + Sync {
     fn suspend_process(&self, pid: u32) -> Result<bool, String>;
@@ -269,6 +305,24 @@ impl InterceptionService {
             return InterceptionEnqueueResult::Rejected;
         }
 
+        if should_suspend && is_current_process_or_ancestor(entry.pid) {
+            append_interception_diagnostic(
+                "interception_queue_reject",
+                serde_json::json!({
+                    "reason": "current_process_control_chain",
+                    "pid": entry.pid,
+                    "processName": entry.process_name,
+                    "mode": enqueue_mode,
+                    "queueLen": queue.len(),
+                }),
+            );
+            eprintln!(
+                "[InterceptionService] PID {} is current process control-chain, skipping auto-suspend",
+                entry.pid
+            );
+            return InterceptionEnqueueResult::Rejected;
+        }
+
         if should_suspend {
             // 实时 ETW/文件监控命中时，目标进程可能只留出很短的处置窗口。
             // 这里先执行最关键的 NtSuspendProcess，再补 PID 身份和恢复台账；
@@ -402,15 +456,12 @@ impl InterceptionService {
     /// 函数作用：尝试弹出下一个拦截弹窗（若当前无弹窗且队列非空）。
     /// Purpose: Tries to show the next interception modal (if no modal is showing and queue is not empty).
     /// Called by: enqueue() 后自动调用, 或前端处理完上一个弹窗后调用
-    /// 参数 app_handle: Tauri 应用句柄，兼容真实运行时与测试运行时 / Tauri app handle for production and test runtimes
+    /// 参数 ctx: 应用上下文，兼容 Tauri 运行时与 ServiceContext / App context for both Tauri runtime and ServiceContext
     /// Returns: 弹窗数据，若队列为空或无弹窗则为 None
     /// 中文关键词：弹窗展示，下一个拦截，弹窗状态
     /// English keywords: show modal, next interception, modal state
-    pub fn try_show_next<R: Runtime>(
-        &self,
-        app_handle: &AppHandle<R>,
-    ) -> Option<InterceptionEntry> {
-        if app_is_exiting(app_handle) {
+    pub fn try_show_next<C: AppContext>(&self, ctx: &C) -> Option<InterceptionEntry> {
+        if ctx.is_exiting() {
             append_interception_diagnostic(
                 "try_show_next_skipped",
                 serde_json::json!({
@@ -430,10 +481,9 @@ impl InterceptionService {
             let preemptive_entry = {
                 let mut queue = self.queue.lock().unwrap_or_else(|e| e.into_inner());
                 if let Some(current) = current_entry.as_ref() {
-                    if let Some(position) = queue
-                        .iter()
-                        .position(|candidate| should_preempt_current_interception(current, candidate))
-                    {
+                    if let Some(position) = queue.iter().position(|candidate| {
+                        should_preempt_current_interception(current, candidate)
+                    }) {
                         let candidate = queue.remove(position);
                         if !queue.iter().any(|entry| entry.pid == current.pid) {
                             queue.insert(0, current.clone());
@@ -474,7 +524,15 @@ impl InterceptionService {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert(entry.pid, entry.clone());
-                return self.show_entry(app_handle, entry);
+                return match self.show_entry(ctx, entry) {
+                    Ok(shown) => Some(shown),
+                    Err(failed) => {
+                        // 先释放 showing 守卫，rollback 内部会重新加锁
+                        //  Drop the showing guard first; the rollback re-locks it
+                        drop(showing);
+                        self.rollback_failed_show(failed)
+                    }
+                };
             }
 
             append_interception_diagnostic(
@@ -522,15 +580,35 @@ impl InterceptionService {
             .unwrap_or_else(|e| e.into_inner())
             .insert(entry.pid, entry.clone());
 
-        self.show_entry(app_handle, entry)
+        match self.show_entry(ctx, entry) {
+            Ok(shown) => Some(shown),
+            Err(failed) => {
+                // 先释放 showing 守卫，rollback 内部会重新加锁
+                //  Drop the showing guard first; the rollback re-locks it
+                drop(showing);
+                self.rollback_failed_show(failed)
+            }
+        }
     }
 
-    fn show_entry<R: Runtime>(
+    /// 展示拦截条目。
+    ///  Shows an interception entry.
+    ///
+    /// 返回 `Err(entry)` 表示拦截窗口没能建出来，调用方**必须在释放 `showing` 守卫之后**
+    /// 调用 [`Self::rollback_failed_show`] 回滚。这里不能自行回滚：两个调用点都还持有
+    /// `showing` 的 MutexGuard，而回滚要走 `mark_decision`，后者会再次 `showing.lock()`，
+    /// std 的 Mutex 不可重入，同线程会直接死锁。
+    ///  Returns `Err(entry)` when the interception window could not be created. The caller
+    /// MUST drop the `showing` guard first and then call [`Self::rollback_failed_show`].
+    /// Rolling back here is impossible: both call sites still hold the `showing` MutexGuard
+    /// and the rollback goes through `mark_decision`, which locks `showing` again — std's
+    /// Mutex is not reentrant, so the thread would deadlock on itself.
+    fn show_entry<C: AppContext>(
         &self,
-        app_handle: &AppHandle<R>,
+        ctx: &C,
         entry: InterceptionEntry,
-    ) -> Option<InterceptionEntry> {
-        if let Err(err) = show_interception_window(app_handle) {
+    ) -> Result<InterceptionEntry, InterceptionEntry> {
+        if let Err(err) = ctx.show_interception_window() {
             append_interception_diagnostic(
                 "show_interception_window_error_from_service",
                 serde_json::json!({
@@ -543,6 +621,7 @@ impl InterceptionService {
                 "[InterceptionService] Failed to show interception window: {}",
                 err
             );
+            return Err(entry);
         } else {
             append_interception_diagnostic(
                 "show_interception_window_ok_from_service",
@@ -567,7 +646,7 @@ impl InterceptionService {
             "payload": entry.payload,
         });
 
-        if let Err(err) = app_handle.emit_to("interception", "process-intercepted", payload) {
+        if let Err(err) = ctx.emit_to("interception", "process-intercepted", payload) {
             append_interception_diagnostic(
                 "emit_interception_event_error",
                 serde_json::json!({
@@ -590,7 +669,50 @@ impl InterceptionService {
             );
         }
 
-        Some(entry)
+        Ok(entry)
+    }
+
+    /// 拦截窗口建不出来时的回滚：恢复目标进程并清理全部簿记。
+    ///  Rollback when the interception window could not be created: resumes the target
+    ///  process and clears all bookkeeping.
+    ///
+    /// **必须在释放 `showing` 守卫之后调用**——内部走 `mark_decision`，会重新加锁 `showing`。
+    ///  **Must be called after the `showing` guard is dropped** — it goes through
+    ///  `mark_decision`, which re-locks `showing`.
+    ///
+    /// 取舍：拿不到用户决策时继续挂起，等于把用户进程永久冻死且没有恢复入口。
+    /// 与 `enqueue_internal` 里台账写入失败的回滚一致，选择恢复进程并保留告警与诊断记录：
+    /// “记录在案的放行”优于“用户永远无法被询问的冻结”。
+    ///  Trade-off: staying suspended without a user decision freezes the process forever with
+    /// no recovery path. Mirrors the ledger-failure rollback in `enqueue_internal` — resume the
+    /// process and keep the alert. A logged release beats a freeze nobody can be asked about.
+    fn rollback_failed_show(&self, entry: InterceptionEntry) -> Option<InterceptionEntry> {
+        if let Err(resume_err) = self.process_control.resume_process(entry.pid) {
+            append_interception_diagnostic(
+                "show_interception_window_rollback_failed",
+                serde_json::json!({
+                    "pid": entry.pid,
+                    "processName": entry.process_name,
+                    "error": resume_err,
+                }),
+            );
+            eprintln!(
+                "[InterceptionService] Failed to roll back PID {} after window failure: {}",
+                entry.pid, resume_err
+            );
+        } else {
+            append_interception_diagnostic(
+                "show_interception_window_rolled_back",
+                serde_json::json!({
+                    "pid": entry.pid,
+                    "processName": entry.process_name,
+                }),
+            );
+        }
+        // 复用 mark_decision 做完整簿记：清 showing、出队、注销挂起台账
+        //  Reuse mark_decision for full bookkeeping: clear showing, dequeue, drop the ledger
+        self.mark_decision(entry.pid, InterceptionDecision::Allow);
+        None
     }
 
     /// 函数名称：mark_decision
@@ -639,14 +761,14 @@ impl InterceptionService {
     /// 函数名称：mark_decision_with_window
     /// 函数作用：记录用户决策，并隐藏独立拦截窗口。
     /// Purpose: Records the user's decision and hides the independent interception window.
-    pub fn mark_decision_with_window<R: Runtime>(
+    pub fn mark_decision_with_window<C: AppContext>(
         &self,
         pid: u32,
         decision: InterceptionDecision,
-        app_handle: &AppHandle<R>,
+        ctx: &C,
     ) {
         self.mark_decision(pid, decision);
-        hide_interception_window(app_handle);
+        ctx.hide_interception_window();
     }
 
     /// 函数名称：get_paused_pids
@@ -932,6 +1054,82 @@ fn should_preempt_current_interception(
 mod tests {
     use super::*;
 
+    /// 建窗永远失败的上下文，用于验证 fail-safe 回滚路径。
+    ///  A context whose window creation always fails, used to exercise the fail-safe rollback.
+    struct FailingWindowContext;
+
+    impl AppContext for FailingWindowContext {
+        fn is_exiting(&self) -> bool {
+            false
+        }
+
+        fn emit_event<S: serde::Serialize + Clone + Send + 'static>(
+            &self,
+            _event: &str,
+            _payload: S,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn emit_to<S: serde::Serialize + Clone + Send + 'static>(
+            &self,
+            _label: &str,
+            _event: &str,
+            _payload: S,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn show_interception_window(&self) -> Result<(), String> {
+            Err("window creation failed".to_string())
+        }
+
+        fn hide_interception_window(&self) {}
+    }
+
+    /// 拦截窗口建不出来时必须回滚，而不是把进程永久挂在那里。
+    /// 同时守住一个真实存在过的自锁风险：回滚要走 `mark_decision`，它会重新 `showing.lock()`，
+    /// 而 `try_show_next` 调用 `show_entry` 时仍持有该守卫——若在 `show_entry` 内部直接回滚，
+    /// 同线程会立刻死锁。本用例若回归会直接挂死（超时），而不是断言失败。
+    /// When the interception window cannot be created the suspension must be rolled back
+    /// instead of leaving the process frozen. Also guards a real self-deadlock risk: the
+    /// rollback goes through `mark_decision`, which re-locks `showing`, while `try_show_next`
+    /// still holds that guard when calling `show_entry`. A regression hangs this test.
+    #[test]
+    fn window_failure_rolls_back_instead_of_freezing_process() {
+        let service = InterceptionService::new_for_tests();
+        let entry = InterceptionEntry {
+            pid: 45678,
+            process_name: "frozen.exe".to_string(),
+            file_path: "C:\\Temp\\frozen.exe".to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("malware".to_string()),
+            reason: "window failure rollback".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+
+        service.enqueue(entry);
+        assert_eq!(service.get_queue_size(), 1);
+
+        let shown = service.try_show_next(&FailingWindowContext);
+
+        assert!(shown.is_none(), "建窗失败时不应返回已展示条目");
+        assert_eq!(
+            service.get_queue_size(),
+            0,
+            "建窗失败后条目应出队，不能留在队列里堵住后续拦截"
+        );
+        assert!(
+            service.get_paused_pids().is_empty(),
+            "建窗失败后必须恢复目标进程，不能留下无法恢复的挂起"
+        );
+        assert!(
+            !*service.showing.lock().unwrap(),
+            "建窗失败后 showing 必须复位，否则后续拦截会被 already_showing 永久挡住"
+        );
+    }
+
     #[test]
     fn new_service_initializes_empty() {
         let service = InterceptionService::new_for_tests();
@@ -956,6 +1154,28 @@ mod tests {
         service.enqueue(entry);
         assert_eq!(service.get_queue_size(), 1);
         assert!(service.get_paused_pids().contains(&123));
+    }
+
+    #[test]
+    fn enqueue_rejects_current_process_control_chain_before_suspend() {
+        let service = InterceptionService::new_for_tests();
+        let entry = InterceptionEntry {
+            pid: std::process::id(),
+            process_name: "anxin-security.exe".to_string(),
+            file_path:
+                "C:\\Users\\Test\\Documents\\AnXinSecurity-sync\\target\\debug\\anxin-security.exe"
+                    .to_string(),
+            risk_level: "high".to_string(),
+            threat_type: Some("process_hollowing".to_string()),
+            reason: "current process image integrity alert".to_string(),
+            payload: None,
+            timestamp: 1234567890,
+        };
+
+        let result = service.enqueue(entry);
+        assert!(!result.is_enqueued());
+        assert_eq!(service.get_queue_size(), 0);
+        assert!(service.get_paused_pids().is_empty());
     }
 
     #[test]
@@ -1166,7 +1386,9 @@ mod tests {
         let unsigned_entry = InterceptionEntry {
             pid: 160452,
             process_name: "esbuild.exe".to_string(),
-            file_path: "E:\\Project\\HTML\\AnXinSecurity\\node_modules\\@esbuild\\win32-x64\\esbuild.exe".to_string(),
+            file_path:
+                "E:\\Project\\HTML\\AnXinSecurity\\node_modules\\@esbuild\\win32-x64\\esbuild.exe"
+                    .to_string(),
             risk_level: "medium".to_string(),
             threat_type: Some("unsigned_process".to_string()),
             reason: "Unsigned process during startup snapshot".to_string(),

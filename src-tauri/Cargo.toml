@@ -31,7 +31,6 @@ windows = { version = "0.58", features = [
   "Win32_System_Memory",
   "Win32_System_Diagnostics_Debug",
   "Win32_System_Diagnostics_ToolHelp",
-  "Win32_System_ProcessStatus",
   "Win32_Security_Authorization",
   "Win32_Security_WinTrust",
   "Win32_Security_Cryptography",
@@ -44,7 +43,16 @@ windows = { version = "0.58", features = [
   "Win32_System_ProcessStatus",
   "Win32_System_RemoteDesktop",
   "Win32_System_Environment",
-  "Win32_UI_WindowsAndMessaging"
+  "Win32_System_StationsAndDesktops",
+  # minifilter 的 Instances 子键必须写注册表（sc.exe 做不到）
+  #  The minifilter Instances subkey requires direct registry writes (sc.exe cannot do it)
+  "Win32_System_Registry",
+  "Win32_UI_WindowsAndMessaging",
+  # 网络防火墙模块 / network firewall module
+  # IpHelper 用于连接列表查询，WinSock 提供 AF_INET/IPPROTO 常量
+  #  IpHelper backs the connection listing; WinSock supplies AF_INET/IPPROTO
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_Networking_WinSock"
 ] }
 libloading = "0.8"
 chrono = "0.4"

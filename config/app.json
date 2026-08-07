@@ -16,8 +16,25 @@
   "fileMonitoring": {
     "enabled": true
   },
+  "hypervisorProtection": {
+    "enabled": false
+  },
   "locale": "zh-CN",
   "minimizeToTray": true,
+  "networkFirewall": {
+    "allowLoopback": true,
+    "cacheTtlMs": 300000,
+    "contentInspection": false,
+    "defaultInbound": "allow",
+    "defaultOutbound": "allow",
+    "dnsFiltering": false,
+    "enabled": false,
+    "mode": "silent",
+    "promptTimeoutMs": 20000,
+    "rateLimiting": false,
+    "timeoutAction": "allow",
+    "trafficStats": true
+  },
   "processMonitoring": {
     "enabled": true
   },
@@ -43,7 +60,6 @@
     "startupSnapshotSlowWarnMs": 30000,
     "timeoutMs": 10000
   },
-  "themeColor": "#5E95C6",
   "tray": {
     "exitKeepScannerServiceDefault": true,
     "exitKeepScannerServicePrompt": true

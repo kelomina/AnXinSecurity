@@ -5,8 +5,6 @@ use std::path::PathBuf;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AppConfig {
     pub brand: String,
-    #[serde(rename = "themeColor")]
-    pub theme_color: String,
     #[serde(rename = "defaultPage")]
     pub default_page: String,
     #[serde(rename = "minimizeToTray")]
@@ -23,6 +21,17 @@ pub struct AppConfig {
     pub file_monitoring: FileMonitorConfig,
     #[serde(rename = "behaviorAnalyzer")]
     pub behavior_analyzer: BehaviorAnalyzerConfig,
+    // 网络防火墙模块。用 default 兜底，旧版 app.json 缺少该键时仍能正常加载。
+    //  Network firewall module. `default` keeps an older app.json without this
+    //  key loadable.
+    #[serde(rename = "networkFirewall", default)]
+    pub network_firewall: NetworkFirewallConfig,
+    // 元核防护（Hypervisor）模块。用 default 兜底，旧版 app.json 缺少该键时仍能正常加载。
+    //  Hypervisor protection module. `default` keeps an older app.json without this
+    //  key loadable. Fail-closed: defaults to disabled — must be explicitly turned on
+    //  by the user after an environment check passes.
+    #[serde(rename = "hypervisorProtection", default)]
+    pub hypervisor_protection: HypervisorConfig,
     // locale 字段 — 界面语言设置 / Locale field for UI language
     #[serde(default = "default_locale")]
     pub locale: String,
@@ -128,12 +137,99 @@ pub struct FileMonitorConfig {
     pub enabled: bool,
 }
 
+/// 网络防火墙配置 / Network firewall configuration
+///
+/// 对应 config/app.json 的 `networkFirewall` 段，由 FirewallService 翻译成
+/// AnXinNetFilter.sys 的运行配置。
+///  Backs the `networkFirewall` section of config/app.json; FirewallService
+///  translates it into the AnXinNetFilter.sys runtime configuration.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(default)]
+pub struct NetworkFirewallConfig {
+    /// 总开关。关闭时驱动全放行，等同于没装这个模块。
+    ///  Master switch. When off the driver permits everything.
+    pub enabled: bool,
+    /// silent（只按规则）/ prompt（未知连接询问）/ learn（只观察）
+    ///  silent (rules only) / prompt (ask on unknown) / learn (observe only)
+    pub mode: String,
+    /// 未命中任何规则时的出站默认动作：allow / block / prompt
+    ///  Default outbound action when no rule matches: allow / block / prompt
+    #[serde(rename = "defaultOutbound")]
+    pub default_outbound: String,
+    /// 未命中任何规则时的入站默认动作 / Default inbound action
+    #[serde(rename = "defaultInbound")]
+    pub default_inbound: String,
+    /// 弹窗等待用户裁决的超时（毫秒）/ Prompt timeout in milliseconds
+    #[serde(rename = "promptTimeoutMs")]
+    pub prompt_timeout_ms: u32,
+    /// 超时后采取的动作 / Action taken once the prompt times out
+    #[serde(rename = "timeoutAction")]
+    pub timeout_action: String,
+    /// DNS 域名管控 / DNS domain filtering
+    #[serde(rename = "dnsFiltering")]
+    pub dns_filtering: bool,
+    /// 数据流内容检查（TLS SNI / HTTP Host）/ Stream inspection (TLS SNI / HTTP Host)
+    #[serde(rename = "contentInspection")]
+    pub content_inspection: bool,
+    /// 按进程限速 / Per-process rate limiting
+    #[serde(rename = "rateLimiting")]
+    pub rate_limiting: bool,
+    /// 流量统计 / Traffic statistics
+    #[serde(rename = "trafficStats")]
+    pub traffic_stats: bool,
+    /// 回环流量直接放行。默认开启，关闭会影响大量本机进程间通信。
+    ///  Permit loopback outright. On by default; turning it off affects a great
+    ///  deal of local inter-process communication.
+    #[serde(rename = "allowLoopback")]
+    pub allow_loopback: bool,
+    /// 内核裁决缓存生存期（毫秒），0 表示不过期
+    ///  Kernel verdict cache TTL in milliseconds; 0 means never expires
+    #[serde(rename = "cacheTtlMs")]
+    pub cache_ttl_ms: u32,
+}
+
+impl Default for NetworkFirewallConfig {
+    /// 默认关闭且全放行。防火墙是会切断用户网络的功能，必须由用户显式启用，
+    /// 绝不能因为升级到带这个模块的版本就默默开始拦截流量。
+    ///  Disabled and fully permissive by default. A firewall can cut the user
+    ///  off the network, so it must be enabled explicitly — upgrading to a build
+    ///  that contains this module must never start blocking traffic on its own.
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: "silent".to_string(),
+            default_outbound: "allow".to_string(),
+            default_inbound: "allow".to_string(),
+            prompt_timeout_ms: 20_000,
+            timeout_action: "allow".to_string(),
+            dns_filtering: false,
+            content_inspection: false,
+            rate_limiting: false,
+            traffic_stats: true,
+            allow_loopback: true,
+            cache_ttl_ms: 300_000,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct BehaviorAnalyzerConfig {
     pub enabled: bool,
     #[serde(rename = "flushIntervalMs")]
     pub flush_interval_ms: u64,
     pub sqlite: SqliteConfig,
+}
+
+/// 元核防护（Hypervisor）配置。
+///  Hypervisor protection configuration.
+/// 该模块默认关闭（fail-closed）。用户必须在设置页手动开启，
+/// 后端会先做环境检查（驱动已安装、CPU 支持虚拟化扩展）再加载驱动。
+///  This module is disabled by default (fail-closed). The user must turn it on
+///  manually in the settings page; the backend runs an environment check (driver
+///  installed, CPU virtualization extensions available) before loading the driver.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct HypervisorConfig {
+    pub enabled: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -148,7 +244,6 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             brand: "AnXin Security".to_string(),
-            theme_color: "#5E95C6".to_string(),
             default_page: "overview".to_string(),
             minimize_to_tray: true,
             tray: TrayConfig {
@@ -200,6 +295,8 @@ impl Default for AppConfig {
                     file_name: "anxin_etw_behavior.db".to_string(),
                 },
             },
+            network_firewall: NetworkFirewallConfig::default(),
+            hypervisor_protection: HypervisorConfig::default(),
             locale: "zh-CN".to_string(),
             // 新增字段默认值
         }
@@ -349,13 +446,12 @@ impl AppConfig {
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, NetworkFirewallConfig};
 
     #[test]
     fn scanner_revocation_options_default_when_missing_from_legacy_config() {
         let raw = r##"{
             "brand": "AnXin Security",
-            "themeColor": "#5E95C6",
             "defaultPage": "overview",
             "minimizeToTray": true,
             "tray": {},
@@ -411,5 +507,48 @@ mod tests {
         assert_eq!(config.scanner.startup_revocation_check_concurrency, 4);
         assert_eq!(config.scanner.startup_signature_verify_concurrency, 0);
         assert_eq!(config.scanner.startup_module_enumeration_timeout_ms, 1_000);
+    }
+
+    /// 网络防火墙的出厂配置必须是关闭且全放行。
+    ///
+    /// 防火墙会切断用户的网络。用户升级到带这个模块的版本时，不能因为安装了新版本
+    /// 就开始拦截流量——那会在用户完全没有预期的情况下断网，而且断网之后连提示都
+    /// 收不到。开启必须是一次显式的用户动作。
+    ///  The network firewall must ship disabled and fully permissive. A firewall
+    ///  can cut the user off the network, and merely upgrading to a build that
+    ///  contains this module must not start blocking traffic: that would drop the
+    ///  connection with no warning, and once dropped the user cannot even be told
+    ///  why. Enabling it has to be an explicit user action.
+    #[test]
+    fn network_firewall_ships_disabled_and_permissive() {
+        let config = NetworkFirewallConfig::default();
+
+        assert!(!config.enabled, "the firewall must ship disabled");
+        assert_eq!(config.mode, "silent");
+        assert_eq!(
+            config.default_outbound, "allow",
+            "outbound must default to allow, never block"
+        );
+        assert_eq!(
+            config.default_inbound, "allow",
+            "inbound must default to allow, never block"
+        );
+        assert_eq!(
+            config.timeout_action, "allow",
+            "an unanswered prompt must resolve to allow, never block"
+        );
+        assert!(
+            config.allow_loopback,
+            "loopback carries local IPC and must be permitted by default"
+        );
+    }
+
+    /// AppConfig 的整体默认值里也必须带上关闭的防火墙，
+    /// 否则配置文件缺少 networkFirewall 段时会落到别的状态。
+    ///  The overall AppConfig default must also carry a disabled firewall, so a
+    ///  config file missing the networkFirewall section cannot land elsewhere.
+    #[test]
+    fn app_config_default_keeps_firewall_off() {
+        assert!(!AppConfig::default().network_firewall.enabled);
     }
 }

@@ -123,13 +123,17 @@ fn resolve_process_hook_paths_selects_matching_architecture_files_from_resource_
 
 #[test]
 fn resolve_process_hook_paths_reports_clear_error_when_required_file_is_missing() {
-    let explicit_dir = TempProcessHookDir::new("missing_error");
-    let injector_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_injector.exe");
-    let injector_x86 = explicit_dir.create_resource_file("manual-x86", "file_hook_injector.exe");
-    let dll_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_detours.dll");
-    let missing_dll_x86 = explicit_dir
+    let resource_dir = TempProcessHookDir::new("missing_error");
+    let injector_x64 =
+        resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_injector.exe");
+    let injector_x86 =
+        resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_injector.exe");
+    let dll_x64 =
+        resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_detours.dll");
+    let missing_dll_x86 = resource_dir
         .path()
-        .join("manual-x86")
+        .join("native/bin")
+        .join("win32-x86")
         .join("file_hook_detours.dll");
 
     let error = resolve_process_hook_paths(
@@ -137,7 +141,7 @@ fn resolve_process_hook_paths_reports_clear_error_when_required_file_is_missing(
         &injector_x86.to_string_lossy(),
         &dll_x64.to_string_lossy(),
         &missing_dll_x86.to_string_lossy(),
-        None,
+        Some(resource_dir.path()),
     )
     .expect_err("missing x86 DLL should return an error");
 
@@ -146,30 +150,67 @@ fn resolve_process_hook_paths_reports_clear_error_when_required_file_is_missing(
         "error should name the missing x86 DLL: {error}"
     );
     assert!(
-        error.contains("manual-x86") && error.contains("file_hook_detours.dll"),
+        error.contains("win32-x86") && error.contains("file_hook_detours.dll"),
         "error should include checked explicit path: {error}"
     );
 }
 
 #[test]
-fn explicit_existing_paths_keep_backward_compatible_frontend_inputs() {
-    let explicit_dir = TempProcessHookDir::new("explicit_paths");
-    let injector_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_injector.exe");
-    let injector_x86 = explicit_dir.create_resource_file("manual-x86", "file_hook_injector.exe");
-    let dll_x64 = explicit_dir.create_resource_file("manual-x64", "file_hook_detours.dll");
-    let dll_x86 = explicit_dir.create_resource_file("manual-x86", "file_hook_detours.dll");
+fn explicit_existing_paths_are_accepted_when_they_match_trusted_resources() {
+    let resource_dir = TempProcessHookDir::new("explicit_paths");
+    let injector_x64 =
+        resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_injector.exe");
+    let injector_x86 =
+        resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_injector.exe");
+    let dll_x64 =
+        resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_detours.dll");
+    let dll_x86 =
+        resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_detours.dll");
 
     let resolved = resolve_process_hook_paths(
         &injector_x64.to_string_lossy(),
         &injector_x86.to_string_lossy(),
         &dll_x64.to_string_lossy(),
         &dll_x86.to_string_lossy(),
-        None,
+        Some(resource_dir.path()),
     )
-    .expect("explicit existing paths should resolve");
+    .expect("explicit paths that resolve to trusted resources should resolve");
 
-    assert_eq!(resolved.injector_x64, injector_x64);
-    assert_eq!(resolved.injector_x86, injector_x86);
-    assert_eq!(resolved.dll_x64, dll_x64);
-    assert_eq!(resolved.dll_x86, dll_x86);
+    assert_eq!(
+        resolved.injector_x64,
+        fs::canonicalize(injector_x64).unwrap()
+    );
+    assert_eq!(
+        resolved.injector_x86,
+        fs::canonicalize(injector_x86).unwrap()
+    );
+    assert_eq!(resolved.dll_x64, fs::canonicalize(dll_x64).unwrap());
+    assert_eq!(resolved.dll_x86, fs::canonicalize(dll_x86).unwrap());
+}
+
+#[test]
+fn explicit_existing_paths_outside_trusted_resources_are_rejected() {
+    let resource_dir = TempProcessHookDir::new("trusted_resources");
+    resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_injector.exe");
+    resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_injector.exe");
+    resource_dir.create_resource_file("native/bin/win32-x64", "file_hook_detours.dll");
+    resource_dir.create_resource_file("native/bin/win32-x86", "file_hook_detours.dll");
+
+    let untrusted_dir = TempProcessHookDir::new("untrusted_explicit");
+    let untrusted_injector =
+        untrusted_dir.create_resource_file("manual-x64", "file_hook_injector.exe");
+
+    let error = resolve_process_hook_paths(
+        &untrusted_injector.to_string_lossy(),
+        "",
+        "",
+        "",
+        Some(resource_dir.path()),
+    )
+    .expect_err("arbitrary explicit injector paths must be rejected");
+
+    assert!(
+        error.contains("Rejected APIHook x64 injector file 'file_hook_injector.exe'"),
+        "error should explain that arbitrary explicit paths are rejected: {error}"
+    );
 }

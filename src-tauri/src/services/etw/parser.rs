@@ -373,11 +373,18 @@ fn parse_registry_event(opcode: u16, data: &[u8]) -> (ProviderKind, String, Stri
     } else {
         (raw.clone(), String::new())
     };
-    // Normalize registry root
-    if key_name.starts_with("\\REGISTRY\\MACHINE\\") {
-        key_name = format!("HKLM\\{}", &key_name[19..]);
-    } else if key_name.starts_with("\\REGISTRY\\USER\\") {
-        key_name = format!("HKU\\{}", &key_name[16..]);
+    // 归一化注册表根。必须用 strip_prefix 而不是硬编码下标：
+    //  `\REGISTRY\MACHINE\` 实际长 18、`\REGISTRY\USER\` 实际长 15，
+    //  原先的 [19..] / [16..] 会吞掉键名首字符（HKLM\SOFTWARE\… 变成 HKLM\OFTWARE\…），
+    //  且在键名恰好等于前缀或首字符为多字节时会越界 / 非字符边界 panic。
+    // Normalize the registry root. strip_prefix is required over hardcoded indices:
+    //  `\REGISTRY\MACHINE\` is 18 chars and `\REGISTRY\USER\` is 15, so the previous
+    //  [19..] / [16..] swallowed the first character of every key name and could panic
+    //  on an exact-prefix match or a multi-byte leading character.
+    if let Some(rest) = key_name.strip_prefix("\\REGISTRY\\MACHINE\\") {
+        key_name = format!("HKLM\\{}", rest);
+    } else if let Some(rest) = key_name.strip_prefix("\\REGISTRY\\USER\\") {
+        key_name = format!("HKU\\{}", rest);
     }
     (ProviderKind::Registry, op, key_name, val_name)
 }
@@ -658,6 +665,61 @@ mod tests {
         assert_eq!(event.start_address, Some(0x7ff7_0000_1234));
         assert_eq!(event.raw_user_data_len, data.len());
         assert!(event.raw_user_data_preview.contains("34 12 00 00 f7 7f"));
+    }
+
+    /// 注册表根归一化不得吞掉键名首字符。
+    /// 回归自硬编码下标 [19..] / [16..] 造成的 off-by-one：
+    /// `\REGISTRY\MACHINE\SOFTWARE\...` 曾被归一成 `HKLM\OFTWARE\...`，
+    /// 使所有含 `\software\` 的规则永久失配。
+    /// Registry root normalization must not swallow the first character of the key name.
+    /// Regression for the off-by-one from hardcoded [19..] / [16..] indices.
+    /// 把键名编码成 ETW UserData 里的 UTF-16LE 缓冲区
+    /// Encodes a key name as the UTF-16LE buffer ETW carries in UserData
+    fn wide(text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .chain(std::iter::once(0))
+            .flat_map(|ch| ch.to_le_bytes())
+            .collect()
+    }
+
+    #[test]
+    fn registry_root_normalization_keeps_first_key_char() {
+        let (provider, op, key, value) = parse_registry_event(
+            22,
+            &wide(r"\REGISTRY\MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\Updater"),
+        );
+
+        assert_eq!(provider, ProviderKind::Registry);
+        assert_eq!(op, map_registry_op(22));
+        assert_eq!(
+            key, r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run",
+            "SOFTWARE 的首字母 S 不得被吞掉"
+        );
+        assert_eq!(value, "Updater");
+
+        let (_, _, user_key, _) =
+            parse_registry_event(22, &wide(r"\REGISTRY\USER\S-1-5-21-1\Environment\Path"));
+        assert_eq!(
+            user_key, r"HKU\S-1-5-21-1\Environment",
+            "SID 的首字符 S 不得被吞掉"
+        );
+    }
+
+    /// 键名恰好等于前缀、或前缀后首字符为多字节时不得 panic。
+    /// 修复前 `&key_name[19..]` 会越界，`&key_name[16..]` 会切在非字符边界。
+    /// Must not panic when the key name equals the prefix exactly or starts with a
+    /// multi-byte character. The old slices went out of bounds / split a UTF-8 char.
+    #[test]
+    fn registry_root_normalization_handles_edge_inputs() {
+        for raw in [
+            r"\REGISTRY\MACHINE\",
+            r"\REGISTRY\USER\",
+            r"\REGISTRY\MACHINE\软件\键",
+            r"\REGISTRY\USER\中文",
+        ] {
+            let (provider, _, _, _) = parse_registry_event(22, &wide(raw));
+            assert_eq!(provider, ProviderKind::Registry);
+        }
     }
 
     #[test]

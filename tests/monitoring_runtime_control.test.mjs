@@ -61,7 +61,7 @@ test('configStore monitoring toggles use backend config commands and roll back o
 })
 
 test('SettingsPage waits for monitoring runtime controls and displays runtime errors', () => {
-  assert.match(settingsPageSource, /monitoringRuntimeStatus, monitoringControlPending, monitoringControlError/)
+  assert.match(settingsPageSource, /monitoringRuntimeStatus[\s\S]*monitoringControlPending[\s\S]*monitoringControlError/)
   assert.match(settingsPageSource, /refreshMonitoringRuntimeStatus\(\)/)
   assert.match(settingsPageSource, /const handleMonitoringToggle = async/)
   assert.match(settingsPageSource, /await setBehaviorMonitoring\(enabled\)/)
@@ -70,7 +70,7 @@ test('SettingsPage waits for monitoring runtime controls and displays runtime er
   assert.match(settingsPageSource, /monitoringControlError &&/)
   assert.match(settingsPageSource, /t\('settings_monitoring_status'\)/)
   assert.match(settingsPageSource, /APIHook \{monitoringRuntimeStatus \? \(monitoringRuntimeStatus\.processWatcherRunning \? t\('settings_monitoring_running'\) : t\('settings_monitoring_stopped'\)\) : t\('settings_monitoring_loading'\)\}/)
-  assert.match(settingsPageSource, /aria-disabled=\{monitoringControlPending !== null\}/)
+  assert.match(settingsPageSource, /disabled=\{monitoringControlPending !== null\}/)
 })
 
 test('OverviewPage and BehaviorPage consume typed runtime event listeners', () => {
@@ -92,17 +92,32 @@ test('OverviewPage and BehaviorPage consume typed runtime event listeners', () =
   assert.match(behaviorPageSource, /Hook: \{fileHookEventCount\}/)
 })
 
-test('ETW service uses Tauri async runtime for settings-triggered background tasks', () => {
-  assert.doesNotMatch(etwServiceSource, /tokio::spawn\(/)
-  assert.match(etwServiceSource, /tauri::async_runtime::spawn\(async move \{[\s\S]*while running\.load/)
-  assert.match(etwServiceSource, /tauri::async_runtime::spawn\(async move \{[\s\S]*behavior\.ingest_event/)
-  assert.match(etwServiceSource, /tauri::async_runtime::spawn\(async move \{[\s\S]*analyze_event/)
+// ETW 服务已从 Tauri 运行时解耦（服务进程里没有 Tauri 运行时，只有自己的 Tokio runtime），
+// 后台任务改用 tokio::spawn。断言锁的仍是「设置触发的后台任务跑在真实存在的异步运行时上、
+// 且轮询循环与风险分析都在其中」这一实质要求，只是表达方式随服务化改变。
+//  The ETW service is decoupled from the Tauri runtime (the service process has no Tauri runtime,
+//  only its own Tokio runtime), so background tasks use tokio::spawn. These assertions still lock
+//  the real requirement - settings-triggered background work runs on a runtime that actually
+//  exists, and both the poll loop and risk analysis live there.
+test('ETW service spawns settings-triggered background tasks on the ambient async runtime', () => {
+  assert.doesNotMatch(etwServiceSource, /tauri::async_runtime::spawn\(/)
+  assert.match(etwServiceSource, /tokio::spawn\(async move \{[\s\S]*while running\.load/)
+  assert.doesNotMatch(etwServiceSource, /behavior\.ingest_event/)
+  assert.match(etwServiceSource, /EtwResponseGate::new/)
+  assert.match(etwServiceSource, /behavior_db_gate\.should_record/)
+  assert.match(etwServiceSource, /tokio::spawn\(async move \{[\s\S]*analyze_event/)
 })
 
 test('log buffer emits dedicated realtime log events', () => {
-  assert.match(logsCommandSource, /pub fn append_log_and_emit\(app_handle: &tauri::AppHandle, entry: String\)/)
-  assert.match(logsCommandSource, /app_handle\.emit\("log-event", entry\)/)
+  // 日志推送已泛型化到 AppContext：AppHandle 与 ServiceContext 都实现该 trait，
+  // UI 进程与服务进程共用同一实现。断言锁的是「实时 log-event 仍被推送」和
+  // 「系统 PID 噪音在写入前被过滤」这两条实质要求。
+  //  Log emission is generic over AppContext - both AppHandle and ServiceContext implement it, so
+  //  the UI and service processes share one implementation. These assertions lock the real
+  //  requirements: the realtime log-event is still pushed, and system-PID noise is filtered first.
+  assert.match(logsCommandSource, /pub fn append_log_and_emit<C: AppContext>\(ctx: &C, entry: String\)/)
+  assert.match(logsCommandSource, /ctx\.emit_event\("log-event", entry\)/)
   assert.match(logsCommandSource, /fn should_drop_system_log_event\(value: &serde_json::Value\) -> bool/)
   assert.match(logsCommandSource, /match event_pid\(value\) \{[\s\S]*Some\(0 \| 4\) => true,[\s\S]*Some\(pid\) => pid == INVALID_WINDOWS_PID_U32_MAX/)
-  assert.match(etwServiceSource, /logs::append_event_log_and_emit\(&app_handle_clone, &app_event\)/)
+  assert.match(etwServiceSource, /logs::append_event_log_and_emit\(&ctx_clone, &app_event\)/)
 })

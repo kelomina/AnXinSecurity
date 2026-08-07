@@ -146,6 +146,24 @@ impl ContextRing {
         result.extend_from_slice(&self.buf[..self.next]);
         result
     }
+
+    /// 环内是否存在 `[start_ms, end_ms]` 区间中匹配指定 provider/op 的事件。
+    ///  Whether the ring holds an event matching the given provider/op within `[start_ms, end_ms]`.
+    ///
+    /// 直接扫描底层缓冲区，不做 snapshot 克隆——本函数在 ETW 回调线程上按
+    /// 「规则 × 先决条件」的次数调用，克隆 192 项上下文的代价不可接受。
+    ///  Scans the backing buffer directly instead of cloning a snapshot: this runs on the ETW
+    ///  callback thread once per (rule × required op), where cloning 192 context items would be
+    ///  unacceptable.
+    fn contains_op_within(&self, provider: &str, op: &str, start_ms: u64, end_ms: u64) -> bool {
+        let len = if self.full { self.buf.len() } else { self.next };
+        self.buf[..len].iter().any(|item| {
+            item.ts_ms >= start_ms
+                && item.ts_ms <= end_ms
+                && item.provider.eq_ignore_ascii_case(provider)
+                && normalize_op_name(&item.op) == op
+        })
+    }
 }
 
 pub struct EtwRuleEngine {
@@ -155,7 +173,10 @@ pub struct EtwRuleEngine {
     include_children: bool,
     context_capacity: usize,
     contexts: HashMap<u32, ContextRing>,
-    window_states: HashMap<u32, HashMap<String, (u64, u64, std::collections::HashSet<String>)>>,
+    // 时间窗口判定已改为直接查询 per-PID 上下文环（见 match_window_rule），
+    // 原先的 per-(pid, ruleId) seen 集合是失效实现，已移除以免误导后续维护者。
+    //  Window matching now queries the per-PID context ring directly (see match_window_rule);
+    //  the old per-(pid, ruleId) seen set was the broken implementation and has been removed.
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,7 +261,6 @@ impl EtwRuleEngine {
             include_children: false,
             context_capacity: DEFAULT_CONTEXT_CAPACITY,
             contexts: HashMap::new(),
-            window_states: HashMap::new(),
         }
     }
 
@@ -461,47 +481,37 @@ impl EtwRuleEngine {
         if !self.match_rule_by_idx(idx, ev, evidence) {
             return false;
         }
-        let rule_id = self.rules[idx].rule_id.clone();
         let window_ms = self.rules[idx].window_ms;
-        let required_ops: Vec<(char, String)> = self.rules[idx]
+        let required_ops: Vec<(String, String)> = self.rules[idx]
             .required_ops
             .iter()
-            .map(|ro| (ro.provider.key_char(), ro.op.clone()))
+            .map(|ro| (ro.provider.name().to_string(), ro.op.clone()))
             .collect();
         let now = ev.ts_ms;
-        let pid = ev.pid;
+        let window_start = now.saturating_sub(window_ms as u64);
 
-        let state = self.window_states.get(&pid);
-        let (window_start, _last_update, seen_ops) = state
-            .map(|s| s.get(&rule_id))
-            .flatten()
-            .cloned()
-            .unwrap_or((0, 0, std::collections::HashSet::new()));
-
-        let effective_start = if window_start > 0 && (now - window_start) <= window_ms as u64 {
-            window_start
-        } else {
-            now
-        };
-
-        let mut seen = seen_ops;
-        if effective_start == now {
-            seen.clear();
-        }
-        seen.insert("_event".to_string());
-
-        let all_required = required_ops.iter().all(|(pc, op)| {
-            let needle = format!("{}:{}", pc, op);
-            seen.contains(&needle)
+        // 先决事件从该 PID 的上下文环里查。上下文环由 push_context 对**每一个**事件写入，
+        // 与规则是否命中无关，因此能真实反映窗口内发生过什么。
+        //
+        // 修复前这里用的是一个 per-(pid, ruleId) 的 `seen` 集合，但集合里只会被插入常量
+        // "_event"，而判定查的是 "{provider}:{op}" 形式的键，导致 requiredOps 非空时
+        // all_required 恒为 false —— 所有时间窗口规则永远不可能命中，文档宣传的行为链
+        // 关联能力实际是死特性。
+        //  Prerequisites are looked up in this PID's context ring, which push_context fills for
+        //  *every* event regardless of rule matching, so it truly reflects what happened in the
+        //  window. The previous implementation used a per-(pid, ruleId) `seen` set that only ever
+        //  received the constant "_event" while the check looked for "{provider}:{op}" keys, so
+        //  all_required was permanently false and every windowed rule was dead code.
+        let history = self.contexts.get(&ev.pid);
+        let all_required = required_ops.iter().all(|(provider, op)| {
+            history.is_some_and(|ring| ring.contains_op_within(provider, op, window_start, now))
         });
-
-        self.window_states
-            .entry(pid)
-            .or_default()
-            .insert(rule_id, (effective_start, now, seen));
 
         if all_required {
             evidence.push(format!("window match: {}ms", window_ms));
+            for (provider, op) in &required_ops {
+                evidence.push(format!("required op satisfied: {}/{}", provider, op));
+            }
         }
         all_required
     }

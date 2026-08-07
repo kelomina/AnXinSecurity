@@ -24,8 +24,8 @@ use windows::Win32::Security::{
     TokenSessionId, TokenUser, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::System::Threading::{
-    GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW,
-    PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    GetProcessTimes, OpenProcess, OpenProcessToken, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+    PROCESS_QUERY_LIMITED_INFORMATION,
 };
 
 // ============================================================================
@@ -83,11 +83,7 @@ impl ClientIdentity {
     /// 开发模式允许 target\debug\ 或 target\release\ 路径
     ///  Dev mode allows target\debug\ or target\release\ paths
     pub fn is_valid_anxin_path(&self, dev_mode: bool) -> bool {
-        let filename = self
-            .path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let filename = self.path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if !ANXIN_EXE_NAMES.contains(&filename.to_lowercase().as_str()) {
             return false;
@@ -101,7 +97,11 @@ impl ClientIdentity {
 
         // 生产模式：路径必须不包含 target（即不是开发构建）
         // 实际生产校验由调用方补充安装目录比对
-        !self.path.to_string_lossy().to_lowercase().contains("target\\")
+        !self
+            .path
+            .to_string_lossy()
+            .to_lowercase()
+            .contains("target\\")
     }
 
     /// 校验 SID 是否为交互式用户（拒绝 SYSTEM 和服务账户）
@@ -279,8 +279,8 @@ fn query_process_start_time(process: HANDLE) -> Result<u64, String> {
 
     // FILETIME 是 100 纳秒单位，从 1601-01-01 开始
     //  Unix ms = (filetime / 10000) - 11644473600000
-    let filetime_u64 = ((creation_time.dwHighDateTime as u64) << 32)
-        | (creation_time.dwLowDateTime as u64);
+    let filetime_u64 =
+        ((creation_time.dwHighDateTime as u64) << 32) | (creation_time.dwLowDateTime as u64);
     Ok(filetime_u64 / 10_000 - 11_644_473_600_000)
 }
 
@@ -414,6 +414,61 @@ pub fn get_current_session_id() -> Result<u32, String> {
     Ok(session_id)
 }
 
+/// 校验命名管道客户端进程身份（VUL-035 收口入口）
+///  Verify a named-pipe client process identity (VUL-035 closure entry point)
+///
+/// 在服务进程的 IPC 服务器接受连接后、处理任何请求前立即调用。校验通过返回采集到
+/// 的身份证据；任何一项不满足都返回 Err，调用方必须 fail-closed（拒绝连接/不处理
+/// 请求）。这是 SDDL 只挡非交互式身份之后的第二道防线：挡住在同一交互式会话里
+/// 冒充 UI 进程的恶意程序。
+///  Called by the service-process IPC server right after accepting a connection, before
+///  processing any request. Returns the collected evidence on success; any failed check
+///  returns Err and the caller must fail closed (reject the connection / process nothing).
+///  This is the second line of defence behind the SDDL that already excludes non-interactive
+///  identities: it stops a malicious process in the same interactive session impersonating
+///  the UI process.
+///
+/// 会话语义说明：服务进程运行在 Session 0，UI 进程在交互式会话，因此不能像
+/// verify_identity 那样比对「等于服务进程会话」——那会永远拒绝所有合法客户端。
+/// 这里要求客户端处于交互式会话（session_id > 0），并拒绝以 SYSTEM / 服务账户 /
+/// 低完整性级别运行的进程。
+///  Session semantics: the service runs in Session 0 while the UI runs in an interactive
+///  session, so comparing against "the service's own session" (as verify_identity does)
+///  would reject every legitimate client. Here the client must be in an interactive
+///  session (session_id > 0), and processes running as SYSTEM / a service account / a
+///  low integrity level are rejected.
+pub fn verify_pipe_client(pipe_handle: HANDLE) -> Result<ClientIdentity, String> {
+    let identity = collect_evidence(pipe_handle)?;
+    let dev_mode = is_dev_mode();
+
+    if !identity.is_valid_anxin_path(dev_mode) {
+        return Err(format!(
+            "client executable not recognized as AnXinSecurity UI: {:?}",
+            identity.path
+        ));
+    }
+    if identity.session_id == 0 {
+        return Err(format!(
+            "client PID {} is not in an interactive session (session {}); \
+             service/Session-0 processes are not allowed to drive the UI channel",
+            identity.pid, identity.session_id
+        ));
+    }
+    if !identity.is_valid_sid() {
+        return Err(format!(
+            "client PID {} runs as {} (SYSTEM/service accounts not allowed)",
+            identity.pid, identity.user_sid
+        ));
+    }
+    if !identity.is_valid_integrity() {
+        return Err(format!(
+            "client PID {} runs at integrity '{}' (< medium not allowed)",
+            identity.pid, identity.integrity_level
+        ));
+    }
+    Ok(identity)
+}
+
 // ============================================================================
 // 单元测试 / Unit tests
 // ============================================================================
@@ -452,13 +507,8 @@ mod tests {
 
     #[test]
     fn valid_anxin_path_rejects_wrong_filename() {
-        let identity = make_test_identity(
-            1234,
-            "C:\\evil\\malware.exe",
-            "S-1-5-21-1000",
-            1,
-            "medium",
-        );
+        let identity =
+            make_test_identity(1234, "C:\\evil\\malware.exe", "S-1-5-21-1000", 1, "medium");
         assert!(!identity.is_valid_anxin_path(false));
     }
 
@@ -512,7 +562,8 @@ mod tests {
 
     #[test]
     fn valid_integrity_rejects_low() {
-        let identity = make_test_identity(1234, "C:\\anxin-security.exe", "S-1-5-21-1000", 1, "low");
+        let identity =
+            make_test_identity(1234, "C:\\anxin-security.exe", "S-1-5-21-1000", 1, "low");
         assert!(!identity.is_valid_integrity());
     }
 

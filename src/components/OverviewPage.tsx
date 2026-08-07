@@ -4,137 +4,281 @@
  */
 import React, { useEffect, useState, useRef, useCallback } from 'react'
 import { useConfigStore } from '../stores/configStore'
+import { useScannerStore } from '../stores/scannerStore'
 import { useQuarantineStore } from '../stores/quarantineStore'
 import { useI18nStore } from '../stores/i18nStore'
 import { scannerHealth, startEngine, stopEngine } from '../api/scanner'
 import { getRecentLogs, clearLogs, onLogEvent } from '../api/logs'
 import { getRiskStatus, onRiskEvent, type RiskAssessment } from '../api/risk'
 import { onFileHookEvent } from '../api/behavior'
-import { Activity, Database, ShieldCheck, ShieldAlert, Eye, FileWarning, Trash2, AlertTriangle, Power, PowerOff } from 'lucide-react'
+import { Activity, AlertTriangle, Pause, Play, Power, PowerOff, ShieldAlert, ShieldCheck, Trash2 } from './icons'
 import { Button, makeStyles, shorthands, tokens } from '@fluentui/react-components'
 
 const useStyles = makeStyles({
   page: {
     paddingBottom: '24px',
   },
-  pageTitle: {
-    fontSize: tokens.fontSizeBase600,
-    fontWeight: tokens.fontWeightSemibold,
-    color: tokens.colorNeutralForeground1,
+  pageHeader: {
     marginBottom: '20px',
   },
-  engineCard: {
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    ...shorthands.padding('16px', '20px'),
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: '16px',
-  },
-  engineCardRunning: {
-    ...shorthands.borderColor(tokens.colorPaletteGreenBorderActive),
-  },
-  engineLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    ...shorthands.gap('12px'),
-  },
-  engineIcon: {
-    width: '40px',
-    height: '40px',
-    ...shorthands.borderRadius(tokens.borderRadiusMedium),
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    flexShrink: 0,
-  },
-  engineLabel: {
+  pageTitle: {
+    fontSize: '14px',
+    lineHeight: '20px',
     fontWeight: tokens.fontWeightSemibold,
-    fontSize: tokens.fontSizeBase400,
     color: tokens.colorNeutralForeground1,
-  },
-  engineSub: {
-    fontSize: tokens.fontSizeBase200,
-    color: tokens.colorNeutralForeground2,
-  },
-  infoGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(4, 1fr)',
-    ...shorthands.gap('12px'),
-    marginBottom: '16px',
-  },
-  infoCard: {
-    backgroundColor: tokens.colorNeutralBackground2,
-    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    ...shorthands.padding('16px'),
-  },
-  infoCardIcon: {
-    width: '36px',
-    height: '36px',
-    ...shorthands.borderRadius(tokens.borderRadiusMedium),
-    backgroundColor: tokens.colorBrandBackground2,
-    color: tokens.colorBrandForeground1,
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: '10px',
-  },
-  infoCardLabel: {
-    fontSize: tokens.fontSizeBase200,
-    color: tokens.colorNeutralForeground2,
-    fontWeight: tokens.fontWeightSemibold,
+    marginTop: 0,
     marginBottom: '4px',
   },
-  infoCardValue: {
-    fontSize: tokens.fontSizeBase600,
-    fontWeight: tokens.fontWeightBold,
-    color: tokens.colorNeutralForeground1,
-    lineHeight: '1.2',
-  },
-  infoCardSub: {
+  pageDescription: {
     fontSize: tokens.fontSizeBase200,
+    lineHeight: tokens.lineHeightBase200,
     color: tokens.colorNeutralForeground2,
-    marginTop: '4px',
+    marginTop: 0,
+    marginBottom: 0,
   },
-  logPanel: {
-    backgroundColor: tokens.colorNeutralBackground2,
+  engineCard: {
+    backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    marginTop: '16px',
-    overflow: 'hidden',
-  },
-  logHeader: {
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
+    ...shorthands.padding('20px', '24px'),
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
-    ...shorthands.padding('14px', '20px'),
-    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+    ...shorthands.gap('16px'),
+    marginBottom: '16px',
   },
-  logHeaderTitle: {
+  engineStatus: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+    minWidth: 0,
+  },
+  statusDot: {
+    width: '10px',
+    height: '10px',
+    ...shorthands.borderRadius(tokens.borderRadiusCircular),
+    backgroundColor: tokens.colorPaletteGreenForeground2,
+    position: 'relative',
+    flexShrink: 0,
+    '::after': {
+      content: '""',
+      position: 'absolute',
+      inset: '-3px',
+      ...shorthands.borderRadius(tokens.borderRadiusCircular),
+      backgroundColor: tokens.colorPaletteGreenForeground2,
+      opacity: 0.25,
+    },
+  },
+  statusDotStopped: {
+    backgroundColor: tokens.colorNeutralForegroundDisabled,
+    '::after': {
+      backgroundColor: tokens.colorNeutralForegroundDisabled,
+      opacity: 0.2,
+    },
+  },
+  statusDotError: {
+    backgroundColor: tokens.colorPaletteRedForeground2,
+    '::after': {
+      backgroundColor: tokens.colorPaletteRedForeground2,
+      opacity: 0.2,
+    },
+  },
+  engineLabel: {
+    fontSize: tokens.fontSizeBase400,
+    lineHeight: tokens.lineHeightBase400,
     fontWeight: tokens.fontWeightSemibold,
-    fontSize: tokens.fontSizeBase300,
     color: tokens.colorNeutralForeground1,
   },
-  logBody: {
-    maxHeight: '280px',
-    overflowY: 'auto',
-    ...shorthands.padding('8px', '0'),
-    fontFamily: 'Consolas, "Courier New", monospace',
+  engineSublabel: {
     fontSize: tokens.fontSizeBase200,
+    lineHeight: tokens.lineHeightBase200,
+    color: tokens.colorNeutralForeground2,
+    marginTop: '2px',
+  },
+  engineActions: {
+    display: 'flex',
+    alignItems: 'center',
+    ...shorthands.gap('8px'),
+    flexShrink: 0,
+  },
+  dangerButton: {
+    backgroundColor: tokens.colorPaletteRedBackground3,
+    ...shorthands.borderColor(tokens.colorPaletteRedBackground3),
+    color: tokens.colorNeutralForegroundOnBrand,
+    ':hover': {
+      backgroundColor: tokens.colorPaletteRedBackground2,
+      ...shorthands.borderColor(tokens.colorPaletteRedBackground2),
+    },
+    ':active': {
+      backgroundColor: tokens.colorPaletteRedBackground1,
+      ...shorthands.borderColor(tokens.colorPaletteRedBackground1),
+    },
+  },
+  metricsGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(4, minmax(0, 1fr))',
+    ...shorthands.gap('12px'),
+    marginBottom: '20px',
+  },
+  metricCard: {
+    backgroundColor: tokens.colorNeutralBackground1,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
+    ...shorthands.padding('16px', '20px'),
+    minWidth: 0,
+  },
+  metricLabel: {
+    fontSize: tokens.fontSizeBase200,
+    lineHeight: tokens.lineHeightBase200,
+    color: tokens.colorNeutralForeground3,
+    marginBottom: '8px',
+    textTransform: 'uppercase',
+    letterSpacing: 0,
+  },
+  metricValue: {
+    fontSize: '28px',
+    lineHeight: 1,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  metricValueBlue: {
+    color: tokens.colorBrandForeground1,
+  },
+  metricValueOrange: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  metricValueGreen: {
+    color: tokens.colorPaletteGreenForeground2,
+  },
+  metricValueRed: {
+    color: tokens.colorPaletteRedForeground2,
+  },
+  section: {
+    marginBottom: '24px',
+  },
+  sectionTitle: {
+    fontSize: tokens.fontSizeBase400,
+    lineHeight: tokens.lineHeightBase400,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+    marginBottom: '12px',
+  },
+  logPanel: {
+    backgroundColor: tokens.colorNeutralBackground1,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
+    overflow: 'hidden',
+  },
+  logBody: {
+    maxHeight: '200px',
+    overflowY: 'auto',
+    fontFamily: 'Cascadia Code, Consolas, "Courier New", monospace',
+    fontSize: tokens.fontSizeBase200,
+    lineHeight: '1.6',
+    color: tokens.colorNeutralForeground1,
+  },
+  logLine: {
+    ...shorthands.padding('3px', '16px'),
+    ...shorthands.borderBottom('1px', 'solid', tokens.colorNeutralStroke2),
+    display: 'flex',
+    alignItems: 'baseline',
+    minWidth: 0,
+    ':hover': {
+      backgroundColor: tokens.colorNeutralBackground1Hover,
+    },
+  },
+  logTimestamp: {
+    color: tokens.colorNeutralForeground3,
+    marginRight: '8px',
+    flexShrink: 0,
+    fontVariantNumeric: 'tabular-nums',
+  },
+  logLevel: {
+    marginRight: '8px',
+    flexShrink: 0,
+    fontWeight: tokens.fontWeightSemibold,
+  },
+  logLevelOk: {
+    color: tokens.colorPaletteGreenForeground2,
+  },
+  logLevelInfo: {
+    color: tokens.colorBrandForeground1,
+  },
+  logLevelWarn: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  logLevelError: {
+    color: tokens.colorPaletteRedForeground2,
+  },
+  logText: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  logFooter: {
+    ...shorthands.padding('8px', '16px'),
+    ...shorthands.borderTop('1px', 'solid', tokens.colorNeutralStroke1),
+    display: 'flex',
+    justifyContent: 'flex-end',
   },
   logEmpty: {
     ...shorthands.padding('20px'),
     textAlign: 'center' as const,
     color: tokens.colorNeutralForeground3,
   },
-  logRow: {
-    ...shorthands.padding('4px', '20px'),
+  compactGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+    ...shorthands.gap('16px'),
+  },
+  previewCard: {
+    backgroundColor: tokens.colorNeutralBackground1,
+    ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
+    overflow: 'hidden',
+  },
+  previewHeader: {
+    ...shorthands.padding('14px', '20px'),
+    ...shorthands.borderBottom('1px', 'solid', tokens.colorNeutralStroke1),
     display: 'flex',
-    ...shorthands.gap('8px'),
-    borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    ...shorthands.gap('12px'),
+  },
+  previewTitle: {
+    fontSize: tokens.fontSizeBase300,
+    lineHeight: tokens.lineHeightBase300,
+    fontWeight: tokens.fontWeightSemibold,
+    color: tokens.colorNeutralForeground1,
+  },
+  previewBody: {
+    ...shorthands.padding('14px', '20px'),
+    display: 'grid',
+    ...shorthands.gap('10px'),
+  },
+  previewRow: {
+    display: 'grid',
+    gridTemplateColumns: 'minmax(0, 1fr) auto',
+    alignItems: 'center',
+    ...shorthands.gap('12px'),
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground2,
+  },
+  previewMain: {
+    minWidth: 0,
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+    whiteSpace: 'nowrap',
+  },
+  previewMeta: {
+    color: tokens.colorNeutralForeground3,
+    fontVariantNumeric: 'tabular-nums',
   },
 })
 
@@ -142,12 +286,118 @@ interface OverviewPageProps {
   onOpenLifecycle?: (pid: number, processName: string) => void
 }
 
+type LogLevel = 'ok' | 'info' | 'warn' | 'error'
+
+interface DisplayLogLine {
+  timestamp: string
+  level: LogLevel
+  label: string
+  message: string
+}
+
+const EMPTY_LOG_TIME = '--:--:--'
+
+const formatNumber = (value: number): string => new Intl.NumberFormat('zh-CN').format(value)
+
+const formatTime = (value: unknown): string => {
+  const date = typeof value === 'number'
+    ? new Date(value)
+    : typeof value === 'string'
+      ? new Date(value)
+      : new Date()
+
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toLocaleTimeString('zh-CN', { hour12: false })
+  }
+  return date.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+const stringValue = (...values: unknown[]): string => {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim()
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value)
+    }
+  }
+  return ''
+}
+
+const levelForEvent = (event: Record<string, unknown>): LogLevel => {
+  const severity = Number(event.severity ?? 0)
+  const riskLevel = String(event.riskLevel ?? event.risk_level ?? '').toLowerCase()
+  const threatType = String(event.threatType ?? event.threat_type ?? '').toLowerCase()
+  const operation = String(event.operation ?? '').toLowerCase()
+
+  if (riskLevel === 'high' || threatType || severity >= 70 || operation.includes('blocked')) {
+    return 'error'
+  }
+  if (riskLevel === 'medium' || severity >= 40) {
+    return 'warn'
+  }
+  return 'info'
+}
+
+const labelForLevel = (level: LogLevel, event: Record<string, unknown>): string => {
+  const threatType = String(event.threatType ?? event.threat_type ?? '').trim()
+  if (level === 'ok') return '[OK]'
+  if (level === 'error') return threatType ? '[THREAT]' : '[ERROR]'
+  if (level === 'warn') return '[WARN]'
+  return '[INFO]'
+}
+
+const buildEventMessage = (event: Record<string, unknown>): string => {
+  const provider = stringValue(event.provider, event.source, 'ETW')
+  const operation = stringValue(event.operation, event.type)
+  const processName = stringValue(event.processName, event.process_path)
+  const path = stringValue(event.path, event.fileName, event.keyName, event.remoteAddress)
+  const pid = Number(event.pid ?? 0)
+  const pidText = pid > 0 ? `PID ${pid}` : ''
+  const subject = [provider, operation].filter(Boolean).join(' / ')
+  const target = path || processName
+  return [subject, pidText, target].filter(Boolean).join(' - ')
+}
+
+const parseDisplayLogLine = (line: string): DisplayLogLine => {
+  try {
+    const event = JSON.parse(line) as Record<string, unknown>
+    const nestedEvent = event.event && typeof event.event === 'object'
+      ? event.event as Record<string, unknown>
+      : {}
+    const nestedData = nestedEvent.data && typeof nestedEvent.data === 'object'
+      ? nestedEvent.data as Record<string, unknown>
+      : {}
+    const mergedEvent = { ...nestedData, ...nestedEvent, ...event }
+    const level = levelForEvent(mergedEvent)
+    return {
+      timestamp: formatTime(mergedEvent.timestampMs ?? mergedEvent.timestamp),
+      level,
+      label: labelForLevel(level, mergedEvent),
+      message: buildEventMessage(mergedEvent) || line,
+    }
+  } catch {
+    const match = line.match(/^\[([^\]]+)\]\s*(.*)$/)
+    return {
+      timestamp: match?.[1] ?? EMPTY_LOG_TIME,
+      level: 'info',
+      label: '[INFO]',
+      message: match?.[2] ?? line,
+    }
+  }
+}
+
 const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
   const styles = useStyles()
   const config = useConfigStore((state) => state.config)
+  const monitoringRuntimeStatus = useConfigStore((state) => state.monitoringRuntimeStatus)
+  const monitoringControlPending = useConfigStore((state) => state.monitoringControlPending)
   const refreshMonitoringRuntimeStatus = useConfigStore((state) => state.refreshMonitoringRuntimeStatus)
+  const setBehaviorMonitoring = useConfigStore((state) => state.setBehaviorMonitoring)
   const quarantineItems = useQuarantineStore((state) => state.items)
   const loadQuarantineItems = useQuarantineStore((state) => state.loadItems)
+  const scanResults = useScannerStore((state) => state.scanResults)
+  const lastScanStats = useScannerStore((state) => state.lastScanStats)
   const { t } = useI18nStore()
   const [engineStatus, setEngineStatus] = useState<'running' | 'stopped' | 'error' | 'loading'>('loading')
   const [engineAction, setEngineAction] = useState<'start' | 'stop' | null>(null)
@@ -193,37 +443,17 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
     }
   }
 
-  const formatRuntimeLogLine = useCallback((runtimeEvent: Record<string, unknown>) => {
-    const nestedEvent = runtimeEvent.event && typeof runtimeEvent.event === 'object'
-      ? runtimeEvent.event as Record<string, unknown>
-      : null
-    const nestedData = nestedEvent?.data && typeof nestedEvent.data === 'object'
-      ? nestedEvent.data as Record<string, unknown>
-      : null
-    const rawTimestamp = runtimeEvent.timestamp ?? runtimeEvent.timestampMs ?? nestedEvent?.timestamp
-    const timestamp = typeof rawTimestamp === 'number'
-      ? new Date(rawTimestamp)
-      : typeof rawTimestamp === 'string'
-        ? new Date(rawTimestamp)
-        : new Date()
-    const ts = Number.isNaN(timestamp.getTime())
-      ? new Date().toLocaleTimeString('zh-CN')
-      : timestamp.toLocaleTimeString('zh-CN')
-    const provider = String(runtimeEvent.provider || nestedEvent?.provider || 'ETW')
-    const op = String(runtimeEvent.operation || nestedData?.type || nestedData?.operation || runtimeEvent.type || '')
-    const path = String(runtimeEvent.path || nestedData?.fileName || nestedData?.keyName || nestedData?.processName || nestedData?.remoteAddress || '')
-    const pid = Number(runtimeEvent.pid || nestedEvent?.pid || 0)
-    return `[${ts}] PID:${pid} ${provider}/${op} ${path}`
-  }, [])
-
-  const formatLogLine = useCallback((line: string) => {
+  const handleToggleMonitoring = async () => {
+    const nextEnabled = !(config?.behaviorMonitoring?.enabled ?? false)
     try {
-      const parsed = JSON.parse(line) as Record<string, unknown>
-      return formatRuntimeLogLine(parsed)
-    } catch {
-      return line
+      await setBehaviorMonitoring(nextEnabled)
+      await refreshMonitoringRuntimeStatus()
+    } catch (e) {
+      console.error('[OverviewPage] Failed to toggle behavior monitoring:', e)
     }
-  }, [formatRuntimeLogLine])
+  }
+
+  const formatLogLine = useCallback((line: string) => line, [])
 
   useEffect(() => {
     refreshEngineHealth()
@@ -277,165 +507,175 @@ const OverviewPage: React.FC<OverviewPageProps> = (_props) => {
     }
   }, [])
 
+  const scannedFileCount = lastScanStats?.totalFiles ?? scanResults.length
   const quarantinedCount = quarantineItems.filter(i => i.status === 'quarantined').length
-  const totalSize = quarantineItems.reduce((sum, i) => sum + i.fileSize, 0)
+  const behaviorEventCount = logs.length + fileHookEventCount
+  const displayedLogs = logs.slice(0, 8).map(parseDisplayLogLine)
+  const engineRunning = engineStatus === 'running'
+  const monitoringEnabled = config?.behaviorMonitoring?.enabled ?? false
   const engineStatusLabel = engineStatus === 'loading'
     ? t('overview_engine_checking')
-    : engineStatus === 'running'
+    : engineRunning
       ? t('overview_engine_running')
       : engineStatus === 'stopped'
         ? t('overview_engine_stopped')
         : t('overview_engine_error')
+  const engineSubLabel = engineRunning
+    ? t('overview_engine_all_modules')
+    : t('overview_engine_status_desc')
   const engineButtonLabel = engineAction
     ? (engineAction === 'start' ? t('overview_engine_starting') : t('overview_engine_stopping'))
-    : engineStatus === 'running'
+    : engineRunning
       ? t('overview_engine_stop_btn')
       : t('overview_engine_start_btn')
+  const monitorButtonLabel = monitoringEnabled
+    ? t('overview_engine_pause_btn', '暂停')
+    : t('overview_engine_resume_btn', '恢复')
   const isEngineButtonDisabled = engineStatus === 'loading' || engineAction !== null
-
-  const engineIconBg = engineStatus === 'running'
-    ? tokens.colorPaletteGreenBackground2
-    : engineStatus === 'error'
-      ? tokens.colorPaletteRedBackground2
-      : tokens.colorPaletteBlueBackground2
-
-  const riskCardBorderColor = lastRiskLevel === 'high'
-    ? tokens.colorPaletteRedBorderActive
-    : lastRiskLevel === 'medium'
-      ? tokens.colorPaletteYellowBorderActive
-      : undefined
-
-  const formatSize = (bytes: number) =>
-    bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1048576).toFixed(1)} MB`
+  const isMonitoringButtonDisabled = !engineRunning || monitoringControlPending !== null
+  const statusDotClassName = [
+    styles.statusDot,
+    engineStatus === 'stopped' || engineStatus === 'loading' ? styles.statusDotStopped : '',
+    engineStatus === 'error' ? styles.statusDotError : '',
+  ].filter(Boolean).join(' ')
 
   return (
     <section id="page-overview" className={styles.page}>
-      <h1 className={styles.pageTitle}>AnXin Security</h1>
+      <div className={styles.pageHeader}>
+        <h1 className={styles.pageTitle}>{t('overview_title', '安全概览')}</h1>
+        <p className={styles.pageDescription}>{t('overview_desc', '实时防护状态与关键安全指标')}</p>
+      </div>
 
-      {/* 引擎状态卡片 */}
-      <div className={`${styles.engineCard}${engineStatus === 'running' ? ` ${styles.engineCardRunning}` : ''}`}>
-        <div className={styles.engineLeft}>
-          <div className={styles.engineIcon} style={{ backgroundColor: engineIconBg }}>
-            {engineStatus === 'running'
-              ? <ShieldCheck size={20} color={tokens.colorPaletteGreenForeground2} />
-              : engineStatus === 'error'
-                ? <ShieldAlert size={20} color={tokens.colorPaletteRedForeground2} />
-                : <Activity size={20} color={tokens.colorPaletteBlueForeground2} />}
-          </div>
+      <div className={styles.engineCard}>
+        <div className={styles.engineStatus}>
+          <span className={statusDotClassName} aria-hidden="true" />
           <div>
             <div className={styles.engineLabel}>{engineStatusLabel}</div>
-            <div className={styles.engineSub}>
-              {engineStatus === 'running' ? t('overview_engine_all_modules') : t('overview_engine_status_desc')}
+            <div className={styles.engineSublabel}>
+              {engineSubLabel}
+              {monitoringRuntimeStatus?.etwCollecting ? '' : ` - ${t('overview_monitoring_off')}`}
             </div>
           </div>
         </div>
-        <Button
-          appearance={engineStatus === 'running' ? 'outline' : 'primary'}
-          size="small"
-          onClick={handleToggleEngine}
-          disabled={isEngineButtonDisabled}
-          title={engineStatus === 'running' ? t('overview_engine_stop_title') : t('overview_engine_start_title')}
-          icon={engineAction
-            ? <Activity size={14} />
-            : engineStatus === 'running'
-              ? <PowerOff size={14} />
-              : <Power size={14} />}
-          style={engineStatus === 'running' ? { color: tokens.colorPaletteRedForeground2, borderColor: tokens.colorPaletteRedBorderActive } : undefined}
-        >
-          {engineButtonLabel}
-        </Button>
-      </div>
-
-      {/* 信息卡片网格 */}
-      <div className={styles.infoGrid}>
-        <div className={styles.infoCard}>
-          <div className={styles.infoCardIcon}>
-            <Eye size={20} />
-          </div>
-          <div className={styles.infoCardLabel}>{t('overview_realtime_monitoring')}</div>
-          <div className={styles.infoCardValue} style={{ fontSize: tokens.fontSizeBase400 }}>
-            {config?.behaviorMonitoring?.enabled ? t('overview_running') : t('overview_disabled')}
-          </div>
-          <div className={styles.infoCardSub}>
-            {config?.behaviorMonitoring?.enabled ? t('overview_monitoring_active') : t('overview_monitoring_off')}
-          </div>
-        </div>
-
-        <div className={styles.infoCard}>
-          <div className={styles.infoCardIcon} style={{ backgroundColor: tokens.colorPaletteYellowBackground2, color: tokens.colorPaletteYellowForeground2 }}>
-            <FileWarning size={20} />
-          </div>
-          <div className={styles.infoCardLabel}>{t('overview_event_log')}</div>
-          <div className={styles.infoCardValue}>{fileHookEventCount}</div>
-          <div className={styles.infoCardSub}>{t('overview_today')}</div>
-        </div>
-
-        <div className={styles.infoCard}>
-          <div className={styles.infoCardIcon} style={{ backgroundColor: tokens.colorPaletteRedBackground2, color: tokens.colorPaletteRedForeground2 }}>
-            <Database size={20} />
-          </div>
-          <div className={styles.infoCardLabel}>{t('overview_quarantine_files')}</div>
-          <div className={styles.infoCardValue}>{quarantinedCount}</div>
-          <div className={styles.infoCardSub}>{formatSize(totalSize)}</div>
-        </div>
-
-        <div className={styles.infoCard} style={riskCardBorderColor ? { borderColor: riskCardBorderColor } : undefined}>
-          <div className={styles.infoCardIcon} style={{ backgroundColor: tokens.colorPaletteRedBackground2, color: tokens.colorPaletteRedForeground2 }}>
-            <AlertTriangle size={20} />
-          </div>
-          <div className={styles.infoCardLabel}>{t('overview_risk_events')}</div>
-          <div className={styles.infoCardValue} style={
-            lastRiskLevel === 'high'
-              ? { color: tokens.colorPaletteRedForeground2 }
-              : lastRiskLevel === 'medium'
-                ? { color: tokens.colorPaletteYellowForeground2 }
-                : undefined
-          }>
-            {riskEventCount}
-          </div>
-          <div className={styles.infoCardSub}>
-            {lastRiskLevel
-              ? `最近: ${lastRiskLevel === 'high' ? t('overview_risk_high') : lastRiskLevel === 'medium' ? t('overview_risk_medium') : t('overview_risk_low')}`
-              : t('overview_no_risk')}
-          </div>
-        </div>
-      </div>
-
-      {/* 实时日志面板 */}
-      <div className={styles.logPanel}>
-        <div className={styles.logHeader}>
-          <span className={styles.logHeaderTitle}>{t('overview_realtime_event_log')}</span>
+        <div className={styles.engineActions}>
           <Button
             appearance="secondary"
             size="small"
-            icon={<Trash2 size={14} />}
-            onClick={() => { clearLogs(); setLogs([]) }}
+            icon={monitoringEnabled ? <Pause size={14} /> : <Play size={14} />}
+            onClick={handleToggleMonitoring}
+            disabled={isMonitoringButtonDisabled}
           >
-            {t('overview_clear')}
+            {monitorButtonLabel}
+          </Button>
+          <Button
+            appearance={engineRunning ? 'primary' : 'secondary'}
+            size="small"
+            onClick={handleToggleEngine}
+            disabled={isEngineButtonDisabled}
+            title={engineRunning ? t('overview_engine_stop_title') : t('overview_engine_start_title')}
+            icon={engineAction
+              ? <Activity size={14} className="spinning" />
+              : engineRunning
+                ? <PowerOff size={14} />
+                : <Power size={14} />}
+            className={engineRunning ? styles.dangerButton : undefined}
+          >
+            {engineButtonLabel}
           </Button>
         </div>
-        <div className={styles.logBody}>
-          {logs.length === 0 ? (
-            <div className={styles.logEmpty}>{t('overview_no_logs')}</div>
-          ) : (
-            logs.map((line, i) => (
-              <div key={i} className={styles.logRow}>
-                <span style={{ color: tokens.colorNeutralForeground4, minWidth: 28, textAlign: 'right' as const, opacity: 0.5 }}>{i + 1}</span>
-                <span style={{ color: tokens.colorNeutralForeground3 }}>
-                  {line.match(/^\[([^\]]+)\]/) ? `[${line.match(/^\[([^\]]+)\]/)![1]}]` : ''}
-                </span>
-                <span style={{ color: tokens.colorPaletteBlueForeground2 }}>
-                  {line.match(/PID:\d+/) ? line.match(/PID:\d+/)![0] : ''}
-                </span>
-                <span style={{ color: tokens.colorPaletteYellowForeground2, fontWeight: tokens.fontWeightSemibold }}>
-                  {line.match(/\] (.+?\/\S+)/) ? line.match(/\] (.+?\/\S+)/)![1] : ''}
-                </span>
-                <span style={{ color: tokens.colorNeutralForeground1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }}>
-                  {line.replace(/^\[[^\]]+\]\s*PID:\d+\s*\S+\/\S+\s*/, '')}
-                </span>
-              </div>
-            ))
-          )}
+      </div>
+
+      <div className={styles.metricsGrid}>
+        <div className={styles.metricCard}>
+          <div className={styles.metricLabel}>{t('overview_metric_scanned_files', '扫描文件数')}</div>
+          <div className={`${styles.metricValue} ${styles.metricValueBlue}`}>{formatNumber(scannedFileCount)}</div>
+        </div>
+        <div className={styles.metricCard}>
+          <div className={styles.metricLabel}>{t('overview_metric_quarantine_items', '隔离项数')}</div>
+          <div className={`${styles.metricValue} ${styles.metricValueOrange}`}>{formatNumber(quarantinedCount)}</div>
+        </div>
+        <div className={styles.metricCard}>
+          <div className={styles.metricLabel}>{t('overview_metric_behavior_events', '行为事件数')}</div>
+          <div className={`${styles.metricValue} ${styles.metricValueGreen}`}>{formatNumber(behaviorEventCount)}</div>
+        </div>
+        <div className={styles.metricCard}>
+          <div className={styles.metricLabel}>{t('overview_metric_risk_events', '风险事件数')}</div>
+          <div className={`${styles.metricValue} ${styles.metricValueRed}`}>{formatNumber(riskEventCount)}</div>
+        </div>
+      </div>
+
+      <div className={styles.section}>
+        <div className={styles.sectionTitle}>{t('overview_recent_logs', '最近日志')}</div>
+        <div className={styles.logPanel}>
+          <div className={styles.logBody}>
+            {displayedLogs.length === 0 ? (
+              <div className={styles.logEmpty}>{t('overview_no_logs')}</div>
+            ) : (
+              displayedLogs.map((line, index) => {
+                const levelClassName = [
+                  styles.logLevel,
+                  line.level === 'ok' ? styles.logLevelOk : '',
+                  line.level === 'info' ? styles.logLevelInfo : '',
+                  line.level === 'warn' ? styles.logLevelWarn : '',
+                  line.level === 'error' ? styles.logLevelError : '',
+                ].filter(Boolean).join(' ')
+                return (
+                  <div key={`${line.timestamp}-${index}`} className={styles.logLine}>
+                    <span className={styles.logTimestamp}>{line.timestamp}</span>
+                    <span className={levelClassName}>{line.label}</span>
+                    <span className={styles.logText} title={line.message}>{line.message}</span>
+                  </div>
+                )
+              })
+            )}
+          </div>
+          <div className={styles.logFooter}>
+            <Button
+              appearance="transparent"
+              size="small"
+              icon={<Trash2 size={14} />}
+              onClick={() => { clearLogs(); setLogs([]) }}
+            >
+              {t('overview_clear')}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      <div className={styles.compactGrid}>
+        <div className={styles.previewCard}>
+          <div className={styles.previewHeader}>
+            <span className={styles.previewTitle}>{t('scan_title')}</span>
+            <ShieldCheck size={16} />
+          </div>
+          <div className={styles.previewBody}>
+            <div className={styles.previewRow}>
+              <span className={styles.previewMain}>{t('scan_stat_files')}</span>
+              <span className={styles.previewMeta}>{formatNumber(scannedFileCount)}</span>
+            </div>
+            <div className={styles.previewRow}>
+              <span className={styles.previewMain}>{t('scan_stat_threats')}</span>
+              <span className={styles.previewMeta}>{formatNumber(lastScanStats?.threatsFound ?? 0)}</span>
+            </div>
+          </div>
+        </div>
+        <div className={styles.previewCard}>
+          <div className={styles.previewHeader}>
+            <span className={styles.previewTitle}>{t('quarantine_title')}</span>
+            <ShieldAlert size={16} />
+          </div>
+          <div className={styles.previewBody}>
+            <div className={styles.previewRow}>
+              <span className={styles.previewMain}>{t('quarantine_filter_quarantined')}</span>
+              <span className={styles.previewMeta}>{formatNumber(quarantinedCount)}</span>
+            </div>
+            <div className={styles.previewRow}>
+              <span className={styles.previewMain}>{lastRiskLevel ? t('overview_recent_risk').replace('{level}', lastRiskLevel) : t('overview_no_risk')}</span>
+              <span className={styles.previewMeta}>
+                {riskEventCount > 0 ? <AlertTriangle size={14} /> : <ShieldCheck size={14} />}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
     </section>

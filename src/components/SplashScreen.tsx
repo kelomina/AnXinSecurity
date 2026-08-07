@@ -6,8 +6,9 @@
  * Called by: App.tsx (during initialization phase)
  */
 import React, { useMemo } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
+import { AlertTriangle, Check, Clock3, LoaderCircle } from './icons'
 import { useI18nStore } from '../stores/i18nStore'
+import { useThemeStore } from '../stores/themeStore'
 import {
   makeStyles,
   shorthands,
@@ -137,6 +138,48 @@ const useStyles = makeStyles({
     ...shorthands.gap('6px'),
     marginTop: '20px',
   },
+  summaryGrid: {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+    ...shorthands.gap('8px'),
+    marginTop: '16px',
+  },
+  summaryItem: {
+    display: 'flex',
+    flexDirection: 'column',
+    ...shorthands.gap('2px'),
+    ...shorthands.padding('8px', '12px'),
+    ...shorthands.borderRadius(tokens.borderRadiusMedium),
+    backgroundColor: tokens.colorNeutralBackground3,
+    minWidth: 0,
+  },
+  summaryLabel: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+  },
+  summaryValue: {
+    fontSize: tokens.fontSizeBase300,
+    color: tokens.colorNeutralForeground1,
+  },
+  securityNote: {
+    marginTop: '12px',
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    textAlign: 'center',
+  },
+  phaseText: {
+    display: 'flex',
+    flexDirection: 'column',
+    ...shorthands.gap('2px'),
+    minWidth: 0,
+  },
+  phaseDetail: {
+    fontSize: tokens.fontSizeBase200,
+    color: tokens.colorNeutralForeground3,
+    // 阶段说明是次要信息，不应与阶段名争夺注意力
+    //  The stage detail is secondary and must not compete with the stage name
+    opacity: 0.85,
+  },
   phaseCard: {
     display: 'flex',
     alignItems: 'center',
@@ -171,6 +214,19 @@ const useStyles = makeStyles({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  phaseIconSpinning: {
+    animation: 'spin 1s linear infinite',
+  },
+  overlayAnimated: {
+    animationName: 'splashFadeIn',
+    animationDuration: '0.4s',
+    animationTimingFunction: 'ease-out',
+  },
+  surfaceAnimated: {
+    animationName: 'splashSlideIn',
+    animationDuration: '0.45s',
+    animationTimingFunction: 'ease-out',
+  },
 })
 
 const SplashScreen: React.FC<SplashScreenProps> = ({
@@ -179,8 +235,10 @@ const SplashScreen: React.FC<SplashScreenProps> = ({
   snapshotProgress,
   snapshotCurrent = 0,
   snapshotTotal = 0,
+  snapshotSummary = null,
 }) => {
   const { t } = useI18nStore()
+  const animationsEnabled = useThemeStore((state) => state.animationsEnabled)
   const styles = useStyles()
 
   const overallProgress = useMemo(() => {
@@ -213,67 +271,49 @@ const SplashScreen: React.FC<SplashScreenProps> = ({
 
   const renderPhaseIcon = (status: StartupPhaseStatus) => {
     if (status === 'complete') {
-      return (
-        <svg className={styles.phaseIcon} viewBox="0 0 20 20" fill="none">
-          <path d="M6.5 10.5L9 13L14 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-        </svg>
-      )
+      return <Check size={16} className={styles.phaseIcon} />
     }
     if (status === 'active') {
-      return (
-        <motion.svg
-          className={styles.phaseIcon}
-          viewBox="0 0 20 20"
-          fill="none"
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}
-        >
-          <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth="1.5" opacity="0.2" />
-          <path d="M10 2.75C13.866 2.75 17 5.884 17 9.75" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-        </motion.svg>
-      )
+      return <LoaderCircle size={16} className={`${styles.phaseIcon} ${animationsEnabled ? styles.phaseIconSpinning : ''}`} />
     }
     if (status === 'error') {
-      return (
-        <svg className={styles.phaseIcon} viewBox="0 0 20 20" fill="none">
-          <path d="M10 6V11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          <circle cx="10" cy="14" r="0.75" fill="currentColor" />
-        </svg>
-      )
+      return <AlertTriangle size={16} className={styles.phaseIcon} />
     }
     if (status === 'warning') {
-      return (
-        <svg className={styles.phaseIcon} viewBox="0 0 20 20" fill="none">
-          <path d="M10 6V11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          <circle cx="10" cy="14" r="0.75" fill="currentColor" />
-        </svg>
-      )
+      return <AlertTriangle size={16} className={styles.phaseIcon} />
     }
-    return (
-      <svg className={styles.phaseIcon} viewBox="0 0 20 20" fill="none">
-        <circle cx="10" cy="10" r="7.25" stroke="currentColor" strokeWidth="1.5" />
-        <path d="M10 6.5V10L12 12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      </svg>
-    )
+    return <Clock3 size={16} className={styles.phaseIcon} />
   }
 
+  // 摘要合计：进程与模块分开统计对用户没有意义，按类别合并展示。
+  // snapshotSummary 为空时（快照结果尚未到达）走等待态分支，这里统一取 0。
+  //  Summary totals: splitting processes and modules is meaningless to the user, so they are
+  //  merged per category. When snapshotSummary is null (result not in yet) the waiting branch
+  //  renders instead and these stay 0.
+  const deepScanPendingTotal = snapshotSummary
+    ? snapshotSummary.deepScanPendingModules + snapshotSummary.deepScanPendingProcesses
+    : 0
+  const unknownTotal = snapshotSummary
+    ? snapshotSummary.unknownProcesses + snapshotSummary.unknownModules
+    : 0
+  const threatTotal = snapshotSummary
+    ? snapshotSummary.maliciousProcesses + snapshotSummary.maliciousModules
+    : 0
+
+  const overlayClassName = [
+    styles.overlay,
+    animationsEnabled ? styles.overlayAnimated : '',
+  ].filter(Boolean).join(' ')
+  const surfaceClassName = [
+    styles.dialogSurface,
+    animationsEnabled ? styles.surfaceAnimated : '',
+  ].filter(Boolean).join(' ')
+
   return (
-    <AnimatePresence>
+    <>
       {isVisible && (
-        <motion.div
-          className={styles.overlay}
-          initial={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.4 }}
-          role="status"
-          aria-live="polite"
-        >
-          <motion.div
-            className={styles.dialogSurface}
-            initial={{ opacity: 0, y: 12, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            transition={{ duration: 0.45, ease: 'easeOut' }}
-          >
+        <div className={overlayClassName} role="status" aria-live="polite">
+          <div className={surfaceClassName}>
             <div className={styles.titleRow}>
               <div className={styles.titleIcon}>
                 <img src="/favicon.ico" alt="AnXin Security" />
@@ -293,16 +333,91 @@ const SplashScreen: React.FC<SplashScreenProps> = ({
 
             <div className={styles.phaseList}>
               {phases.map((phase) => (
-                <div key={phase.id} className={getPhaseCardClass(phase.status)}>
+                <div
+                  key={phase.id}
+                  className={getPhaseCardClass(phase.status)}
+                  data-status={phase.status}
+                >
                   {renderPhaseIcon(phase.status)}
-                  <span>{t(phase.labelKey)}</span>
+                  {/*
+                    每个阶段除了名称还要给出正在做什么，让"可信环境自检"过程对用户透明。
+                    detailKey 早已由 App.tsx 为全部 7 个阶段提供、i18n 两个语言包也都有对应文案，
+                    但此前从未渲染。
+                    Each stage shows what it is actually doing so the trusted-environment
+                    self-check stays transparent. detailKey has long been supplied by App.tsx for
+                    all seven stages and exists in both locale files, but was never rendered.
+                  */}
+                  <div className={styles.phaseText}>
+                    <span>{t(phase.labelKey)}</span>
+                    {phase.detailKey && (
+                      <span className={styles.phaseDetail}>{t(phase.detailKey)}</span>
+                    )}
+                  </div>
                 </div>
               ))}
             </div>
-          </motion.div>
-        </motion.div>
+
+            {/*
+              快照结果摘要：把「可信基线 / 深度校验 / 未知项 / 威胁项」四项如实摊开。
+              StartupSnapshotSummary 与全部 i18n 文案早已就绪，但此前从未渲染，
+              用户只能看到进度条却不知道自检到底查出了什么。
+              措辞刻意避免任何"基线已完成可信"式的结论——未完成的深度校验必须显示为待确认。
+              Snapshot summary: lays out trusted baseline / deep verification / unknown items /
+              threats as they actually are. StartupSnapshotSummary and every i18n string were
+              already in place but never rendered, leaving users with a progress bar and no idea
+              what the self-check found. Deliberately avoids conclusive wording like "trusted":
+              incomplete deep verification must read as still pending.
+            */}
+            <div className={`splash-summary-grid ${styles.summaryGrid}`}>
+              {snapshotSummary ? (
+                <>
+                  <div className={styles.summaryItem}>
+                    <span className={styles.summaryLabel}>{t('splash_summary_baseline')}</span>
+                    <span className={styles.summaryValue}>
+                      {snapshotSummary.baselineComplete
+                        ? t('splash_summary_baseline_ready')
+                        : t('splash_summary_baseline_pending')}
+                    </span>
+                  </div>
+                  <div className={styles.summaryItem}>
+                    <span className={styles.summaryLabel}>{t('splash_summary_deep_scan')}</span>
+                    <span className={styles.summaryValue}>
+                      {snapshotSummary.deepScanCompleted
+                        ? t('splash_summary_deep_done')
+                        : formatTemplate(t('splash_summary_deep_pending'), {
+                            count: deepScanPendingTotal,
+                          })}
+                    </span>
+                  </div>
+                  <div className={styles.summaryItem}>
+                    <span className={styles.summaryLabel}>{t('splash_summary_unknown')}</span>
+                    <span className={styles.summaryValue}>
+                      {formatTemplate(t('splash_summary_unknown_value'), {
+                        count: unknownTotal,
+                      })}
+                    </span>
+                  </div>
+                  <div className={styles.summaryItem}>
+                    <span className={styles.summaryLabel}>{t('splash_summary_threats')}</span>
+                    <span className={styles.summaryValue}>
+                      {formatTemplate(t('splash_summary_threats_value'), {
+                        count: threatTotal,
+                      })}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <div className={styles.summaryItem}>
+                  <span className={styles.summaryValue}>{t('splash_summary_waiting')}</span>
+                </div>
+              )}
+            </div>
+
+            <div className={styles.securityNote}>{t('splash_security_note')}</div>
+          </div>
+        </div>
       )}
-    </AnimatePresence>
+    </>
   )
 }
 

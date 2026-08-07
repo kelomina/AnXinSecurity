@@ -13,10 +13,15 @@ const snapshotCommandSource = readFileSync(
   'utf8',
 )
 const snapshotApiSource = readFileSync(resolve(projectRoot, 'src/api/snapshot.ts'), 'utf8')
+const tauriMainSource = readFileSync(resolve(projectRoot, 'src-tauri/src/main.rs'), 'utf8')
 
 test('startup snapshot emits baseline result before background module deep checks', () => {
   const resultBuildIndex = snapshotServiceSource.indexOf('let result = SnapshotResult {')
-  const emitIndex = snapshotServiceSource.indexOf('app_handle.emit("snapshot-result", &result)', resultBuildIndex)
+  // 事件推送已从 app_handle.emit 迁移到 ServiceContext（ctx.emit_event），
+  // 断言锁的是「基线结果先发出、后台深检后启动」这个顺序，不是具体的发射 API。
+  //  Event delivery moved from app_handle.emit to ServiceContext (ctx.emit_event); this assertion
+  //  locks the ordering - baseline emitted before background deep checks - not the emit API.
+  const emitIndex = snapshotServiceSource.indexOf('ctx.emit_event("snapshot-result", result.clone())', resultBuildIndex)
   const spawnIndex = snapshotServiceSource.indexOf('spawn_startup_module_deep_checks(StartupModuleDeepCheckContext', emitIndex)
   const moduleBatchIndex = snapshotServiceSource.indexOf('verify_module_targets_concurrent(', spawnIndex)
 
@@ -24,6 +29,11 @@ test('startup snapshot emits baseline result before background module deep check
   assert.ok(emitIndex > resultBuildIndex, 'baseline result should be emitted')
   assert.ok(spawnIndex > emitIndex, 'module deep checks should start after baseline emit')
   assert.ok(moduleBatchIndex > spawnIndex, 'module signature batch should live in the background path')
+})
+
+test('startup snapshot wait before baseline is kept short', () => {
+  assert.match(tauriMainSource, /tokio::time::sleep\(tokio::time::Duration::from_millis\(250\)\)\.await;/)
+  assert.doesNotMatch(tauriMainSource, /Duration::from_millis\(1000\)/)
 })
 
 test('pending deep module checks remain unknown until background completion', () => {

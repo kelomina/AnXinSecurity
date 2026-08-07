@@ -4,14 +4,16 @@
 
 - `AnXinSecurity` 是一款基于 **Tauri 2.0** 的 **Windows 安全防护桌面应用**。
 - 真实存在的技术栈：
-  - **前端**：`React 18`、`TypeScript`、`Vite`、`Zustand`、`Framer Motion`、`Tauri JS API`
+  - **前端**：`React 18`、`TypeScript`、`Vite`、`Zustand`、`Fluent UI React v9`、`Tauri JS API`
   - **后端**：`Rust 2021`、`Tauri 2.0`、`Tokio`、`SQLx(SQLite)`、`Windows API`
-  - **原生模块**：`C++ DLL`，包含 `ETW bridge`、`process watcher`、`file hook(Detours)`、`trust bridge`
-  - **配置**：`config/app.json`、`config/scan_rules.json`、`config/etw_match_rules.json`、`config/i18n/*.json`
+  - **原生模块**：3 个内核驱动（`AnXinProcProtect` 进程保护、`AnXinFileProtect` 文件保护、`AnXinNetFilter` WFP 网络防火墙）+ 用户态 `file_hook` DLL（Detours）
+  - **配置**：`config/app.json`、`config/scan_rules.json`、`config/etw_match_rules.json`、`config/firewall_rules.json`、`config/i18n/*.json`
 - 真实存在的能力：
   - 文件扫描、ETW 行为监控、进程/文件监控
-  - 隔离区、进程拦截、启动快照、信任验证
-  - 允许列表 / 排除项、日志、错误追踪
+  - 隔离区、进程拦截、启动快照、信任验证（含证书吊销检查）
+  - 网络防火墙（WFP 驱动 + 用户态规则编排）
+  - 允许列表 / 排除项、日志、错误追踪、审计
+  - IPC 服务进程通信、Windows 服务模式、权限提升通道
   - 主题切换与中英双语界面
 
 ## Forbidden Actions
@@ -51,16 +53,22 @@
 ## Architecture Rules
 
 - **前端入口**：`src/main.tsx`、`src/App.tsx`
-- **前端页面**：`OverviewPage`、`ScanPage`、`QuarantinePage`、`BehaviorPage`、`BehaviorLifecyclePage`、`SettingsPage`
-- **前端全局组件**：`TitleBar`、`Sidebar`、`Toast`、`SplashScreen`、`InterceptionModal`、`TrayExitPrompt`、`ErrorBoundary`
-- **前端状态仓库**：`configStore`、`scannerStore`、`quarantineStore`、`themeStore`、`i18nStore`、`toastStore`
-- **前端 API**：扫描、行为、进程、隔离区、配置、允许列表、排除项、系统、日志、文件、错误追踪、风险分析
-- **Rust 分层**：`commands/`、`services/`、`models/`、`utils/`；新增能力优先挂到已有模块
-- **现有命令 / 服务**：配置、扫描、行为、隔离、排除 / 允许、托盘、进程、引擎、信任、拦截、风险、快照、开发设置、系统、i18n、错误追踪、日志、文件系统、文件钩子
-- **原生模块**：`native/file_hook`（仍用于文件 API Hook 与注入链路）；ETW、进程轮询、信任验证已由 Rust 后端接管。
-- **配置职责**：`config/app.json` 管主配置，`scan_rules.json` 管快速扫描规则，`etw_match_rules.json` 管行为匹配规则，`config/i18n/*.json` 管语言包
-- **测试位置**：`tests/` 和 `src-tauri/tests/`；修改原生模块时补充对应 `native/*/tests`
+- **前端页面**：`OverviewPage`、`ScanPage`、`QuarantinePage`、`BehaviorPage`、`BehaviorLifecyclePage`、`FirewallPage`、`SettingsPage`
+- **前端全局组件**：`TitleBar`、`Sidebar`、`Toast`、`SplashScreen`、`InterceptionModal`、`InterceptionWindowApp`、`TrayExitPrompt`、`ErrorBoundary`
+- **前端状态仓库**：`configStore`、`scannerStore`、`quarantineStore`、`firewallStore`、`themeStore`、`i18nStore`、`toastStore`
+- **前端 API**：扫描、扫描规则、行为、进程、隔离区、配置、允许列表、排除项、系统、日志、文件、错误追踪、风险分析、防火墙、权限、快照、开发设置、i18n
+- **Rust 分层**：`commands/`（24 模块）、`services/`（37 模块）、`models/`、`utils/`；新增能力优先挂到已有模块
+- **现有命令 / 服务**：配置、扫描、行为（v1+v2）、隔离、排除 / 允许、托盘、进程、引擎、信任、拦截、风险、快照、开发设置、系统、i18n、错误追踪、日志、文件系统、文件钩子、防火墙、权限、IPC 桥接
+- **原生模块**：
+  - `native/driver/`（AnXinProcProtect.sys）— 进程/线程/注册表保护，WDM + Ob/Ps/Cm 回调
+  - `native/file_protect/`（AnXinFileProtect.sys）— 关键文件保护，文件系统微过滤器
+  - `native/net_filter/`（AnXinNetFilter.sys）— WFP 网络防火墙 callout 驱动
+  - `native/file_hook/`（用户态 DLL）— Detours 文件 API Hook 与注入检测链路
+  - ETW、进程轮询、信任验证、风险评级已由 Rust 后端接管
+- **配置职责**：`config/app.json` 管主配置，`scan_rules.json` 管快速扫描规则，`etw_match_rules.json` 管行为匹配规则，`firewall_rules.json` 管网络防火墙规则，`config/i18n/*.json` 管语言包
+- **测试位置**：`tests/`（前端 11 个）和 `src-tauri/tests/`（Rust 19 个）；修改原生模块时补充对应 `native/*/tests`
 - **通信边界**：前后端只通过 Tauri commands/events；功能开关关闭时，对应监控与采集逻辑必须真正停止，不能只关界面不关后台
+- **服务模式**：支持 `--service` 子命令以 Windows Service 运行，UI 进程通过 IPC（命名管道）与服务进程通信
 
 ## Documentation Rules
 
@@ -68,6 +76,8 @@
 - 修改启动快照、进程 / 文件监控、扫描缓存、信任验证、证书吊销、拦截队列、运行时配置、i18n 或测试结论后，必须同步更新 `docs/continuous-running.md`。
 - 文档必须区分“已验证状态”“计划 / 假设”“风险 / 待办”；没有实际运行的命令不得写成已通过。
 - 文档与代码冲突时，以代码和可验证产物为准，同时更新文档消除冲突。
+- `建议.md` 是临时性的剩余工作清单，其中列出的部分实现和未实现项应作为当前最高优先级的收口目标，尽快完成，不要长期挂起。
+- 当 `建议.md` 中列出的内容全部完成，或已被正式废弃时，必须同步删除 `建议.md`，并移除本文件里这条关于 `建议.md` 的要求，避免保留过期约束。
 
 ## Security & Safety
 
@@ -95,8 +105,9 @@
   - **High**：可被本地利用或导致安全防护绕过（如签名验证绕过、路径遍历）
   - **Medium**：可能导致信息泄露或安全功能降级（如密钥泄露、审计缺失）
   - **Low**：影响有限或利用条件苛刻（如配置残留、日志信息泄露）
-- **当前已知漏洞摘要**（详见 `buglist.md`）：
-  - Critical: 2 个（DLL 注入路径未校验、命名管道无安全描述符）
-  - High: 4 个（证书吊销检查缺失、隔离文件未安全擦除、路径遍历、capability 过宽、ETW 边界检查不足）
-  - Medium: 5 个（环境变量密钥泄露、手动 Send/Sync、缓存欺骗、审计缺失、规则匹配无转义、信息泄露）
-  - Low: 2 个（stderr 路径输出、测试规则残留）
+- **当前已知漏洞摘要**（详见 `buglist.md`，以该文件为准）：
+  - 共 92 条（VUL-001 ~ VUL-094），其中 Critical 6 条（均已 Fixed），High 32 条（29 Fixed / 3 Open）
+  - 仍有若干 High/Medium/Low 级别漏洞处于 Open 状态（VUL-004 隔离擦除、VUL-005 路径遍历、VUL-006 capability 过宽等）
+  - 驱动相关 P0-P1（VUL-045 ~ VUL-052，Critical 1 + High 7）已于 2026-07-30 全部修复
+  - 驱动 BSOD/BYOVD 审计（VUL-091 ~ VUL-094，Critical 1 + High 1 + Medium 1 + Low 1）已于 2026-07-30 全部修复
+  - 修改本摘要时必须与 `buglist.md` 实际内容核对，不得凭记忆更新

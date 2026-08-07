@@ -1,6 +1,7 @@
 use anxin_security::services::hook_service::{
     hook_event_to_app_event, hook_event_to_risk_event, parse_hook_pipe_line,
-    should_retry_hook_pipe_wait, FileHookEvent, HookPipeMessage, InjectionChainTracker,
+    should_accept_hook_event_from_client, should_retry_hook_pipe_read, should_retry_hook_pipe_wait,
+    split_hook_pipe_messages, FileHookEvent, HookPipeMessage, InjectionChainTracker,
 };
 
 #[test]
@@ -253,6 +254,92 @@ fn blocked_remote_thread_notice_can_directly_form_target_alert() {
 }
 
 #[test]
+fn blocked_nt_create_thread_ex_notice_can_directly_form_target_alert() {
+    let event = FileHookEvent {
+        event_type: "hook_notice".to_string(),
+        source: Some("detours_process_injection".to_string()),
+        api: Some("NtCreateThreadEx".to_string()),
+        path: String::new(),
+        target_path: None,
+        pid: 5100,
+        tid: 9,
+        process_name: Some("native_injector.exe".to_string()),
+        process_path: Some("C:\\Tools\\native_injector.exe".to_string()),
+        target_pid: Some(6200),
+        desired_access: Some(0x1FFFFF),
+        base_address: Some("0x10000000".to_string()),
+        start_address: Some("0x7ff900001234".to_string()),
+        size: Some(1024),
+        blocked: Some(true),
+        target_suspended: Some(true),
+        last_error: Some(5),
+        chain: Some("OpenProcess>VirtualAllocEx>WriteProcessMemory>NtCreateThreadEx".to_string()),
+        timestamp: 1300,
+    };
+
+    let alert =
+        anxin_security::services::hook_service::InjectionChainAlert::from_blocked_hook_event(
+            &event,
+        )
+        .expect("blocked NtCreateThreadEx hook notice should directly alert");
+
+    assert_eq!(alert.source_pid, 5100);
+    assert_eq!(alert.target_pid, 6200);
+    assert!(alert.blocked_by_hook);
+    assert!(alert.target_suspended_by_hook);
+    assert!(alert.apis.iter().any(|api| api == "NtCreateThreadEx"));
+}
+
+#[test]
+fn injection_chain_tracker_treats_nt_create_thread_ex_as_remote_thread_terminal() {
+    let mut tracker = InjectionChainTracker::new(5_000);
+    let mut event = FileHookEvent {
+        event_type: "hook_notice".to_string(),
+        source: Some("detours_process_injection".to_string()),
+        api: Some("OpenProcess".to_string()),
+        path: String::new(),
+        target_path: None,
+        pid: 5100,
+        tid: 9,
+        process_name: Some("native_injector.exe".to_string()),
+        process_path: Some("C:\\Tools\\native_injector.exe".to_string()),
+        target_pid: Some(6200),
+        desired_access: Some(0x2A),
+        base_address: None,
+        start_address: None,
+        size: None,
+        blocked: None,
+        target_suspended: None,
+        last_error: None,
+        chain: None,
+        timestamp: 1000,
+    };
+
+    assert!(tracker.record(&event).is_none());
+
+    event.api = Some("VirtualAllocEx".to_string());
+    event.timestamp = 1100;
+    event.base_address = Some("0x10000000".to_string());
+    event.size = Some(1024);
+    assert!(tracker.record(&event).is_none());
+
+    event.api = Some("WriteProcessMemory".to_string());
+    event.timestamp = 1200;
+    assert!(tracker.record(&event).is_none());
+
+    event.api = Some("NtCreateThreadEx".to_string());
+    event.timestamp = 1300;
+    event.start_address = Some("0x7ff900001234".to_string());
+    let alert = tracker
+        .record(&event)
+        .expect("NtCreateThreadEx should complete the injection chain");
+
+    assert_eq!(alert.source_pid, 5100);
+    assert_eq!(alert.target_pid, 6200);
+    assert!(alert.apis.iter().any(|api| api == "NtCreateThreadEx"));
+}
+
+#[test]
 fn injection_chain_tracker_keeps_target_pids_separate() {
     let mut tracker = InjectionChainTracker::new(5_000);
     let mut event = FileHookEvent {
@@ -331,19 +418,89 @@ fn single_process_injection_api_risk_event_stays_observational() {
 #[test]
 fn hook_pipe_wait_retries_only_transient_wait_states() {
     assert!(
-        should_retry_hook_pipe_wait(232),
-        "ERROR_NO_DATA should wait for more data"
+        !should_retry_hook_pipe_wait(232),
+        "ERROR_NO_DATA means the previous client closed this pipe instance; the server must recreate it"
+    );
+    assert!(
+        should_retry_hook_pipe_read(232),
+        "ReadFile can briefly see ERROR_NO_DATA while a cached client connection is still open"
     );
     assert!(
         should_retry_hook_pipe_wait(536),
         "ERROR_PIPE_LISTENING should keep waiting for a client"
     );
     assert!(
+        should_retry_hook_pipe_read(536),
+        "ReadFile should also tolerate the nonblocking listening state briefly"
+    );
+    assert!(
         !should_retry_hook_pipe_wait(109),
         "ERROR_BROKEN_PIPE should stop reading the closed pipe"
+    );
+    assert!(
+        !should_retry_hook_pipe_read(109),
+        "ERROR_BROKEN_PIPE must release the pipe instance"
     );
     assert!(
         !should_retry_hook_pipe_wait(5),
         "ERROR_ACCESS_DENIED should surface as a real pipe error"
     );
+}
+
+#[test]
+fn hook_pipe_message_splitter_handles_coalesced_json_objects() {
+    let raw = concat!(
+        r#"{"type":"hook_notice","source":"detours_process_injection","api":"OpenProcess","pid":5100,"tid":1,"ts":1,"targetPid":6200}"#,
+        " ",
+        r#"{"type":"hook_notice","source":"detours_process_injection","api":"VirtualAllocEx","pid":5100,"tid":1,"ts":2,"targetPid":6200,"baseAddress":"0x1000","size":224}"#,
+    );
+
+    let messages = split_hook_pipe_messages(raw);
+
+    assert_eq!(messages.len(), 2);
+    let first = parse_hook_pipe_line(messages[0])
+        .expect("first coalesced JSON object should parse")
+        .expect("first object should be an event");
+    let second = parse_hook_pipe_line(messages[1])
+        .expect("second coalesced JSON object should parse")
+        .expect("second object should be an event");
+    match first {
+        HookPipeMessage::Event(event) => assert_eq!(event.api.as_deref(), Some("OpenProcess")),
+        HookPipeMessage::Heartbeat => panic!("expected hook event"),
+    }
+    match second {
+        HookPipeMessage::Event(event) => assert_eq!(event.api.as_deref(), Some("VirtualAllocEx")),
+        HookPipeMessage::Heartbeat => panic!("expected hook event"),
+    }
+}
+
+#[test]
+fn hook_pipe_rejects_events_when_payload_pid_does_not_match_client_pid() {
+    let event = FileHookEvent {
+        event_type: "hook_notice".to_string(),
+        source: Some("detours_process_injection".to_string()),
+        api: Some("OpenProcess".to_string()),
+        path: String::new(),
+        target_path: None,
+        pid: 5100,
+        tid: 9,
+        process_name: Some("injector.exe".to_string()),
+        process_path: Some("C:\\Tools\\injector.exe".to_string()),
+        target_pid: Some(6200),
+        desired_access: Some(0x2A),
+        base_address: None,
+        start_address: None,
+        size: None,
+        blocked: None,
+        target_suspended: None,
+        last_error: None,
+        chain: None,
+        timestamp: 1000,
+    };
+
+    assert!(should_accept_hook_event_from_client(&event, 5100));
+    assert!(!should_accept_hook_event_from_client(&event, 6200));
+    assert!(!should_accept_hook_event_from_client(&event, 0));
+    assert!(!should_accept_hook_event_from_client(&event, 4));
+    assert!(!should_accept_hook_event_from_client(&event, u32::MAX));
 }

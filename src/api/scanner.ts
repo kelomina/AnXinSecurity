@@ -148,14 +148,20 @@ export function onScanProgress(
   callback: (progress: ScanProgressEvent) => void
 ): () => void {
   let unlisten: UnlistenFn | null = null
+  let disposed = false
 
   listen('scan-progress', (event) => {
     callback(event.payload as ScanProgressEvent)
   }).then((fn) => {
-    unlisten = fn
+    if (disposed) {
+      fn()
+    } else {
+      unlisten = fn
+    }
   })
 
   return () => {
+    disposed = true
     if (unlisten) {
       unlisten()
     }

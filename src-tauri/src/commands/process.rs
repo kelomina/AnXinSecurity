@@ -1,10 +1,13 @@
 // 进程控制命令 — 使用 libloading 动态加载 ntdll Native API
 // Process control commands — uses libloading to dynamically load ntdll Native API
+use crate::services::ipc_bridge_service::IpcBridgeService;
+use crate::services::ipc_protocol::methods;
 use crate::services::process_control_service::{
     resume_process_by_pid, suspend_process_by_pid, terminate_process_by_pid,
 };
 use crate::services::process_monitor_service::ProcessMonitorService;
-use tauri::Manager;
+use std::sync::Arc;
+use tauri::{AppHandle, Manager};
 
 /// 函数名称：suspend_process
 /// 函数作用：挂起指定 PID 的进程（通过 NtSuspendProcess 动态调用）。
@@ -51,16 +54,26 @@ pub async fn terminate_process(pid: u32) -> Result<bool, String> {
 /// English keywords: process monitor, start monitor, inject monitor, default path, resource directory
 #[tauri::command]
 pub async fn start_process_watcher(
-    watcher: tauri::State<'_, ProcessMonitorService>,
-    app_handle: tauri::AppHandle,
+    app_handle: AppHandle,
     injector_x64: String,
     injector_x86: String,
     dll_x64: String,
     dll_x86: String,
     interval_ms: u32,
 ) -> Result<bool, String> {
-    // ProcessMonitorService 需要可变引用，但 Tauri state 是共享引用
-    // 使用内部 Mutex 来获取可变性
+    // 双进程架构下，进程监控由服务进程管理，UI 进程无需启动
+    //  In dual-process architecture, process monitoring is managed by the service process
+    if app_handle
+        .try_state::<Arc<IpcBridgeService>>()
+        .map(|b| b.is_connected())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+
+    let watcher = app_handle
+        .try_state::<ProcessMonitorService>()
+        .ok_or("ProcessMonitorService not managed")?;
     let resource_dir = app_handle.path().resource_dir().ok();
     watcher.start_with_resource_dir(
         &injector_x64,
@@ -80,9 +93,20 @@ pub async fn start_process_watcher(
 /// 中文关键词：停止监控，停止进程监控
 /// English keywords: stop monitor, stop process monitor
 #[tauri::command]
-pub async fn stop_process_watcher(
-    watcher: tauri::State<'_, ProcessMonitorService>,
-) -> Result<bool, String> {
+pub async fn stop_process_watcher(app_handle: AppHandle) -> Result<bool, String> {
+    // 双进程架构下，进程监控由服务进程管理，UI 进程无需停止
+    //  In dual-process architecture, process monitoring is managed by the service process
+    if app_handle
+        .try_state::<Arc<IpcBridgeService>>()
+        .map(|b| b.is_connected())
+        .unwrap_or(false)
+    {
+        return Ok(true);
+    }
+
+    let watcher = app_handle
+        .try_state::<ProcessMonitorService>()
+        .ok_or("ProcessMonitorService not managed")?;
     watcher.stop()?;
     Ok(true)
 }
@@ -99,10 +123,32 @@ pub async fn stop_process_watcher(
 /// 中文关键词：APIHook状态，进程监控状态，运行态查询
 /// English keywords: APIHook status, process monitor status, runtime query
 #[tauri::command]
-pub async fn get_process_watcher_status(
-    watcher: tauri::State<'_, ProcessMonitorService>,
-) -> Result<bool, String> {
-    Ok(watcher.is_running())
+pub async fn get_process_watcher_status(app_handle: AppHandle) -> Result<bool, String> {
+    // 优先查询本地 ProcessMonitorService state
+    //  Check local ProcessMonitorService state first
+    if let Some(watcher) = app_handle.try_state::<ProcessMonitorService>() {
+        return Ok(watcher.is_running());
+    }
+
+    // 本地未管理 ProcessMonitorService（双进程架构下 UI 进程连接到服务进程时），
+    // 通过 IPC 查询服务进程的状态
+    //  Local ProcessMonitorService not managed (UI process connected to service process in
+    //  dual-process architecture); query service process status via IPC
+    if let Some(ipc_bridge) = app_handle.try_state::<Arc<IpcBridgeService>>() {
+        if ipc_bridge.is_connected() {
+            let result = ipc_bridge
+                .request(methods::GET_STATUS, serde_json::json!({}))
+                .map_err(|e| format!("Failed to query process watcher status via IPC: {}", e))?;
+            // ProcessMonitorService 在服务进程中注册时即视为运行
+            //  ProcessMonitorService is considered running when registered in service process
+            return Ok(result
+                .get("process_monitor_running")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false));
+        }
+    }
+
+    Ok(false)
 }
 
 /// 函数名称：set_signed_process_list
@@ -114,9 +160,22 @@ pub async fn get_process_watcher_status(
 /// English keywords: signature whitelist, trusted process list
 #[tauri::command]
 pub async fn set_signed_process_list(
-    watcher: tauri::State<'_, ProcessMonitorService>,
+    app_handle: AppHandle,
     paths: Vec<String>,
 ) -> Result<u32, String> {
+    // 双进程架构下，签名白名单由服务进程管理，UI 进程直接返回
+    //  In dual-process architecture, signed list is managed by the service process
+    if app_handle
+        .try_state::<Arc<IpcBridgeService>>()
+        .map(|b| b.is_connected())
+        .unwrap_or(false)
+    {
+        return Ok(paths.len() as u32);
+    }
+
+    let watcher = app_handle
+        .try_state::<ProcessMonitorService>()
+        .ok_or("ProcessMonitorService not managed")?;
     watcher.set_signed_list(&paths)
 }
 
@@ -128,8 +187,19 @@ pub async fn set_signed_process_list(
 /// 中文关键词：轮询新进程，PID列表
 /// English keywords: poll new processes, PID list
 #[tauri::command]
-pub async fn poll_new_pids(
-    watcher: tauri::State<'_, ProcessMonitorService>,
-) -> Result<Vec<u32>, String> {
+pub async fn poll_new_pids(app_handle: AppHandle) -> Result<Vec<u32>, String> {
+    // 双进程架构下，PID 轮询由服务进程通过事件推送，UI 进程返回空列表
+    //  In dual-process architecture, PID polling is handled by service process via event push
+    if app_handle
+        .try_state::<Arc<IpcBridgeService>>()
+        .map(|b| b.is_connected())
+        .unwrap_or(false)
+    {
+        return Ok(Vec::new());
+    }
+
+    let watcher = app_handle
+        .try_state::<ProcessMonitorService>()
+        .ok_or("ProcessMonitorService not managed")?;
     watcher.poll_new_pids()
 }

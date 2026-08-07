@@ -1,13 +1,20 @@
 import React from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
-import { AlertOctagon, AlertTriangle, ShieldOff, X } from 'lucide-react'
+import { AlertOctagon, AlertTriangle, ShieldOff, X } from './icons'
 import { useI18nStore } from '../stores/i18nStore'
 import {
+  Dialog,
+  DialogSurface,
+  DialogTitle,
+  DialogBody,
+  DialogContent,
+  DialogActions,
   Button,
+  ProgressBar,
   makeStyles,
   shorthands,
   tokens,
 } from '@fluentui/react-components'
+import type { DialogOpenChangeData } from '@fluentui/react-components'
 
 interface InterceptionModalProps {
   isOpen: boolean
@@ -24,41 +31,48 @@ interface InterceptionModalProps {
   remainingSeconds?: number
   autoDecisionSeconds?: number
   decisionPending?: boolean
+  /**
+   * 按钮上方的附加控件，网络连接询问用它放"记住此选择"。
+   * 可选，进程拦截路径不传，行为完全不变。
+   * Extra control rendered above the buttons; the network prompt uses it for
+   * "remember this choice". Optional — the process-interception path omits it and
+   * behaves exactly as before.
+   */
+  extraControl?: React.ReactNode
+  /** 覆盖放行按钮文案 / Overrides the allow button label */
+  allowLabel?: string
+  /** 覆盖阻止按钮文案 / Overrides the block button label */
+  blockLabel?: string
 }
 
+const DIALOG_TITLE_ID = 'interception-modal-title'
+
 const useStyles = makeStyles({
-  overlay: {
-    position: 'fixed',
-    inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 9999,
-    backdropFilter: 'blur(8px)',
-  },
-  overlayWindow: {
-    backgroundColor: 'rgba(8, 11, 16, 0.95)',
-  },
   surface: {
-    backgroundColor: tokens.colorNeutralBackground1,
-    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
-    ...shorthands.border('1px', 'solid'),
-    boxShadow: tokens.shadow64,
     maxWidth: '560px',
     width: '90vw',
-    overflow: 'hidden',
-    position: 'relative',
   },
-  surfaceWindow: {
-    maxWidth: 'none',
+  surfaceWindowFull: {
+    maxWidth: '100%',
     width: '100%',
-    minHeight: '100%',
-    ...shorthands.borderRadius('0'),
+    height: '100%',
+    maxHeight: '100%',
+    borderRadius: '0',
+    border: 'none',
+    boxShadow: 'none',
   },
   alertStrip: {
     height: '4px',
     width: '100%',
+  },
+  alertStripHigh: {
+    backgroundColor: tokens.colorPaletteRedForeground2,
+  },
+  alertStripMedium: {
+    backgroundColor: tokens.colorPaletteYellowForeground2,
+  },
+  alertStripLow: {
+    backgroundColor: tokens.colorPaletteBlueForeground2,
   },
   header: {
     display: 'flex',
@@ -81,6 +95,18 @@ const useStyles = makeStyles({
     justifyContent: 'center',
     flexShrink: 0,
   },
+  iconWrapperHigh: {
+    backgroundColor: tokens.colorPaletteRedBackground2,
+    color: tokens.colorPaletteRedForeground2,
+  },
+  iconWrapperMedium: {
+    backgroundColor: tokens.colorPaletteYellowBackground2,
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  iconWrapperLow: {
+    backgroundColor: tokens.colorPaletteBlueBackground2,
+    color: tokens.colorPaletteBlueForeground2,
+  },
   titleGroup: {
     flex: 1,
   },
@@ -88,13 +114,31 @@ const useStyles = makeStyles({
     fontSize: tokens.fontSizeBase200,
     fontWeight: tokens.fontWeightSemibold,
     textTransform: 'uppercase',
-    letterSpacing: '0.5px',
+    letterSpacing: 0,
     marginBottom: '4px',
+  },
+  eyebrowHigh: {
+    color: tokens.colorPaletteRedForeground2,
+  },
+  eyebrowMedium: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  eyebrowLow: {
+    color: tokens.colorPaletteBlueForeground2,
   },
   title: {
     fontSize: tokens.fontSizeBase400,
     fontWeight: tokens.fontWeightSemibold,
     margin: 0,
+  },
+  titleHigh: {
+    color: tokens.colorPaletteRedForeground2,
+  },
+  titleMedium: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  titleLow: {
+    color: tokens.colorPaletteBlueForeground2,
   },
   countdown: {
     display: 'flex',
@@ -114,6 +158,15 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightBold,
     fontFamily: 'Consolas, "Courier New", monospace',
   },
+  countdownTimeHigh: {
+    color: tokens.colorPaletteRedForeground2,
+  },
+  countdownTimeMedium: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
+  countdownTimeLow: {
+    color: tokens.colorPaletteBlueForeground2,
+  },
   closeButton: {
     position: 'absolute',
     top: '12px',
@@ -122,35 +175,26 @@ const useStyles = makeStyles({
     height: '32px',
     minWidth: '32px',
     ...shorthands.padding('0'),
-    ...shorthands.border('none'),
-    backgroundColor: 'transparent',
-    color: tokens.colorNeutralForeground3,
-    cursor: 'pointer',
     ...shorthands.borderRadius(tokens.borderRadiusSmall),
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
     WebkitAppRegion: 'no-drag',
-    ':hover': {
-      backgroundColor: tokens.colorNeutralBackground1Hover,
-      color: tokens.colorNeutralForeground1,
-    },
-  },
-  body: {
-    ...shorthands.padding('20px', '24px'),
-  },
-  message: {
-    fontSize: tokens.fontSizeBase300,
-    color: tokens.colorNeutralForeground2,
-    marginTop: 0,
-    marginBottom: '16px',
-    lineHeight: tokens.lineHeightBase300,
   },
   detailPanel: {
     ...shorthands.padding('16px'),
     ...shorthands.borderRadius(tokens.borderRadiusMedium),
     ...shorthands.border('1px', 'solid'),
     marginBottom: '16px',
+  },
+  detailPanelHigh: {
+    ...shorthands.borderColor(tokens.colorPaletteRedBorder2),
+    backgroundColor: tokens.colorPaletteRedBackground2,
+  },
+  detailPanelMedium: {
+    ...shorthands.borderColor(tokens.colorPaletteYellowBorder2),
+    backgroundColor: tokens.colorPaletteYellowBackground2,
+  },
+  detailPanelLow: {
+    ...shorthands.borderColor(tokens.colorPaletteYellowBorder2),
+    backgroundColor: tokens.colorPaletteBlueBackground2,
   },
   detail: {
     display: 'flex',
@@ -172,6 +216,9 @@ const useStyles = makeStyles({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
+  processValue: {
+    fontWeight: tokens.fontWeightSemibold,
+  },
   riskBadge: {
     display: 'inline-flex',
     alignItems: 'center',
@@ -182,25 +229,63 @@ const useStyles = makeStyles({
     fontSize: tokens.fontSizeBase200,
     fontWeight: tokens.fontWeightSemibold,
   },
+  riskBadgeHigh: {
+    backgroundColor: tokens.colorPaletteRedBackground2,
+    color: tokens.colorPaletteRedForeground2,
+    ...shorthands.border('1px', 'solid', tokens.colorPaletteRedBorder2),
+  },
+  riskBadgeMedium: {
+    backgroundColor: tokens.colorPaletteYellowBackground2,
+    color: tokens.colorPaletteYellowForeground2,
+    ...shorthands.border('1px', 'solid', tokens.colorPaletteYellowBorder2),
+  },
+  riskBadgeLow: {
+    backgroundColor: tokens.colorPaletteBlueBackground2,
+    color: tokens.colorPaletteBlueForeground2,
+    ...shorthands.border('1px', 'solid', tokens.colorPaletteBlueBorderActive),
+  },
   timeoutTrack: {
-    height: '3px',
     width: '100%',
-    backgroundColor: tokens.colorNeutralBackground3,
-    position: 'relative',
-    overflow: 'hidden',
   },
-  timeoutBar: {
-    height: '100%',
-    transitionProperty: 'width',
-    transitionDuration: '1s',
-    transitionTimingFunction: 'linear',
+  message: {
+    fontSize: tokens.fontSizeBase300,
+    color: tokens.colorNeutralForeground2,
+    marginTop: 0,
+    marginBottom: '16px',
+    lineHeight: tokens.lineHeightBase300,
   },
-  actions: {
-    display: 'flex',
-    ...shorthands.gap('12px'),
-    justifyContent: 'flex-end',
-    ...shorthands.padding('16px', '24px'),
-    borderTop: `1px solid ${tokens.colorNeutralStroke1}`,
+  surfaceHigh: {
+    borderLeft: `4px solid ${tokens.colorPaletteRedForeground2}`,
+    ...shorthands.borderColor(tokens.colorPaletteRedBorder2),
+  },
+  surfaceMedium: {
+    borderLeft: `4px solid ${tokens.colorPaletteYellowForeground2}`,
+    ...shorthands.borderColor(tokens.colorPaletteYellowBorder2),
+  },
+  surfaceLow: {
+    borderLeft: `4px solid ${tokens.colorPaletteBlueForeground2}`,
+    ...shorthands.borderColor(tokens.colorPaletteYellowBorder2),
+  },
+  surfaceWindow: {
+    boxShadow: tokens.shadow28,
+  },
+  surfaceModal: {
+    boxShadow: tokens.shadow64,
+  },
+  blockButtonHigh: {
+    backgroundColor: tokens.colorPaletteRedForeground2,
+    ...shorthands.borderColor(tokens.colorPaletteRedForeground2),
+    boxShadow: tokens.shadow8,
+  },
+  blockButtonMedium: {
+    backgroundColor: tokens.colorPaletteYellowForeground2,
+    ...shorthands.borderColor(tokens.colorPaletteYellowForeground2),
+    boxShadow: tokens.shadow8,
+  },
+  blockButtonLow: {
+    backgroundColor: tokens.colorPaletteBlueForeground2,
+    ...shorthands.borderColor(tokens.colorPaletteBlueForeground2),
+    boxShadow: tokens.shadow8,
   },
 })
 
@@ -218,189 +303,201 @@ const InterceptionModal: React.FC<InterceptionModalProps> = ({
   defaultAction = 'block',
   remainingSeconds,
   autoDecisionSeconds,
-  decisionPending = false
+  decisionPending = false,
+  extraControl,
+  allowLabel,
+  blockLabel
 }) => {
   const { t } = useI18nStore()
   const styles = useStyles()
+  const isWindowMode = mode === 'window'
 
   const riskColors = {
     high: {
       bg: tokens.colorPaletteRedBackground2,
       text: tokens.colorPaletteRedForeground2,
       border: tokens.colorPaletteRedBorder2,
-      label: t('intercept_level_high', '高')
+      label: t('intercept_level_high')
     },
     medium: {
       bg: tokens.colorPaletteYellowBackground2,
       text: tokens.colorPaletteYellowForeground2,
       border: tokens.colorPaletteYellowBorder2,
-      label: t('intercept_level_medium', '中')
+      label: t('intercept_level_medium')
     },
     low: {
       bg: tokens.colorPaletteBlueBackground2,
       text: tokens.colorPaletteBlueForeground2,
       border: tokens.colorPaletteYellowBorder2, // Using yellow as blue border2 doesn't exist
-      label: t('intercept_level_low', '低')
+      label: t('intercept_level_low')
     },
   }
 
-  const riskStyle = riskColors[riskLevel]
-  const isWindowMode = mode === 'window'
+  const riskLabel = riskColors[riskLevel].label
+  const riskClassName = riskLevel === 'high' ? 'High' : riskLevel === 'medium' ? 'Medium' : 'Low'
+  const surfaceClassName = [
+    styles.surface,
+    styles[`surface${riskClassName}` as keyof typeof styles],
+    isWindowMode ? styles.surfaceWindowFull : styles.surfaceModal,
+  ].join(' ')
+  const alertStripClassName = [
+    styles.alertStrip,
+    styles[`alertStrip${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const iconWrapperClassName = [
+    styles.iconWrapper,
+    styles[`iconWrapper${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const eyebrowClassName = [
+    styles.eyebrow,
+    styles[`eyebrow${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const titleClassName = [
+    styles.title,
+    styles[`title${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const countdownClassName = [
+    styles.countdownTime,
+    styles[`countdownTime${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const detailPanelClassName = [
+    styles.detailPanel,
+    styles[`detailPanel${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const riskBadgeClassName = [
+    styles.riskBadge,
+    styles[`riskBadge${riskClassName}` as keyof typeof styles],
+  ].join(' ')
+  const blockButtonClassName = styles[`blockButton${riskClassName}` as keyof typeof styles]
   const showAutoDecision = isWindowMode && typeof remainingSeconds === 'number'
+  const autoDecisionProgress = showAutoDecision && typeof autoDecisionSeconds === 'number' && autoDecisionSeconds > 0
+    ? Math.max(0, Math.min(1, remainingSeconds / autoDecisionSeconds))
+    : undefined
   const autoDecisionLabel = defaultAction === 'block'
-    ? t('intercept_btn_block_process', '阻止进程')
-    : t('intercept_btn_allow_run', '允许运行')
+    ? t('intercept_btn_block_process')
+    : t('intercept_btn_allow_run')
 
-  const surfaceMotion = isWindowMode
-    ? {
-      initial: { y: 8, opacity: 0 },
-      animate: { y: 0, opacity: 1 },
-      exit: { y: 8, opacity: 0 },
+  const handleOpenChange = (_: unknown, data: DialogOpenChangeData): void => {
+    if (!data.open) {
+      onClose()
     }
-    : {
-      initial: { scale: 0.95, opacity: 0 },
-      animate: { scale: 1, opacity: 1 },
-      exit: { scale: 0.95, opacity: 0 },
-    }
+  }
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          className={`${styles.overlay} ${isWindowMode ? styles.overlayWindow : ''}`}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          onClick={isWindowMode ? undefined : onClose}
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
+      <DialogSurface
+        className={surfaceClassName}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={DIALOG_TITLE_ID}
+      >
+        <div className={alertStripClassName} />
+
+        <div
+          className={`${styles.header} ${isWindowMode ? styles.headerDraggable : ''}`}
+          data-tauri-drag-region={isWindowMode ? true : undefined}
         >
-          <motion.div
-            className={`${styles.surface} ${isWindowMode ? styles.surfaceWindow : ''}`}
-            initial={surfaceMotion.initial}
-            animate={surfaceMotion.animate}
-            exit={surfaceMotion.exit}
-            transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-            onClick={(e) => e.stopPropagation()}
-            style={{
-              borderColor: riskStyle.border,
-              boxShadow: isWindowMode
-                ? `inset 0 0 0 1px ${riskStyle.border}, 0 0 42px ${riskStyle.border}`
-                : `0 0 0 1px ${riskStyle.border}, 0 24px 60px rgba(0,0,0,0.38), 0 0 48px ${riskStyle.border}`
-            }}
-          >
-            <div className={styles.alertStrip} style={{ backgroundColor: riskStyle.text }} />
+          <div className={iconWrapperClassName}>
+            {riskLevel === 'high' ? (
+              <ShieldOff size={26} />
+            ) : riskLevel === 'medium' ? (
+              <AlertOctagon size={26} />
+            ) : (
+              <AlertTriangle size={26} />
+            )}
+          </div>
+          <div className={styles.titleGroup}>
+            <div className={eyebrowClassName}>
+              {t('intercept_security_alert')}
+            </div>
+            <DialogTitle id={DIALOG_TITLE_ID} className={titleClassName} as="h3">{title}</DialogTitle>
+          </div>
+          {showAutoDecision && (
+            <div className={styles.countdown} title={t('intercept_default_action_hint')}>
+              <span className={styles.countdownLabel}>
+                {t('intercept_default_action_label')}
+              </span>
+              <span className={styles.countdownAction}>{autoDecisionLabel}</span>
+              <span className={countdownClassName}>
+                {t('intercept_auto_block_countdown').replace('{seconds}', String(remainingSeconds))}
+              </span>
+            </div>
+          )}
+          {mode !== 'window' && (
+            <Button
+              appearance="subtle"
+              size="small"
+              className={styles.closeButton}
+              icon={<X size={18} />}
+              onClick={onClose}
+              aria-label={t('common_cancel')}
+            />
+          )}
+        </div>
+
+        <DialogBody>
+          <DialogContent>
+            <p className={styles.message}>{message}</p>
 
             <div
-              className={`${styles.header} ${isWindowMode ? styles.headerDraggable : ''}`}
-              data-tauri-drag-region={isWindowMode ? true : undefined}
+              className={detailPanelClassName}
             >
-              <div className={styles.iconWrapper} style={{ backgroundColor: riskStyle.bg }}>
-                {riskLevel === 'high' ? (
-                  <ShieldOff size={26} color={riskStyle.text} />
-                ) : riskLevel === 'medium' ? (
-                  <AlertOctagon size={26} color={riskStyle.text} />
-                ) : (
-                  <AlertTriangle size={26} color={riskStyle.text} />
-                )}
+              <div className={styles.detail}>
+                <span className={styles.detailLabel}>{t('intercept_label_process')}</span>
+                <span className={`${styles.detailValue} ${styles.processValue}`} title={processName}>
+                  {processName}
+                </span>
               </div>
-              <div className={styles.titleGroup}>
-                <div className={styles.eyebrow} style={{ color: riskStyle.text }}>
-                  {t('intercept_security_alert', '安全拦截警报')}
-                </div>
-                <h3 className={styles.title} style={{ color: riskStyle.text }}>{title}</h3>
-              </div>
-              {showAutoDecision && (
-                <div className={styles.countdown} title={t('intercept_default_action_hint', '超时后将自动执行默认操作')}>
-                  <span className={styles.countdownLabel}>
-                    {t('intercept_default_action_label', '默认')}
-                  </span>
-                  <span className={styles.countdownAction}>{autoDecisionLabel}</span>
-                  <span className={styles.countdownTime} style={{ color: riskStyle.text }}>
-                    {t('intercept_auto_block_countdown', '{seconds}s').replace('{seconds}', String(remainingSeconds))}
-                  </span>
-                </div>
-              )}
-              {mode !== 'window' && (
-                <button className={styles.closeButton} onClick={onClose}>
-                  <X size={18} />
-                </button>
-              )}
-            </div>
-
-            <div className={styles.body}>
-              <p className={styles.message}>{message}</p>
-
-              <div
-                className={styles.detailPanel}
-                style={{
-                  borderColor: riskStyle.border,
-                  backgroundColor: riskStyle.bg
-                }}
-              >
+              {filePath && (
                 <div className={styles.detail}>
-                  <span className={styles.detailLabel}>{t('intercept_label_process', '进程：')}</span>
-                  <span className={styles.detailValue} style={{ fontWeight: 600 }} title={processName}>
-                    {processName}
+                  <span className={styles.detailLabel}>{t('intercept_label_path')}</span>
+                  <span className={styles.detailValue} title={filePath}>
+                    {filePath}
                   </span>
                 </div>
-                {filePath && (
-                  <div className={styles.detail}>
-                    <span className={styles.detailLabel}>{t('intercept_label_path', '路径：')}</span>
-                    <span className={styles.detailValue} title={filePath}>
-                      {filePath}
-                    </span>
-                  </div>
-                )}
-                <div className={styles.riskBadge} style={{
-                  backgroundColor: riskStyle.bg,
-                  color: riskStyle.text,
-                  border: `1px solid ${riskStyle.border}`,
-                }}>
-                  <AlertTriangle size={13} />
-                  {riskStyle.label}
-                </div>
+              )}
+              <div className={riskBadgeClassName}>
+                <AlertTriangle size={13} />
+                {riskLabel}
               </div>
             </div>
 
             {showAutoDecision && typeof autoDecisionSeconds === 'number' && autoDecisionSeconds > 0 && (
               <div className={styles.timeoutTrack}>
-                <div
-                  className={styles.timeoutBar}
-                  style={{
-                    width: `${Math.max(0, Math.min(100, (remainingSeconds / autoDecisionSeconds) * 100))}%`,
-                    backgroundColor: riskStyle.text
-                  }}
+                <ProgressBar
+                  value={autoDecisionProgress}
+                  thickness="medium"
+                  aria-label={t('intercept_default_action_hint')}
                 />
               </div>
             )}
+          </DialogContent>
+        </DialogBody>
 
-            <div className={styles.actions}>
-              <Button
-                appearance="outline"
-                onClick={onAllow}
-                disabled={decisionPending}
-              >
-                {t('intercept_btn_allow_run', '允许运行')}
-              </Button>
-              <Button
-                appearance="primary"
-                onClick={onBlock}
-                disabled={decisionPending}
-                autoFocus={defaultAction === 'block'}
-                style={{
-                  backgroundColor: riskStyle.text,
-                  borderColor: riskStyle.text,
-                  boxShadow: `0 0 20px ${riskStyle.border}`
-                }}
-              >
-                {decisionPending
-                  ? t('intercept_btn_processing', '处理中...')
-                  : t('intercept_btn_block_process', '阻止进程')}
-              </Button>
-            </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        {extraControl}
+
+        <DialogActions>
+          <Button
+            appearance="outline"
+            onClick={onAllow}
+            disabled={decisionPending}
+          >
+            {allowLabel ?? t('intercept_btn_allow_run')}
+          </Button>
+          <Button
+            appearance="primary"
+            onClick={onBlock}
+            disabled={decisionPending}
+            autoFocus={defaultAction === 'block'}
+            className={blockButtonClassName}
+          >
+            {decisionPending
+              ? t('intercept_btn_processing')
+              : (blockLabel ?? t('intercept_btn_block_process'))}
+          </Button>
+        </DialogActions>
+      </DialogSurface>
+    </Dialog>
   )
 }
 

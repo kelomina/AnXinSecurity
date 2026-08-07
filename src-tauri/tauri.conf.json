@@ -18,7 +18,6 @@
         "minWidth": 800,
         "minHeight": 600,
         "decorations": false,
-        "transparent": true,
         "center": true
       }
     ],
@@ -29,12 +28,17 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "licenseFile": "../build/license.rtf",
     "resources": [
       "../native/bin/win32-x64/file_hook_injector.exe",
       "../native/bin/win32-x86/file_hook_injector.exe",
       "../native/bin/win32-x64/file_hook_detours.dll",
       "../native/bin/win32-x86/file_hook_detours.dll",
       "../config/etw_match_rules.json",
+      "../config/i18n/zh-CN.json",
+      "../config/i18n/en-US.json",
+      "../config/firewall_rules.json",
+      "../native/net_filter/build/x64/Release/AnXinNetFilter.sys",
       "../Engine/**/*"
     ],
     "windows": {
@@ -45,7 +49,8 @@
         "type": "embedBootstrapper"
       },
       "nsis": {
-        "installerHooks": "build/nsis-hooks.nsh"
+        "installMode": "perMachine",
+        "installerHooks": "../build/nsis-hooks.nsh"
       }
     }
   }

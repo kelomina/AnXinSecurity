@@ -10,7 +10,6 @@ import { invoke } from '@tauri-apps/api/core'
 /** 应用配置（前端子集）/App configuration (frontend subset) */
 export interface AppConfig {
   brand: string
-  themeColor: string
   defaultPage: string
   minimizeToTray: boolean
   behaviorMonitoring: {
@@ -34,6 +33,10 @@ export interface AppConfig {
   ui: {
     themeMode: string
     animations: boolean
+  }
+  /** 元核防护总开关 / Hypervisor protection master switch */
+  hypervisorProtection: {
+    enabled: boolean
   }
 }
 

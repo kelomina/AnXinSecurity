@@ -45,8 +45,8 @@ const interceptionPayloadSource = readFileSync(resolve(projectRoot, 'src/utils/i
 
 test('ScanPage only renders clear and trust actions inside the threat-result branch', () => {
   const threatBranchIndex = scanPageSource.indexOf(') : threats.length > 0 ? (')
-  const clearThreatIndex = scanPageSource.indexOf('清除威胁', threatBranchIndex)
-  const addTrustIndex = scanPageSource.indexOf('添加信任', threatBranchIndex)
+  const clearThreatIndex = scanPageSource.indexOf("t('scan_clear_threats')", threatBranchIndex)
+  const addTrustIndex = scanPageSource.indexOf("t('scan_add_trust')", threatBranchIndex)
 
   assert.notEqual(threatBranchIndex, -1)
   assert.ok(clearThreatIndex > threatBranchIndex)
@@ -65,10 +65,11 @@ test('ScanPage wires threat actions to quarantine and allowlist APIs', () => {
 })
 
 test('Settings page merges exclusions and allowed items into one trust workflow', () => {
-  assert.match(settingsPageSource, /<div className="settings-group-title">信任项目<\/div>/)
+  assert.match(settingsPageSource, /<div className=\{styles\.settingsGroupTitle\}>\{t\('settings_group_trust'\)\}<\/div>/)
   assert.match(settingsPageSource, /handleAddTrustItem/)
   assert.match(settingsPageSource, /handleRemoveTrustItem/)
-  assert.match(settingsPageSource, /confirmDeleteTrustIndex !== null/)
+  assert.match(settingsPageSource, /deleteConfirm !== null/)
+  assert.match(settingsPageSource, /<ConfirmDialog/)
   assert.match(settingsPageSource, /trustItems\.map/)
   assert.doesNotMatch(settingsPageSource, /settings-tabs/)
   assert.doesNotMatch(settingsPageSource, /<h3>允许项目<\/h3>/)
@@ -99,9 +100,9 @@ test('Overview page controls the real scan engine start and stop commands', () =
   assert.match(overviewPageSource, /health\.status === 'stopped'/)
   assert.match(overviewPageSource, /await stopEngine\(\)/)
   assert.match(overviewPageSource, /await startEngine\(\)/)
-  assert.match(overviewPageSource, /引擎已停止/)
-  assert.match(overviewPageSource, /停止引擎/)
-  assert.match(overviewPageSource, /启动引擎/)
+  assert.match(overviewPageSource, /t\('overview_engine_stopped'\)/)
+  assert.match(overviewPageSource, /t\('overview_engine_stop_btn'\)/)
+  assert.match(overviewPageSource, /t\('overview_engine_start_btn'\)/)
 })
 
 test('Config store exposes one trust workflow backed by allowlist and exclusions', () => {
@@ -141,7 +142,7 @@ test('README documents Fluent 2 threat action button rules', () => {
 test('README separates tracked config files from runtime generated config files', () => {
   assert.match(readmeSource, /配置文件职责/)
   assert.match(readmeSource, /可提交的静态配置/)
-  assert.match(readmeSource, /运行时生成文件/)
+  assert.match(readmeSource, /运行时生成文件|Runtime Generated Files/)
   assert.match(readmeSource, /config\/app\.json/)
   assert.match(readmeSource, /config\/scan_rules\.json/)
   assert.match(readmeSource, /config\/etw_match_rules\.json/)
@@ -153,7 +154,7 @@ test('README separates tracked config files from runtime generated config files'
   assert.match(readmeSource, /%APPDATA%\/AnXinSecurity\/runtime\/startup_allowlist\.json/)
   assert.match(readmeSource, /%APPDATA%\/AnXinSecurity\/runtime\/exclusions\.json/)
   assert.match(readmeSource, /npm run dev/)
-  assert.match(gitignoreSource, /data\/runtime\//)
+  assert.match(gitignoreSource, /^data\/$/m)
 })
 
 test('Allowlist and exclusions commands persist mutable lists outside config app json', () => {
@@ -207,11 +208,13 @@ test('Scan and monitor paths honor runtime exclusions and allowlist', () => {
   assert.match(fileMonitorServiceSource, /should_skip_security_scan\(&file_path\)/)
   assert.match(processMonitorServiceSource, /should_skip_security_scan\(&image_path\)/)
   assert.match(snapshotServiceSource, /load_path_policy_snapshot\(\)\?/)
-  assert.match(snapshotServiceSource, /path_policy\.should_skip_security_scan\(&proc_info\.path\)/)
+  assert.match(snapshotServiceSource, /path_policy\.should_skip_by_path_only\(&proc_info\.path\)/)
+  assert.match(snapshotServiceSource, /path_policy\.hash_after_path_miss_cached\(\s*&proc_info\.path/)
 })
 
 test('Process and startup scans use cached engine results for process modules', () => {
-  assert.match(processScannerServiceSource, /enumerate_process_modules\(pid\)/)
+  assert.match(processScannerServiceSource, /enumerate_process_module_info\(pid\)/)
+  assert.match(processScannerServiceSource, /module_paths_from_info\(items\)/)
   assert.match(processScannerServiceSource, /scan_or_get_cached\(engine, target_path\)/)
   assert.match(processScannerServiceSource, /"targetType": target_type/)
   assert.match(processScannerServiceSource, /"source": "process_scanner"/)
@@ -347,7 +350,9 @@ test('Process and startup scans use cached engine results for process modules', 
   assert.match(snapshotServiceSource, /timeout,\s*async move/)
   assert.match(snapshotServiceSource, /revocation_alerts/)
   assert.match(snapshotServiceSource, /revocation_unknown_critical/)
-  assert.match(snapshotServiceSource, /app_handle\.emit\("snapshot-result", &result\)/)
+  // 事件推送已从 app_handle.emit 迁到 ServiceContext（ctx.emit_event），语义不变
+  //  Event delivery moved from app_handle.emit to ServiceContext (ctx.emit_event); same semantics
+  assert.match(snapshotServiceSource, /ctx\.emit_event\("snapshot-result", result\.clone\(\)\)/)
   assert.doesNotMatch(snapshotServiceSource, /certificate-revoked/)
   assert.doesNotMatch(snapshotServiceSource, /certificate-revocation-unknown/)
   assert.match(snapshotServiceSource, /scanned_modules/)
@@ -428,13 +433,19 @@ test('Interception UI maps structured startup reasons through i18n keys', () => 
 })
 
 test('Interception modal overlay enables pointer events while visible', () => {
-  assert.match(interceptionModalSource, /modal-overlay visible/)
-  assert.match(globalCssSource, /\.modal-overlay\.visible \{[\s\S]*pointer-events: auto;/)
+  assert.match(interceptionModalSource, /<Dialog open=\{isOpen\} onOpenChange=\{handleOpenChange\}>/)
+  assert.match(interceptionModalSource, /<DialogSurface[\s\S]*aria-modal="true"[\s\S]*aria-labelledby=\{DIALOG_TITLE_ID\}/)
+  assert.match(interceptionModalSource, /<DialogBody>/)
+  assert.doesNotMatch(interceptionModalSource, /modal-overlay visible/)
+  assert.doesNotMatch(globalCssSource, /\.modal-overlay/)
 })
 
 test('Interception alerts render in an independent focused window', () => {
   assert.match(mainTsxSource, /getCurrentWindow\(\)/)
-  assert.match(mainTsxSource, /currentWindow\.label === 'interception' \? InterceptionWindowApp : App/)
+  // 分派拆成 isInterceptionWindow + RootComponent 两行，仍然锁「按窗口 label 选根组件」
+  //  Split into isInterceptionWindow + RootComponent; still locks label-driven root selection
+  assert.match(mainTsxSource, /const isInterceptionWindow = currentWindow\.label === 'interception'/)
+  assert.match(mainTsxSource, /const RootComponent = isInterceptionWindow \? InterceptionWindowApp : App/)
   assert.match(interceptionWindowAppSource, /listen<Record<string, unknown>>\('process-intercepted'/)
   assert.match(interceptionWindowAppSource, /cleanupEventListener/)
   assert.match(interceptionWindowAppSource, /Event listener registration failed/)
@@ -460,10 +471,17 @@ test('Interception alerts render in an independent focused window', () => {
   assert.match(interceptionWindowServiceSource, /\.transparent\(false\)/)
   assert.match(interceptionWindowServiceSource, /\.always_on_top\(true\)/)
   assert.match(interceptionWindowServiceSource, /CloseRequested[\s\S]*prevent_close\(\)/)
-  assert.match(interceptionServiceSource, /show_interception_window\(app_handle\)/)
+  // AppHandle 现在通过 impl AppContext 提供该能力，接收者就是 handle 本身（self）。
+  // 断言锁的是「AppHandle 路径真的去建独立拦截窗口」，而不是参数叫什么名字。
+  //  AppHandle now provides this through its AppContext impl, where the receiver is the handle
+  //  itself (self). The assertion locks that the AppHandle path really opens the standalone
+  //  interception window, not what the parameter happens to be named.
+  assert.match(interceptionServiceSource, /fn show_interception_window\(&self\) -> Result<\(\), String> \{[\s\S]*show_interception_window\(self\)/)
   assert.match(interceptionServiceSource, /\.emit_to\("interception", "process-intercepted"/)
   assert.doesNotMatch(interceptionServiceSource, /app_handle\.emit\("process-intercepted"/)
-  assert.match(tauriMainSource, /prepare_interception_window\(app\.handle\(\)\)/)
+  // 重构后 setup 里持有的是 app_handle 而非 app，函数本身与语义不变
+  //  After the refactor setup holds app_handle rather than app; the call and its meaning are the same
+  assert.match(tauriMainSource, /prepare_interception_window\(&app_handle\)/)
   assert.match(defaultCapabilitySource, /"windows": \["main"\]/)
   assert.match(interceptionCapabilitySource, /"identifier": "interception"/)
   assert.match(interceptionCapabilitySource, /"windows": \["interception"\]/)
@@ -483,23 +501,21 @@ test('Interception alerts render in an independent focused window', () => {
   assert.match(interceptionModalSource, /autoDecisionSeconds\?: number/)
   assert.match(interceptionModalSource, /decisionPending\?: boolean/)
   assert.match(interceptionModalSource, /const useStyles = makeStyles/)
-  assert.match(interceptionModalSource, /overlayWindow:/)
   assert.match(interceptionModalSource, /surfaceWindow:/)
   assert.match(interceptionModalSource, /headerDraggable:/)
   assert.match(interceptionModalSource, /countdown:/)
   assert.match(interceptionModalSource, /timeoutTrack:/)
-  assert.match(interceptionModalSource, /timeoutBar:/)
-  assert.match(interceptionModalSource, /className=\{`\$\{styles\.overlay\} \$\{isWindowMode \? styles\.overlayWindow : ''\}`\}/)
-  assert.match(interceptionModalSource, /className=\{`\$\{styles\.surface\} \$\{isWindowMode \? styles\.surfaceWindow : ''\}`\}/)
+  assert.match(interceptionModalSource, /ProgressBar/)
+  assert.match(interceptionModalSource, /className=\{surfaceClassName\}/)
   assert.match(interceptionModalSource, /className=\{`\$\{styles\.header\} \$\{isWindowMode \? styles\.headerDraggable : ''\}`\}/)
   assert.match(interceptionModalSource, /data-tauri-drag-region/)
   assert.match(interceptionModalSource, /appearance="outline"[\s\S]*?onClick=\{onAllow\}[\s\S]*?disabled=\{decisionPending\}/)
   assert.match(interceptionModalSource, /appearance="primary"[\s\S]*?onClick=\{onBlock\}[\s\S]*?disabled=\{decisionPending\}/)
   assert.match(interceptionModalSource, /autoFocus=\{defaultAction === 'block'\}/)
   assert.match(interceptionModalSource, /decisionPending/)
-  assert.match(interceptionModalSource, /width: '100%'/)
-  assert.match(interceptionModalSource, /minHeight: '100%'/)
-  assert.match(interceptionModalSource, /boxShadow: isWindowMode/)
+  assert.match(interceptionModalSource, /width: '90vw'/)
+  assert.match(interceptionModalSource, /boxShadow: tokens\.shadow28/)
+  assert.match(interceptionModalSource, /boxShadow: tokens\.shadow64/)
   assert.doesNotMatch(interceptionModalSource, /className="btn/)
   assert.doesNotMatch(interceptionModalSource, /interception-overlay-window/)
   assert.doesNotMatch(interceptionModalSource, /interception-window-surface/)
@@ -529,15 +545,16 @@ test('Interception commands use the managed Arc service so queue rotation can co
 
 test('Interception alert uses risk-themed warning styling', () => {
   assert.match(interceptionModalSource, /alertStrip:/)
-  assert.match(interceptionModalSource, /className=\{styles\.alertStrip\}/)
+  assert.match(interceptionModalSource, /const alertStripClassName =/)
+  assert.match(interceptionModalSource, /className=\{alertStripClassName\}/)
   assert.match(interceptionModalSource, /intercept_security_alert/)
   assert.match(interceptionModalSource, /t\('intercept_btn_allow_run'/)
   assert.match(interceptionModalSource, /t\('intercept_btn_block_process'/)
   assert.match(interceptionModalSource, /colorPaletteRedBackground2/)
   assert.match(interceptionModalSource, /colorPaletteRedForeground2/)
   assert.match(interceptionModalSource, /colorPaletteRedBorder2/)
-  assert.match(interceptionModalSource, /backgroundColor: riskStyle\.text/)
-  assert.match(interceptionModalSource, /borderColor: riskStyle\.text/)
+  assert.match(interceptionModalSource, /blockButtonHigh:/)
+  assert.match(interceptionModalSource, /backgroundColor: tokens\.colorPaletteRedForeground2/)
   assert.match(globalCssSource, /\.interception-window-root\.has-interception/)
   assert.match(interceptionModalSource, /detailValue:/)
   assert.match(interceptionModalSource, /textOverflow: 'ellipsis'/)
@@ -567,30 +584,46 @@ test('Behavior SQLite database uses app data instead of repository runtime paths
   assert.match(tauriMainSource, /PathBuf::from\(app_data\)[\s\S]*?\.join\("AnXinSecurity"\)[\s\S]*?\.join\(&configured_dir\)/)
   assert.match(tauriMainSource, /fn migrate_legacy_behavior_database/)
   assert.match(tauriMainSource, /std::fs::copy\(&legacy_path, target_path\)/)
-  assert.match(tauriMainSource, /let db_root = resolve_behavior_database_path\(&config\)\?/)
+  // `?` 改成 match 以便打印可读错误；仍要求走 resolve_behavior_database_path 拿 APPDATA 路径
+  //  The `?` became a match so the error can be reported; still required to resolve via APPDATA
+  assert.match(tauriMainSource, /let db_root = match resolve_behavior_database_path\(&config\)/)
   assert.doesNotMatch(tauriMainSource, /let mut db_root = std::env::current_dir/)
 })
 
 test('File hook pipe receiver starts during app setup before active watchers', () => {
   assert.match(tauriMainSource, /let hook_service = HookService::new\(\)/)
-  assert.match(tauriMainSource, /\.start\("anxin_security_filehook", app\.handle\(\)\.clone\(\)\)/)
+  // HookService 已解耦 AppHandle，改为接收 ServiceContext
+  //  HookService is decoupled from AppHandle and now takes a ServiceContext
+  assert.match(tauriMainSource, /\.start\("anxin_security_filehook", hook_ctx\)/)
   assert.match(tauriMainSource, /Failed to start file hook pipe service/)
   assert.match(tauriMainSource, /hook_pipe_service_started/)
-  assert.match(tauriMainSource, /pipeError=2/)
-  assert.match(tauriMainSource, /app\.manage\(Arc::new\(hook_service\)\)/)
+  // 管道启动失败必须留下可追查记录（诊断条目 + 带错误码的 stderr），
+  // 不能只是一行没人看的控制台输出。原断言写死了 pipeError=2 这个具体错误码，
+  // 锁的应该是"失败被记录"而不是"失败恰好是 2 号错误"。
+  //  A pipe start failure must leave a traceable record (diagnostic entry plus stderr carrying the
+  //  error), not just an unseen console line. The old assertion hardcoded error code 2; what
+  //  matters is that failures are recorded, not that the failure happens to be error 2.
+  assert.match(tauriMainSource, /"hook_pipe_service_failed"/)
+  assert.match(tauriMainSource, /"pipeError": e\.to_string\(\)/)
+  assert.match(tauriMainSource, /Failed to start file hook pipe service: pipeError=\{\}/)
+  // 同上：setup 里持有的是 app_handle，托管动作与语义不变
+  //  As above: setup holds app_handle; the managed state and its meaning are unchanged
+  assert.match(tauriMainSource, /app_handle\.manage\(Arc::new\(hook_service\)\)/)
 })
 
 test('New-process scanner starts before the full startup snapshot while APIHook remains after it', () => {
   const processScannerManageIndex = tauriMainSource.indexOf('let process_scanner = ProcessScannerService::new()')
   const scannerStartCallIndex = tauriMainSource.indexOf('start_runtime_process_scanner_before_snapshot(', processScannerManageIndex)
-  const snapshotTaskIndex = tauriMainSource.indexOf('let app_handle_snapshot = app.handle().clone()', processScannerManageIndex)
-  const takeSnapshotIndex = tauriMainSource.indexOf('.take_startup_snapshot(', snapshotTaskIndex)
+  // 快照任务的 AppHandle 变量已随 background_init 重构消失，
+  // 改用 take_startup_snapshot 本身作为锚点——真正要锁的是三者的先后顺序。
+  //  The snapshot task's AppHandle variable disappeared in the background_init refactor; anchor on
+  //  take_startup_snapshot itself, since the ordering is what actually matters.
+  const takeSnapshotIndex = tauriMainSource.indexOf('.take_startup_snapshot(', scannerStartCallIndex)
   const apiHookStartCallIndex = tauriMainSource.indexOf('start_apihook_process_watcher_after_snapshot(', takeSnapshotIndex)
 
   assert.notEqual(processScannerManageIndex, -1)
   assert.ok(scannerStartCallIndex > processScannerManageIndex)
-  assert.ok(snapshotTaskIndex > scannerStartCallIndex)
-  assert.ok(takeSnapshotIndex > snapshotTaskIndex)
+  assert.ok(takeSnapshotIndex > scannerStartCallIndex)
   assert.ok(apiHookStartCallIndex > takeSnapshotIndex)
   assert.match(tauriMainSource, /Process scanner started before startup snapshot/)
   assert.match(tauriMainSource, /APIHook process watcher started after startup snapshot/)
@@ -598,23 +631,29 @@ test('New-process scanner starts before the full startup snapshot while APIHook 
 })
 
 test('Quarantine table keeps status and action controls readable', () => {
-  assert.match(quarantinePageSource, /className="table-container"/)
-  assert.match(quarantinePageSource, /className="table-scroll"/)
-  assert.match(quarantinePageSource, /className="quarantine-status-cell"/)
-  assert.match(quarantinePageSource, /className="quarantine-actions"/)
-  assert.match(globalCssSource, /\.table-container/)
-  assert.match(globalCssSource, /min-width: 1120px/)
-  assert.match(globalCssSource, /\.quarantine-status-cell \.severity-badge/)
-  assert.match(globalCssSource, /white-space: nowrap/)
-  assert.match(globalCssSource, /\.quarantine-actions \.btn-sm/)
+  assert.match(quarantinePageSource, /<Table className=\{styles\.table\}>/)
+  assert.match(quarantinePageSource, /<TableHeader>/)
+  assert.match(quarantinePageSource, /<TableBody>/)
+  assert.match(quarantinePageSource, /<TableCell className=\{styles\.pathCell\}/)
+  assert.match(quarantinePageSource, /const getStatusBadge/)
+  assert.match(quarantinePageSource, /<Badge appearance="filled" color="danger">/)
+  assert.match(quarantinePageSource, /actionButtons:/)
+  assert.match(quarantinePageSource, /className=\{styles\.actionButtons\}/)
+  assert.match(quarantinePageSource, /tableContainer: \{[\s\S]*backgroundColor: tokens\.colorNeutralBackground1[\s\S]*boxShadow: tokens\.shadow4/)
+  assert.match(quarantinePageSource, /tableScroll: \{[\s\S]*maxHeight: '300px'/)
+  assert.match(quarantinePageSource, /table: \{[\s\S]*'& th': \{[\s\S]*shorthands\.padding\('10px', '16px'\)/)
+  assert.doesNotMatch(quarantinePageSource, /className="quarantine-actions"/)
+  assert.doesNotMatch(globalCssSource, /\.quarantine-actions/)
+  assert.match(quarantinePageSource, /whiteSpace: 'nowrap'/)
 })
 
-test('Quarantine confirmation dialog uses modal surface background', () => {
-  assert.match(quarantinePageSource, /className="modal-overlay"/)
-  assert.match(quarantinePageSource, /className="modal-body"/)
-  assert.doesNotMatch(quarantinePageSource, /className="modal-content"/)
-  assert.match(globalCssSource, /\.modal-surface/)
-  assert.match(globalCssSource, /background: var\(--acrylic-dark\)/)
-  assert.match(globalCssSource, /html\[data-theme="light"\] \.modal-surface/)
-  assert.match(globalCssSource, /\.quarantine-confirm-modal/)
+test('Quarantine confirmation dialog uses shared Fluent ConfirmDialog', () => {
+  assert.match(quarantinePageSource, /import \{ ConfirmDialog \} from '\.\/common\/ConfirmDialog'/)
+  assert.match(quarantinePageSource, /<ConfirmDialog[\s\S]*intent="warning"/)
+  assert.match(quarantinePageSource, /<ConfirmDialog[\s\S]*intent="danger"/)
+  assert.match(quarantinePageSource, /cancelText=\{t\('common_cancel'\)\}/)
+  assert.doesNotMatch(quarantinePageSource, /className="modal-overlay"/)
+  assert.doesNotMatch(quarantinePageSource, /className="modal-body"/)
+  assert.doesNotMatch(globalCssSource, /\.modal-surface/)
+  assert.doesNotMatch(globalCssSource, /\.quarantine-confirm-modal/)
 })

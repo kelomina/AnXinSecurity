@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="下载安芯安全 AnXin Security：前往 GitHub Releases 获取 v1.0.0 NSIS 安装包（Windows 10/11 x64），或使用 Node.js ≥ 18 与 Rust 工具链从源码构建，附常见问题排查。" />
+  <meta name="theme-color" content="#f5f5f5" />
+  <meta property="og:title" content="下载安装 — 安芯安全 AnXin Security" />
+  <meta property="og:description" content="从 GitHub Releases 获取 NSIS 安装包，或从源码构建：npm install + npm run dev 即可启动开发模式。MIT 开源。" />
+  <meta property="og:type" content="website" />
+  <title>下载安装 — 安芯安全 AnXin Security</title>
+  <link rel="icon" type="image/x-icon" href="assets/img/favicon.ico" />
+  <link rel="stylesheet" href="assets/css/tokens.css" />
+  <link rel="stylesheet" href="assets/css/site.css" />
+</head>
+<body data-animations="on">
+
+  <!-- ==================== 图标库（复用应用内「安芯」图标集路径） ==================== -->
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M8.5 11.6L11 14.1L15.5 9.4"/></symbol>
+    <symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M12 7.6V12.6"/><circle cx="12" cy="15.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M5.6 5.2L18.4 18"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><path d="M9 6.6H15L17.4 9V15L15 17.4H9L6.6 15V9Z"/><path d="M10.3 10.3H13.7V13.7H10.3Z"/><path d="M10.5 6.6V3.2"/><path d="M13.5 6.6V3.2"/><path d="M10.5 17.4V20.8"/><path d="M13.5 17.4V20.8"/><path d="M6.6 10.5H3.2"/><path d="M6.6 13.5H3.2"/><path d="M17.4 10.5H20.8"/><path d="M17.4 13.5H20.8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.7" cy="10.7" r="6.7"/><path d="M15.5 15.5L20.8 20.8"/></symbol>
+    <symbol id="i-file-search" viewBox="0 0 24 24"><path d="M12.4 3.2H6.2L4.8 4.6V17.4L6.2 18.8H9.6"/><path d="M12.4 3.2V7.6H16.8"/><path d="M16.8 7.6V11"/><circle cx="14.8" cy="15.2" r="3.7"/><path d="M17.4 17.8L20.6 21"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.4V15.4"/><path d="M6.9 10.3L12 15.4L17.1 10.3"/><path d="M4.2 17.6V19.4L5.6 20.8H18.4L19.8 19.4V17.6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.21 6.02L9.89 2.84H14.11L14.79 6.02L15.79 6.59L18.87 5.59L20.99 9.25L18.57 11.42V12.58L20.99 14.75L18.87 18.41L15.79 17.41L14.79 17.98L14.11 21.16H9.89L9.21 17.98L8.21 17.41L5.13 18.41L3.01 14.75L5.43 12.58V11.42L3.01 9.25L5.13 5.59L8.21 6.59Z"/><circle cx="12" cy="12" r="3.05"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><path d="M3.4 4.8L4.8 3.4H9.4L10.8 4.8V10.6L9.4 12H4.8L3.4 10.6Z"/><path d="M13.2 4.8L14.6 3.4H19.2L20.6 4.8V7L19.2 8.4H14.6L13.2 7Z"/><path d="M13.2 12.4L14.6 11H19.2L20.6 12.4V19.2L19.2 20.6H14.6L13.2 19.2Z"/><path d="M3.4 16L4.8 14.6H9.4L10.8 16V19.2L9.4 20.6H4.8L3.4 19.2Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.6 6.4H20.4"/><path d="M9.4 6.4V4.6L10.4 3.6H13.6L14.6 4.6V6.4"/><path d="M5.8 6.4V19.4L7.2 20.8H16.8L18.2 19.4V6.4"/><path d="M10.2 10.4V16.8"/><path d="M13.8 10.4V16.8"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.4 19.4V6.6L4.8 5.2H9.4L11.6 7.6H18.6L20 9V12.2"/><path d="M3.4 19.4L6.4 12.2H21.2L18.2 19.4Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M11.5 4.6H6L4.6 6V18L6 19.4H18L19.4 18V12.5"/><path d="M14.4 4.6H19.4V9.6"/><path d="M19.4 4.6L11.8 12.2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.6 12.6L9.6 17.6L19.4 6.4"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M7.9 12.4L10.9 15.4L16.3 9.3"/></symbol>
+    <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M12 3.4L21.4 19.8H2.6Z"/><path d="M12 9.6V13.8"/><circle cx="12" cy="17" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.3" cy="15.7" r="4.4"/><path d="M11.4 12.6L20.6 3.4"/><path d="M16.6 7.4L19 9.8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.6 5.1V18.9L19.4 12.6C19.9 12.3 19.9 11.7 19.4 11.4Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.6 4.6H10L11 5.6V18.4L10 19.4H8.6L7.6 18.4V5.6Z" fill="currentColor" stroke="none"/><path d="M14 4.6H15.4L16.4 5.6V18.4L15.4 19.4H14L13 18.4V5.6Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.2V11.8"/><path d="M6.9 6.4A7.9 7.9 0 1 0 17.1 6.4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M5.6 5.6L18.4 18.4"/><path d="M18.4 5.6L5.6 18.4"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M4.6 12H19.4"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><path d="M5.6 5.6H18.4V18.4H5.6Z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12H21"/><path d="M12 3A5.4 9 0 0 1 12 21"/><path d="M12 3A5.4 9 0 0 0 12 21"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.8"/><path d="M18.4 12H21.2"/><path d="M16.53 16.53L18.51 18.51"/><path d="M12 18.4V21.2"/><path d="M7.47 16.53L5.49 18.51"/><path d="M5.6 12H2.8"/><path d="M7.47 7.47L5.49 5.49"/><path d="M12 5.6V2.8"/><path d="M16.53 7.47L18.51 5.49"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.6A9 9 0 1 1 9.4 3.6A7.2 7.2 0 0 0 20.4 14.6Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><path d="M4.6 4.2H19.4L20.8 5.6V15.4L19.4 16.8H4.6L3.2 15.4V5.6Z"/><path d="M12 16.8V20.4"/><path d="M9.4 20.4H14.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3.4 12A8.6 8.6 0 0 1 17.9 5.7L20.6 8.2"/><path d="M20.6 3.6V8.5H15.7"/><path d="M20.6 12A8.6 8.6 0 0 1 6.1 18.3L3.4 15.8"/><path d="M3.4 20.4V15.5H8.3"/></symbol>
+    <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3.5 3.6V9.4H9.3"/><path d="M3.6 9.3A8.7 8.7 0 1 1 3.9 15.4"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6.6V12H16.4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11V16.4"/><circle cx="12" cy="7.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9.4L12 15.4L18 9.4"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4.6 7H19.4"/><path d="M4.6 12H19.4"/><path d="M4.6 17H19.4"/></symbol>
+    <symbol id="i-motion-off" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/><path d="M4.2 4.2L19.8 19.8"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.75 2.69 1.25 3.35.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.59.23 2.76.11 3.05.73.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.25 5.66.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.21.67.8.55A10.99 10.99 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">跳转到主要内容</a>
+  <div class="scroll-progress" data-progress></div>
+
+  <!-- ==================== 背景光效 ==================== -->
+  <div class="aurora" aria-hidden="true">
+    <div class="aurora__blob aurora__blob--a"></div>
+    <div class="aurora__blob aurora__blob--b"></div>
+    <div class="aurora__blob aurora__blob--c"></div>
+    <div class="aurora__blob aurora__blob--d"></div>
+    <div class="aurora__grid"></div>
+    <div class="aurora__noise"></div>
+    <div class="aurora__veil"></div>
+  </div>
+
+  <!-- ==================== 顶栏 ==================== -->
+  <header class="topbar" data-topbar>
+    <div class="wrap topbar__inner">
+      <a class="brand" href="index.html" aria-label="安芯安全 首页">
+        <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+        <span>
+          <span class="brand__name">安芯安全</span>
+          <span class="brand__sub">AnXin Security</span>
+        </span>
+      </a>
+
+      <nav class="nav" data-nav aria-label="主导航">
+        <a class="nav__link" href="index.html">首页</a>
+        <a class="nav__link" href="features.html">功能特性</a>
+        <a class="nav__link" href="demo.html">功能演示</a>
+        <a class="nav__link is-active" href="download.html" aria-current="page">下载安装</a>
+        <a class="nav__link" href="opensource.html">开源与许可</a>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="icon-btn" type="button" data-theme-btn>
+          <svg class="icon-btn__glyph is-shown" data-theme-glyph="system" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="light" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="dark" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
+        </button>
+        <button class="icon-btn" type="button" data-motion-btn aria-pressed="true">
+          <svg class="icon-btn__glyph is-shown" data-motion-glyph="on" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>
+          <svg class="icon-btn__glyph" data-motion-glyph="off" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion-off"/></svg>
+        </button>
+        <a class="icon-btn" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener" title="GitHub 仓库" aria-label="GitHub 仓库">
+          <svg width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+        </a>
+        <a class="btn btn--primary" href="download.html">
+          <svg class="btn__icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+          免费下载
+        </a>
+        <button class="icon-btn nav-toggle" type="button" data-drawer-btn aria-expanded="false" aria-controls="drawer" aria-label="打开导航菜单">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-menu"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 移动端抽屉 -->
+  <nav class="drawer" id="drawer" data-drawer aria-hidden="true" aria-label="移动端导航">
+    <a class="drawer__link" href="index.html">首页</a>
+    <a class="drawer__link" href="features.html">功能特性</a>
+    <a class="drawer__link" href="demo.html">功能演示</a>
+    <a class="drawer__link is-active" href="download.html" aria-current="page">下载安装</a>
+    <a class="drawer__link" href="opensource.html">开源与许可</a>
+    <a class="drawer__link" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-external"/></svg>
+    </a>
+  </nav>
+
+  <main class="page" id="main">
+
+    <!-- ==================== 页头 ==================== -->
+    <section class="pagehero">
+      <div class="wrap">
+        <nav class="breadcrumb" aria-label="面包屑" data-reveal="fade">
+          <a href="index.html">首页</a>
+          <span aria-hidden="true">›</span>
+          <span>下载安装</span>
+        </nav>
+        <h1 class="pagehero__title" data-reveal="up">下载<span class="gradient-text">安装</span></h1>
+        <p class="pagehero__lead" data-reveal="up">
+          两种方式把安芯安全（AnXin Security）装进你的 Windows：直接下载开箱即用的
+          <strong>NSIS 安装包</strong>，或者用 Node.js 与 Rust 工具链<strong>从源码构建</strong>属于你的版本。
+          本页还整理了开发环境搭建步骤与常见问题排查（Troubleshooting）。
+        </p>
+        <div class="badgerow" data-reveal="up">
+          <span class="chip chip--brand"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>v1.0.0</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>Windows 10 / 11 · x64</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>NSIS 安装包</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="none"><use href="#i-github"/></svg>MIT 开源</span>
+        </div>
+        <nav class="toc" aria-label="页内导航" data-reveal="up">
+          <a href="#get"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>获取安装包</a>
+          <a href="#requirements"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>环境要求</a>
+          <a href="#dev"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-settings"/></svg>开发环境搭建</a>
+          <a href="#build"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>生产构建</a>
+          <a href="#faq"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>问题排查</a>
+        </nav>
+      </div>
+    </section>
+
+    <!-- ==================== 获取安装包 ==================== -->
+    <section class="section section--tight" id="get">
+      <div class="wrap">
+        <div class="cta" data-reveal="scale">
+          <h2 class="cta__title">从 GitHub Releases 获取<span class="gradient-text">安装包</span></h2>
+          <p class="cta__desc">
+            前往仓库的 Releases 页面，下载形如
+            <span class="mono">AnXinSecurity_1.0.0_x64-setup.exe</span>
+            的 NSIS 安装包，双击安装即可；也可以直接浏览源码自行构建。
+          </p>
+          <div class="cta__actions">
+            <a class="btn btn--primary btn--lg" href="https://github.com/kelomina/AnXinSecurity/releases" target="_blank" rel="noopener">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+              前往 GitHub Releases
+            </a>
+            <a class="btn btn--secondary btn--lg" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+              浏览源码
+            </a>
+          </div>
+        </div>
+        <div class="note" data-reveal="up" style="margin-top:20px">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+          <span><strong>提示</strong>：ETW 行为监控与进程拦截等防护能力，建议<strong>以管理员身份运行</strong>应用以发挥完整效果。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 环境要求 ==================== -->
+    <section class="section section--alt" id="requirements">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>环境要求</span>
+          <h2 class="section__title">安装前先确认环境<span class="en">Requirements</span></h2>
+          <p class="section__desc">直接安装只需系统满足运行要求；想从源码构建，再准备一套前端与 Rust 构建工具链。</p>
+        </div>
+        <div class="stackgrid">
+          <div class="card card--pad card--lift glow" data-reveal="up">
+            <div class="note-card__title">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>
+              运行要求 · Runtime
+            </div>
+            <p class="note-card__desc">下载安装包直接使用时，只需要：</p>
+            <ul class="note-card__list">
+              <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>Windows 10 / 11 操作系统（x64）</span></li>
+              <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>WebView2 运行时（Windows 10/11 已内置，无需单独安装）</span></li>
+            </ul>
+          </div>
+          <div class="card card--pad card--lift glow" data-reveal="up">
+            <div class="note-card__title">
+              <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-settings"/></svg>
+              从源码构建要求 · Build from Source
+            </div>
+            <p class="note-card__desc">参与开发或自行构建安装包时，还需要：</p>
+            <ul class="note-card__list">
+              <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>Node.js ≥ 18</span></li>
+              <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>Rust 工具链（rustc ≥ 1.95，cargo ≥ 1.95）</span></li>
+              <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>Visual Studio 2019+ Build Tools（C++ 开发工作负载）</span></li>
+              <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>WebView2（Windows 10/11 已内置）</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 开发环境搭建 ==================== -->
+    <section class="section" id="dev">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>开发环境</span>
+          <h2 class="section__title">三步搭好开发环境<span class="en">Dev Setup</span></h2>
+          <p class="section__desc">克隆、安装、启动——每一步的命令都可以一键复制到终端执行。</p>
+        </div>
+        <div class="steps">
+          <div class="step" data-reveal="up">
+            <span class="step__num">1</span>
+            <div>
+              <h3 class="step__title">克隆项目</h3>
+              <p class="step__desc">从 GitHub 拉取仓库并进入项目目录。</p>
+              <div class="code">
+                <div class="code__head">
+                  <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-folder"/></svg>bash</span>
+                  <button class="copy-btn" type="button" data-copy="#code-clone" aria-label="复制克隆命令"><span data-copy-label>复制</span></button>
+                </div>
+                <pre class="code__body" id="code-clone">git clone https://github.com/kelomina/AnXinSecurity.git
+cd AnXinSecurity</pre>
+              </div>
+            </div>
+          </div>
+          <div class="step" data-reveal="up">
+            <span class="step__num">2</span>
+            <div>
+              <h3 class="step__title">安装依赖</h3>
+              <p class="step__desc">使用 npm 安装前端与 Tauri CLI 依赖。</p>
+              <div class="code">
+                <div class="code__head">
+                  <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-folder"/></svg>bash</span>
+                  <button class="copy-btn" type="button" data-copy="#code-install" aria-label="复制安装命令"><span data-copy-label>复制</span></button>
+                </div>
+                <pre class="code__body" id="code-install">npm install</pre>
+              </div>
+            </div>
+          </div>
+          <div class="step" data-reveal="up">
+            <span class="step__num">3</span>
+            <div>
+              <h3 class="step__title">启动开发模式</h3>
+              <p class="step__desc">启动完整开发模式（前端 + Tauri），编译完成后会自动打开应用窗口。</p>
+              <div class="code">
+                <div class="code__head">
+                  <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-folder"/></svg>bash</span>
+                  <button class="copy-btn" type="button" data-copy="#code-dev" aria-label="复制启动命令"><span data-copy-label>复制</span></button>
+                </div>
+                <pre class="code__body" id="code-dev">npm run dev</pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="note" data-reveal="up" style="margin-top:24px">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+          <span><strong>首次启动</strong>会先启动 Vite 开发服务器（端口 <span class="mono">1421</span>），再编译 Rust 后端（首次约 <strong>5-10 分钟</strong>），最后打开 Tauri 应用窗口。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 生产构建 ==================== -->
+    <section class="section section--alt" id="build">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>生产构建</span>
+          <h2 class="section__title">一条命令，产出安装包<span class="en">Production Build</span></h2>
+          <p class="section__desc">构建生产版本（前端 + 安装包），生成的 NSIS 安装包位于 <span class="mono">src-tauri/target/release/bundle/nsis/AnXinSecurity_1.0.0_x64-setup.exe</span>。</p>
+        </div>
+        <div class="code" data-reveal="up">
+          <div class="code__head">
+            <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>bash</span>
+            <button class="copy-btn" type="button" data-copy="#code-build" aria-label="复制构建命令"><span data-copy-label>复制</span></button>
+          </div>
+          <pre class="code__body" id="code-build">npm run build</pre>
+        </div>
+        <h3 class="step__title" data-reveal="up" style="margin-top:32px">可用命令 <span class="muted">Available Commands</span></h3>
+        <div class="tablewrap" data-reveal="up" style="margin-top:16px">
+          <table class="dtable">
+            <thead>
+              <tr><th>命令</th><th>说明</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><span class="mono">npm run dev</span></td><td>启动完整开发模式（前端 + Tauri）</td></tr>
+              <tr><td><span class="mono">npm run dev:frontend</span></td><td>仅启动前端开发服务器</td></tr>
+              <tr><td><span class="mono">npm run build</span></td><td>构建生产版本（前端 + 安装包）</td></tr>
+              <tr><td><span class="mono">npm run build:frontend</span></td><td>仅构建前端</td></tr>
+              <tr><td><span class="mono">npm run test</span></td><td>运行 Node.js 测试</td></tr>
+              <tr><td><span class="mono">npm run typecheck</span></td><td>TypeScript 类型检查</td></tr>
+              <tr><td><span class="mono">npm run lint</span></td><td>ESLint 代码检查</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 快速问题排查 ==================== -->
+    <section class="section" id="faq">
+      <div class="wrap wrap--narrow">
+        <div class="section__head section__head--center" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>快速问题排查</span>
+          <h2 class="section__title">遇到问题？先看这里<span class="en">Troubleshooting</span></h2>
+        </div>
+        <div class="faq">
+          <div class="faq__item" data-reveal="up">
+            <button class="faq__q" type="button" data-faq-q aria-expanded="false">
+              编译卡在 &quot;Updating crates.io index&quot;？
+              <svg class="faq__chevron" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chevron-down"/></svg>
+            </button>
+            <div class="faq__a"><div><div class="faq__body">
+              <p>网络访问 crates.io 缓慢时，可以配置 Cargo 国内镜像源（写入 <code>~/.cargo/config.toml</code>）：</p>
+              <div class="code">
+                <div class="code__head">
+                  <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-settings"/></svg>~/.cargo/config.toml</span>
+                  <button class="copy-btn" type="button" data-copy="#code-mirror" aria-label="复制镜像配置"><span data-copy-label>复制</span></button>
+                </div>
+                <pre class="code__body" id="code-mirror">[source.crates-io]
+replace-with = 'tuna'
+[source.tuna]
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
+[http]
+check-revoke = false</pre>
+              </div>
+            </div></div></div>
+          </div>
+          <div class="faq__item" data-reveal="up">
+            <button class="faq__q" type="button" data-faq-q aria-expanded="false">
+              端口 1421 被占用怎么办？
+              <svg class="faq__chevron" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chevron-down"/></svg>
+            </button>
+            <div class="faq__a"><div><div class="faq__body">
+              <p>Vite 开发服务器默认使用端口 <code>1421</code>。先找到占用端口的进程 PID，再结束它：</p>
+              <div class="code">
+                <div class="code__head">
+                  <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>cmd</span>
+                  <button class="copy-btn" type="button" data-copy="#code-port" aria-label="复制端口排查命令"><span data-copy-label>复制</span></button>
+                </div>
+                <pre class="code__body" id="code-port">netstat -ano | findstr :1421
+taskkill /F /PID &lt;PID&gt;</pre>
+              </div>
+            </div></div></div>
+          </div>
+          <div class="faq__item" data-reveal="up">
+            <button class="faq__q" type="button" data-faq-q aria-expanded="false">
+              出现 &quot;DLL not found&quot; 错误？
+              <svg class="faq__chevron" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chevron-down"/></svg>
+            </button>
+            <div class="faq__a"><div><div class="faq__body">
+              <p>按以下三项逐一检查：</p>
+              <ul class="note-card__list">
+                <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>检查 <code>native/bin/win32-x64/</code> 目录是否存在</span></li>
+                <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>确保 DLL 未被杀毒软件隔离</span></li>
+                <li><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg><span>以管理员身份运行应用</span></li>
+              </ul>
+            </div></div></div>
+          </div>
+          <div class="faq__item" data-reveal="up">
+            <button class="faq__q" type="button" data-faq-q aria-expanded="false">
+              遇到 Rust 编译错误？
+              <svg class="faq__chevron" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chevron-down"/></svg>
+            </button>
+            <div class="faq__a"><div><div class="faq__body">
+              <p>清理构建缓存后重新编译，通常可以解决大多数增量编译异常：</p>
+              <div class="code">
+                <div class="code__head">
+                  <span class="code__title"><svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>bash</span>
+                  <button class="copy-btn" type="button" data-copy="#code-clean" aria-label="复制清理重编命令"><span data-copy-label>复制</span></button>
+                </div>
+                <pre class="code__body" id="code-clean">cd src-tauri
+cargo clean
+cargo build</pre>
+              </div>
+            </div></div></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 行动区 ==================== -->
+    <section class="section section--tight">
+      <div class="wrap">
+        <div class="cta" data-reveal="scale">
+          <h2 class="cta__title">装好了？去看看它的<span class="gradient-text">全部能力</span></h2>
+          <p class="cta__desc">双引擎扫描、ETW 行为监控、实时拦截与加密隔离——功能特性页带你逐一了解；也欢迎在 GitHub 提交 Issue 或 PR 参与开发。</p>
+          <div class="cta__actions">
+            <a class="btn btn--primary btn--lg" href="features.html">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-check"/></svg>
+              了解功能特性
+            </a>
+            <a class="btn btn--secondary btn--lg" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+              Star on GitHub
+            </a>
+            <a class="btn btn--subtle btn--lg" href="opensource.html">开源与许可 →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 页脚 ==================== -->
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer__grid">
+          <div>
+            <a class="brand" href="index.html">
+              <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+              <span>
+                <span class="brand__name">安芯安全</span>
+                <span class="brand__sub">AnXin Security</span>
+              </span>
+            </a>
+            <p class="footer__about">基于 Tauri 2.0 的 Windows 安全防护桌面应用，提供实时文件扫描、ETW 行为监控和威胁防护功能。以 Fluent 2 设计语言呈现。</p>
+          </div>
+          <div class="footer__col">
+            <h3>产品</h3>
+            <ul>
+              <li><a href="features.html">功能特性</a></li>
+              <li><a href="features.html#architecture">技术架构</a></li>
+              <li><a href="download.html">下载安装</a></li>
+              <li><a href="download.html#faq">问题排查</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>资源</h3>
+            <ul>
+              <li><a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub 仓库</a></li>
+              <li><a href="https://github.com/kelomina/AnXinSecurity/issues" target="_blank" rel="noopener">问题反馈</a></li>
+              <li><a href="https://github.com/kelomina/Axon_ML" target="_blank" rel="noopener">Axon ML 引擎</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>开源</h3>
+            <ul>
+              <li><a href="opensource.html">开源组件</a></li>
+              <li><a href="opensource.html#license">MIT 许可证</a></li>
+              <li><a href="opensource.html#thirdparty">第三方声明</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer__bottom">
+          <span>© <span data-year>2026</span> AnXin Security Team · 基于 MIT 许可证开源</span>
+          <span class="footer__legal">
+            <a href="opensource.html#license">许可证</a>
+            <a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">源代码</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <script src="assets/js/site.js"></script>
+</body>
+</html>

@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="30 秒动态功能演示：以 1:1 复刻的实际软件界面，完整展示安芯安全从启动快照、双引擎扫描、威胁拦截到加密隔离的防护闭环。" />
+  <meta name="theme-color" content="#f5f5f5" />
+  <meta property="og:title" content="功能演示 — 安芯安全 AnXin Security" />
+  <meta property="og:description" content="30 秒看完全部防线：启动快照 · 双引擎扫描 · 威胁拦截 · 加密隔离 · EDR 行为监控。" />
+  <meta property="og:type" content="website" />
+  <title>功能演示 — 安芯安全 AnXin Security</title>
+  <link rel="icon" type="image/x-icon" href="assets/img/favicon.ico" />
+  <link rel="stylesheet" href="assets/css/tokens.css" />
+  <link rel="stylesheet" href="assets/css/site.css" />
+  <link rel="stylesheet" href="assets/css/demo.css" />
+</head>
+<body data-animations="on">
+
+  <!-- ==================== 图标库（复用应用内「安芯」图标集路径） ==================== -->
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M8.5 11.6L11 14.1L15.5 9.4"/></symbol>
+    <symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M12 7.6V12.6"/><circle cx="12" cy="15.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M5.6 5.2L18.4 18"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><path d="M9 6.6H15L17.4 9V15L15 17.4H9L6.6 15V9Z"/><path d="M10.3 10.3H13.7V13.7H10.3Z"/><path d="M10.5 6.6V3.2"/><path d="M13.5 6.6V3.2"/><path d="M10.5 17.4V20.8"/><path d="M13.5 17.4V20.8"/><path d="M6.6 10.5H3.2"/><path d="M6.6 13.5H3.2"/><path d="M17.4 10.5H20.8"/><path d="M17.4 13.5H20.8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.7" cy="10.7" r="6.7"/><path d="M15.5 15.5L20.8 20.8"/></symbol>
+    <symbol id="i-file-search" viewBox="0 0 24 24"><path d="M12.4 3.2H6.2L4.8 4.6V17.4L6.2 18.8H9.6"/><path d="M12.4 3.2V7.6H16.8"/><path d="M16.8 7.6V11"/><circle cx="14.8" cy="15.2" r="3.7"/><path d="M17.4 17.8L20.6 21"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.4V15.4"/><path d="M6.9 10.3L12 15.4L17.1 10.3"/><path d="M4.2 17.6V19.4L5.6 20.8H18.4L19.8 19.4V17.6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.21 6.02L9.89 2.84H14.11L14.79 6.02L15.79 6.59L18.87 5.59L20.99 9.25L18.57 11.42V12.58L20.99 14.75L18.87 18.41L15.79 17.41L14.79 17.98L14.11 21.16H9.89L9.21 17.98L8.21 17.41L5.13 18.41L3.01 14.75L5.43 12.58V11.42L3.01 9.25L5.13 5.59L8.21 6.59Z"/><circle cx="12" cy="12" r="3.05"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><path d="M3.4 4.8L4.8 3.4H9.4L10.8 4.8V10.6L9.4 12H4.8L3.4 10.6Z"/><path d="M13.2 4.8L14.6 3.4H19.2L20.6 4.8V7L19.2 8.4H14.6L13.2 7Z"/><path d="M13.2 12.4L14.6 11H19.2L20.6 12.4V19.2L19.2 20.6H14.6L13.2 19.2Z"/><path d="M3.4 16L4.8 14.6H9.4L10.8 16V19.2L9.4 20.6H4.8L3.4 19.2Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.6 6.4H20.4"/><path d="M9.4 6.4V4.6L10.4 3.6H13.6L14.6 4.6V6.4"/><path d="M5.8 6.4V19.4L7.2 20.8H16.8L18.2 19.4V6.4"/><path d="M10.2 10.4V16.8"/><path d="M13.8 10.4V16.8"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.4 19.4V6.6L4.8 5.2H9.4L11.6 7.6H18.6L20 9V12.2"/><path d="M3.4 19.4L6.4 12.2H21.2L18.2 19.4Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M11.5 4.6H6L4.6 6V18L6 19.4H18L19.4 18V12.5"/><path d="M14.4 4.6H19.4V9.6"/><path d="M19.4 4.6L11.8 12.2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.6 12.6L9.6 17.6L19.4 6.4"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M7.9 12.4L10.9 15.4L16.3 9.3"/></symbol>
+    <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M12 3.4L21.4 19.8H2.6Z"/><path d="M12 9.6V13.8"/><circle cx="12" cy="17" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.3" cy="15.7" r="4.4"/><path d="M11.4 12.6L20.6 3.4"/><path d="M16.6 7.4L19 9.8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.6 5.1V18.9L19.4 12.6C19.9 12.3 19.9 11.7 19.4 11.4Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.6 4.6H10L11 5.6V18.4L10 19.4H8.6L7.6 18.4V5.6Z" fill="currentColor" stroke="none"/><path d="M14 4.6H15.4L16.4 5.6V18.4L15.4 19.4H14L13 18.4V5.6Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.2V11.8"/><path d="M6.9 6.4A7.9 7.9 0 1 0 17.1 6.4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M5.6 5.6L18.4 18.4"/><path d="M18.4 5.6L5.6 18.4"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M4.6 12H19.4"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><path d="M5.6 5.6H18.4V18.4H5.6Z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12H21"/><path d="M12 3A5.4 9 0 0 1 12 21"/><path d="M12 3A5.4 9 0 0 0 12 21"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.8"/><path d="M18.4 12H21.2"/><path d="M16.53 16.53L18.51 18.51"/><path d="M12 18.4V21.2"/><path d="M7.47 16.53L5.49 18.51"/><path d="M5.6 12H2.8"/><path d="M7.47 7.47L5.49 5.49"/><path d="M12 5.6V2.8"/><path d="M16.53 7.47L18.51 5.49"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.6A9 9 0 1 1 9.4 3.6A7.2 7.2 0 0 0 20.4 14.6Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><path d="M4.6 4.2H19.4L20.8 5.6V15.4L19.4 16.8H4.6L3.2 15.4V5.6Z"/><path d="M12 16.8V20.4"/><path d="M9.4 20.4H14.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3.4 12A8.6 8.6 0 0 1 17.9 5.7L20.6 8.2"/><path d="M20.6 3.6V8.5H15.7"/><path d="M20.6 12A8.6 8.6 0 0 1 6.1 18.3L3.4 15.8"/><path d="M3.4 20.4V15.5H8.3"/></symbol>
+    <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3.5 3.6V9.4H9.3"/><path d="M3.6 9.3A8.7 8.7 0 1 1 3.9 15.4"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6.6V12H16.4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11V16.4"/><circle cx="12" cy="7.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9.4L12 15.4L18 9.4"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4.6 7H19.4"/><path d="M4.6 12H19.4"/><path d="M4.6 17H19.4"/></symbol>
+    <symbol id="i-motion-off" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/><path d="M4.2 4.2L19.8 19.8"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.75 2.69 1.25 3.35.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.59.23 2.76.11 3.05.73.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.25 5.66.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.21.67.8.55A10.99 10.99 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">跳转到主要内容</a>
+  <div class="scroll-progress" data-progress></div>
+
+  <!-- ==================== 背景光效 ==================== -->
+  <div class="aurora" aria-hidden="true">
+    <div class="aurora__blob aurora__blob--a"></div>
+    <div class="aurora__blob aurora__blob--b"></div>
+    <div class="aurora__blob aurora__blob--c"></div>
+    <div class="aurora__blob aurora__blob--d"></div>
+    <div class="aurora__grid"></div>
+    <div class="aurora__noise"></div>
+    <div class="aurora__veil"></div>
+  </div>
+
+  <!-- ==================== 顶栏 ==================== -->
+  <header class="topbar" data-topbar>
+    <div class="wrap topbar__inner">
+      <a class="brand" href="index.html" aria-label="安芯安全 首页">
+        <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+        <span>
+          <span class="brand__name">安芯安全</span>
+          <span class="brand__sub">AnXin Security</span>
+        </span>
+      </a>
+
+      <nav class="nav" data-nav aria-label="主导航">
+        <a class="nav__link" href="index.html">首页</a>
+        <a class="nav__link" href="features.html">功能特性</a>
+        <a class="nav__link is-active" href="demo.html" aria-current="page">功能演示</a>
+        <a class="nav__link" href="download.html">下载安装</a>
+        <a class="nav__link" href="opensource.html">开源与许可</a>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="icon-btn" type="button" data-theme-btn>
+          <svg class="icon-btn__glyph is-shown" data-theme-glyph="system" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="light" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="dark" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
+        </button>
+        <button class="icon-btn" type="button" data-motion-btn aria-pressed="true">
+          <svg class="icon-btn__glyph is-shown" data-motion-glyph="on" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>
+          <svg class="icon-btn__glyph" data-motion-glyph="off" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion-off"/></svg>
+        </button>
+        <a class="icon-btn" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener" title="GitHub 仓库" aria-label="GitHub 仓库">
+          <svg width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+        </a>
+        <a class="btn btn--primary" href="download.html">
+          <svg class="btn__icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+          免费下载
+        </a>
+        <button class="icon-btn nav-toggle" type="button" data-drawer-btn aria-expanded="false" aria-controls="drawer" aria-label="打开导航菜单">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-menu"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 移动端抽屉 -->
+  <nav class="drawer" id="drawer" data-drawer aria-hidden="true" aria-label="移动端导航">
+    <a class="drawer__link" href="index.html">首页</a>
+    <a class="drawer__link" href="features.html">功能特性</a>
+    <a class="drawer__link is-active" href="demo.html" aria-current="page">功能演示</a>
+    <a class="drawer__link" href="download.html">下载安装</a>
+    <a class="drawer__link" href="opensource.html">开源与许可</a>
+    <a class="drawer__link" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-external"/></svg>
+    </a>
+  </nav>
+
+  <main class="page" id="main">
+
+    <!-- ==================== 页头 ==================== -->
+    <section class="pagehero">
+      <div class="wrap">
+        <nav class="breadcrumb" aria-label="面包屑" data-reveal="fade">
+          <a href="index.html">首页</a>
+          <span aria-hidden="true">›</span>
+          <span>功能演示</span>
+        </nav>
+        <h1 class="pagehero__title" data-reveal="up">30 秒，看完<span class="gradient-text">全部防线</span></h1>
+        <p class="pagehero__lead" data-reveal="up">
+          下面的演示以 <strong>1:1 复刻的实际软件界面</strong>自动播放：从启动快照建立可信环境，
+          到双引擎扫描、威胁拦截弹窗、加密隔离与 EDR 行为监控——每一个页面、每一句文案，
+          都与真实应用完全一致。
+        </p>
+        <div class="badgerow" data-reveal="up">
+          <span class="chip chip--brand"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>实际界面 1:1 复刻</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>文案取自应用语言包</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-clock"/></svg>约 30 秒 · 可拖拽跳转</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 演示舞台 ==================== -->
+    <section class="section section--tight" id="player">
+      <div class="wrap">
+        <div class="demo-shell" data-demo data-reveal="scale">
+          <div class="demo-stagewrap">
+            <div class="demo-scaler" data-scaler>
+              <div class="demo-stage" data-stage aria-label="安芯安全功能演示动画">
+
+                <!-- ===== 应用窗口 ===== -->
+                <div class="dm-app" data-d="app">
+                  <div class="dm-titlebar">
+                    <span class="dm-titlebar__left">
+                      <img src="assets/img/favicon.ico" alt="" />
+                      <span class="dm-titlebar__text">AnXin Security</span>
+                    </span>
+                    <span class="dm-titlebar__right" aria-hidden="true">
+                      <span class="dm-cap"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-minus"/></svg></span>
+                      <span class="dm-cap"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"><use href="#i-square"/></svg></span>
+                      <span class="dm-cap"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-x"/></svg></span>
+                    </span>
+                  </div>
+                  <div class="dm-body">
+                    <aside class="dm-side">
+                      <span class="dm-nav is-active" data-d="nav-overview"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-layout"/></svg>概览</span>
+                      <span class="dm-nav" data-d="nav-scan"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-search"/></svg>扫描</span>
+                      <span class="dm-nav" data-d="nav-quarantine"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-alert"/></svg>隔离区</span>
+                      <span class="dm-nav" data-d="nav-behavior"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>进程监控</span>
+                      <span class="dm-nav" data-d="nav-settings"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-settings"/></svg>设置</span>
+                      <span class="dm-side__foot">v1.0.0</span>
+                    </aside>
+
+                    <div class="dm-main">
+                      <!-- 概览（OverviewPage） -->
+                      <section class="dm-page" data-d="page-overview">
+                        <h2 class="dm-page__title">系统安全概览</h2>
+                        <p class="dm-page__desc">开始一次快速检测。</p>
+                        <div class="dm-card dm-engine">
+                          <span class="dm-engine__status">
+                            <span class="dm-engine__dot"></span>
+                            <span>
+                              <span class="dm-engine__label">引擎运行正常</span><br/>
+                              <span class="dm-engine__sub">所有安全模块已启动</span>
+                            </span>
+                          </span>
+                          <span class="dm-engine__actions">
+                            <span class="dm-btn dm-btn--sm"><svg fill="none" stroke="currentColor" stroke-width="1.75"><use href="#i-pause"/></svg>暂停</span>
+                            <span class="dm-btn dm-btn--sm dm-btn--danger"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-power"/></svg>停止引擎</span>
+                          </span>
+                        </div>
+                        <div class="dm-metrics">
+                          <div class="dm-card dm-metric"><div class="dm-metric__label">扫描文件数</div><div class="dm-metric__value dm-metric__value--blue" data-d="m1">0</div></div>
+                          <div class="dm-card dm-metric"><div class="dm-metric__label">隔离项数</div><div class="dm-metric__value dm-metric__value--orange" data-d="m2">0</div></div>
+                          <div class="dm-card dm-metric"><div class="dm-metric__label">行为事件数</div><div class="dm-metric__value dm-metric__value--green" data-d="m3">0</div></div>
+                          <div class="dm-card dm-metric"><div class="dm-metric__label">风险事件数</div><div class="dm-metric__value dm-metric__value--red" data-d="m4">0</div></div>
+                        </div>
+                        <p class="dm-sectiontitle">最近日志</p>
+                        <div class="dm-card dm-logpanel">
+                          <div class="dm-logpanel__body" data-d="logbody"></div>
+                          <div class="dm-logpanel__foot">
+                            <span class="dm-btn dm-btn--sm dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>清除</span>
+                          </div>
+                        </div>
+                      </section>
+
+                      <!-- 扫描（ScanPage） -->
+                      <section class="dm-page" data-d="page-scan" hidden>
+                        <h2 class="dm-page__title">文件扫描</h2>
+                        <p class="dm-page__desc">Axon / Raven 双引擎 · 支持文件与进程内存扫描</p>
+                        <div class="dm-card dm-scan-controls" style="display:flex">
+                          <span class="dm-btn dm-btn--outline" data-d="btn-dir"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-folder"/></svg>选择目录</span>
+                          <span class="dm-btn dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-file-search"/></svg>选择文件</span>
+                          <span class="dm-btn dm-btn--primary" data-d="btn-start"><svg fill="none" stroke="currentColor" stroke-width="1.75"><use href="#i-play"/></svg>开始扫描</span>
+                        </div>
+                        <div class="dm-card dm-selected" data-d="sel-card" hidden>
+                          <div class="dm-selected__head">
+                            <span>已选择文件 (128)</span>
+                            <span class="dm-btn dm-btn--sm"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><use href="#i-x"/></svg>清除选择</span>
+                          </div>
+                          <div class="dm-filepath">C:\Users\demo\Downloads\setup_v2.1.exe</div>
+                          <div class="dm-filepath">C:\Users\demo\Downloads\invoice_scan.exe</div>
+                          <div class="dm-filepath">C:\Users\demo\AppData\Local\Temp\update_helper.dll</div>
+                          <div class="dm-filepath">...还有 125 个文件</div>
+                        </div>
+                        <div class="dm-card dm-progresscard" data-d="prog-card" hidden>
+                          <div class="dm-progresscard__head">
+                            <span>扫描进度</span>
+                            <span class="dm-progresscard__val"><span data-d="prog-pct">0</span>%</span>
+                          </div>
+                          <div class="dm-progressbar"><div class="dm-progressbar__fill" data-d="prog-fill"></div></div>
+                          <div class="dm-progresscard__helper" data-d="prog-file">正在初始化检测...</div>
+                        </div>
+                        <div class="dm-stats" data-d="stats" hidden>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">扫描文件</div><div class="dm-stat__value">128</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">发现威胁</div><div class="dm-stat__value dm-stat__value--threat">2</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">安全文件</div><div class="dm-stat__value dm-stat__value--clean">126</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">耗时</div><div class="dm-stat__value">6s</div></div>
+                        </div>
+                        <div class="dm-card dm-tablecard" data-d="threats" hidden>
+                          <div class="dm-tabletoolbar">
+                            <span class="dm-tabletoolbar__left">
+                              <svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert-triangle"/></svg>
+                              已检测到 2 个威胁
+                              <span class="dm-badge dm-badge--warning" data-d="sel-badge">已选 0</span>
+                            </span>
+                            <span class="dm-tabletoolbar__right">
+                              <span class="dm-btn dm-btn--sm dm-btn--danger" data-d="btn-clear"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>清除威胁</span>
+                              <span class="dm-btn dm-btn--sm"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-check"/></svg>添加信任</span>
+                            </span>
+                          </div>
+                          <table class="dm-table">
+                            <thead>
+                              <tr>
+                                <th style="width:34px"><span class="dm-checkbox" data-d="chk-all"><svg fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span></th>
+                                <th>文件路径</th><th>检测结果</th><th>威胁类型</th><th>严重程度</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              <tr>
+                                <td><span class="dm-checkbox" data-d="chk-1"><svg fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span></td>
+                                <td class="dm-filepath">C:\Users\demo\Downloads\invoice_scan.exe</td>
+                                <td><span class="dm-badge dm-badge--danger">MALWARE</span></td>
+                                <td>Trojan.Win32.Generic</td>
+                                <td><span class="dm-badge dm-badge--danger">严重</span></td>
+                              </tr>
+                              <tr>
+                                <td><span class="dm-checkbox" data-d="chk-2"><svg fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg></span></td>
+                                <td class="dm-filepath">C:\Users\demo\AppData\Local\Temp\update_helper.dll</td>
+                                <td><span class="dm-badge dm-badge--warning">SUSPICIOUS</span></td>
+                                <td>Suspicious.Packer</td>
+                                <td><span class="dm-badge dm-badge--warning">高</span></td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+
+                      <!-- 隔离区（QuarantinePage） -->
+                      <section class="dm-page" data-d="page-quarantine" hidden>
+                        <h2 class="dm-page__title">隔离区</h2>
+                        <p class="dm-page__desc">以下文件已被加密隔离，无法运行。如果确认文件安全，可以将其恢复。</p>
+                        <div class="dm-infocards">
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">总大小</div><div class="dm-stat__value" data-d="q-size">12 KB</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">总记录数</div><div class="dm-stat__value" data-d="q-count">1</div></div>
+                        </div>
+                        <div class="dm-card dm-tablecard">
+                          <div class="dm-tabletoolbar">
+                            <span class="dm-tabletoolbar__right">
+                              <span class="dm-btn dm-btn--sm"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-refresh"/></svg>刷新</span>
+                              <span class="dm-btn dm-btn--sm dm-btn--outline">全部<svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-chevron-down"/></svg></span>
+                            </span>
+                            <span class="dm-tabletoolbar__right">
+                              <span class="dm-btn dm-btn--sm dm-btn--outline">批量删除 (0)</span>
+                            </span>
+                          </div>
+                          <table class="dm-table">
+                            <thead>
+                              <tr><th>文件名</th><th>原始路径</th><th>威胁类型</th><th>状态</th><th>操作</th></tr>
+                            </thead>
+                            <tbody>
+                              <tr data-d="q-row-2" hidden>
+                                <td><strong>invoice_scan.exe</strong></td>
+                                <td class="dm-filepath">C:\Users\demo\Downloads</td>
+                                <td><span class="dm-badge dm-badge--warning">Trojan.Win32.Generic</span></td>
+                                <td><span class="dm-badge dm-badge--brand">隔离中</span></td>
+                                <td>
+                                  <span class="dm-btn dm-btn--sm dm-btn--outline" data-d="q-restore"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-rotate-ccw"/></svg>恢复</span>
+                                  <span class="dm-btn dm-btn--sm dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>删除</span>
+                                </td>
+                              </tr>
+                              <tr data-d="q-row-3" hidden>
+                                <td><strong>stage2.exe</strong></td>
+                                <td class="dm-filepath">C:\Temp</td>
+                                <td><span class="dm-badge dm-badge--warning">Suspicious.Dropper</span></td>
+                                <td><span class="dm-badge dm-badge--brand">隔离中</span></td>
+                                <td>
+                                  <span class="dm-btn dm-btn--sm dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-rotate-ccw"/></svg>恢复</span>
+                                  <span class="dm-btn dm-btn--sm dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>删除</span>
+                                </td>
+                              </tr>
+                              <tr>
+                                <td><strong>autorun_x.bat</strong></td>
+                                <td class="dm-filepath">D:\usb_backup</td>
+                                <td><span class="dm-badge dm-badge--warning">Trojan.Generic</span></td>
+                                <td><span class="dm-badge dm-badge--brand">隔离中</span></td>
+                                <td>
+                                  <span class="dm-btn dm-btn--sm dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-rotate-ccw"/></svg>恢复</span>
+                                  <span class="dm-btn dm-btn--sm dm-btn--outline"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-trash"/></svg>删除</span>
+                                </td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </section>
+
+                      <!-- 进程监控（BehaviorPage · EDR） -->
+                      <section class="dm-page" data-d="page-behavior" hidden>
+                        <h2 class="dm-page__title">EDR 行为监控</h2>
+                        <p class="dm-page__desc">按 PID 查看被 ETW 捕获到的进程行为，点击行可查看详情。</p>
+                        <div class="dm-behavior-stats">
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">总计</div><div class="dm-stat__value" data-d="b-total">0</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">进程</div><div class="dm-stat__value" data-d="b-proc">0</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">文件</div><div class="dm-stat__value" data-d="b-file">0</div></div>
+                          <div class="dm-card dm-stat"><div class="dm-stat__label">注册表</div><div class="dm-stat__value" data-d="b-reg">0</div></div>
+                        </div>
+                        <div class="dm-card dm-tablecard">
+                          <div class="dm-eventflow__head">
+                            <span>实时事件流</span>
+                            <span class="dm-eventflow__count" data-d="b-count">已显示 0 条</span>
+                          </div>
+                          <table class="dm-table">
+                            <thead>
+                              <tr><th>时间</th><th>来源</th><th>操作</th><th>目标</th></tr>
+                            </thead>
+                            <tbody data-d="b-events"></tbody>
+                          </table>
+                        </div>
+                      </section>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ===== 拦截弹窗（InterceptionModal · 高危） ===== -->
+                <div class="dm-dim" data-d="dim"></div>
+                <div class="dm-modal" data-d="modal" role="img" aria-label="威胁拦截弹窗示意">
+                  <div class="dm-modal__strip"></div>
+                  <div class="dm-modal__inner">
+                    <div class="dm-modal__head">
+                      <span class="dm-modal__icon"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-off"/></svg></span>
+                      <span>
+                        <span class="dm-modal__eyebrow">安全拦截警报</span>
+                        <h3 class="dm-modal__title">威胁拦截</h3>
+                      </span>
+                      <span class="dm-modal__countdown">
+                        默认 · 阻止进程
+                        <span class="dm-modal__countdown-time" data-d="cd-time">5s</span>
+                      </span>
+                    </div>
+                    <p class="dm-modal__msg">检测到进程加载了未签名的 DLL，已暂停该进程。</p>
+                    <div class="dm-modal__panel">
+                      <span class="dm-modal__row"><span class="dm-modal__label">PID：</span><span class="dm-modal__value">7412</span></span>
+                      <span class="dm-modal__row"><span class="dm-modal__label">进程：</span><span class="dm-modal__value">stage2.exe</span></span>
+                      <span class="dm-modal__row"><span class="dm-modal__label">路径：</span><span class="dm-modal__value">C:\Temp\stage2.exe</span></span>
+                      <span class="dm-modal__row"><span class="dm-modal__label">规则：</span><span class="dm-modal__value">未签名 DLL（启动快照）</span></span>
+                      <span class="dm-modal__risk"><svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-alert-triangle"/></svg>高</span>
+                    </div>
+                    <div class="dm-modal__timeout">
+                      <div class="dm-progressbar"><div class="dm-progressbar__fill" data-d="cd-bar" style="transform:scaleX(1)"></div></div>
+                    </div>
+                    <div class="dm-modal__actions">
+                      <span class="dm-btn dm-btn--outline">允许运行</span>
+                      <span class="dm-btn dm-btn--danger" data-d="btn-block">阻止进程</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ===== Toast ===== -->
+                <div class="dm-toast" data-d="toast">
+                  <svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg>
+                  已清除 2 个威胁
+                </div>
+
+                <!-- ===== 启动页（SplashScreen） ===== -->
+                <div class="dm-splash" data-d="splash">
+                  <div class="dm-splash__panel">
+                    <div class="dm-splash__brand">
+                      <img src="assets/img/favicon.ico" alt="" />
+                      <span>
+                        <span class="dm-splash__eyebrow">启动防护</span><br/>
+                        <span class="dm-splash__title">正在建立可信环境</span>
+                      </span>
+                    </div>
+                    <div class="dm-splash__progress-label">
+                      <span>初始化进度</span>
+                      <span data-d="splash-pct">0%</span>
+                    </div>
+                    <div class="dm-progressbar"><div class="dm-progressbar__fill" data-d="splash-bar"></div></div>
+                    <div class="dm-splash__phases" data-d="splash-phases">
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>加载安全配置<span class="dm-phase__status">等待</span></div>
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>初始化界面<span class="dm-phase__status">等待</span></div>
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>加载语言资源<span class="dm-phase__status">等待</span></div>
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>接入事件通道<span class="dm-phase__status">等待</span></div>
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>启动新增进程防护<span class="dm-phase__status">等待</span></div>
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>建立可信环境<span class="dm-phase__status">等待</span></div>
+                      <div class="dm-phase"><span class="dm-phase__dot"></span>进入主界面<span class="dm-phase__status">等待</span></div>
+                    </div>
+                    <div class="dm-splash__meta">
+                      <span data-d="snap-count">等待启动快照进度</span>
+                      <span>未完成检查不会被标记为可信</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ===== 收尾卡 ===== -->
+                <div class="dm-endcard" data-d="end">
+                  <div>
+                    <img src="assets/img/favicon.ico" alt="" />
+                    <div class="dm-endcard__name">安芯安全 <span class="muted">AnXin Security</span></div>
+                    <div class="dm-endcard__slogan">轻盈桌面体验，硬核安全防护。</div>
+                    <div class="dm-endcard__chips">
+                      <span class="chip chip--brand">双引擎扫描</span>
+                      <span class="chip chip--brand">ETW 行为监控</span>
+                      <span class="chip chip--brand">实时拦截</span>
+                      <span class="chip chip--brand">加密隔离</span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- ===== 模拟指针 ===== -->
+                <div class="dm-cursor" data-d="cursor" aria-hidden="true">
+                  <svg viewBox="0 0 24 24"><path d="M5 3L19 12L12 13.6L15.6 20.4L12.9 21.8L9.3 15L5 18Z" fill="#ffffff" stroke="#1a1a1a" stroke-width="1.4" stroke-linejoin="round"/></svg>
+                </div>
+              </div>
+
+              <!-- 播放覆盖层 -->
+              <button class="demo-poster" type="button" data-poster aria-label="播放功能演示">
+                <span class="demo-poster__btn">
+                  <svg fill="none" stroke="none"><use href="#i-play"/></svg>
+                </span>
+                <span class="demo-poster__hint" data-poster-hint>播放 30 秒功能演示</span>
+              </button>
+            </div>
+
+            <!-- 字幕 -->
+            <div class="demo-caption" data-caption aria-live="polite">
+              <span class="demo-caption__num" data-caption-num>1</span>
+              <span class="demo-caption__text" data-caption-text>启动快照 · 建立可信环境</span>
+            </div>
+          </div>
+
+          <!-- 控制条 -->
+          <div class="demo-controls">
+            <button class="demo-ctl" type="button" data-play aria-label="播放演示">
+              <svg data-glyph="play" class="is-shown" fill="none" stroke="none"><use href="#i-play"/></svg>
+              <svg data-glyph="pause" fill="none" stroke="none"><use href="#i-pause"/></svg>
+            </button>
+            <button class="demo-ctl" type="button" data-replay aria-label="重播演示">
+              <svg fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-rotate-ccw"/></svg>
+            </button>
+            <div class="demo-track" data-track aria-label="演示进度">
+              <div class="demo-track__rail"><div class="demo-track__fill" data-track-fill></div></div>
+            </div>
+            <span class="demo-time" data-time>00:00 / 00:31</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 章节亮点 ==================== -->
+    <section class="section" id="chapters">
+      <div class="wrap">
+        <div class="section__head section__head--center" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>分章速览</span>
+          <h2 class="section__title">七个章节，点击即达<span class="en">Chapters</span></h2>
+          <p class="section__desc">每张卡片对应演示中的一个章节，点击可直接跳转到对应片段播放。</p>
+        </div>
+        <div class="demo-chapters">
+          <button class="demo-chapter" type="button" data-chapter="0" data-reveal="up">
+            <span class="demo-chapter__num">1</span>
+            <span>
+              <span class="demo-chapter__title">启动快照 · 建立可信环境</span>
+              <span class="demo-chapter__desc">开机即核查运行中的进程与关键模块，未完成检查不会被标记为可信。</span>
+              <span class="demo-chapter__time">00:00</span>
+            </span>
+          </button>
+          <button class="demo-chapter" type="button" data-chapter="1" data-reveal="up">
+            <span class="demo-chapter__num">2</span>
+            <span>
+              <span class="demo-chapter__title">安全概览 · 引擎与指标</span>
+              <span class="demo-chapter__desc">引擎运行状态、四项关键指标与实时日志流一屏尽览。</span>
+              <span class="demo-chapter__time">00:03</span>
+            </span>
+          </button>
+          <button class="demo-chapter" type="button" data-chapter="2" data-reveal="up">
+            <span class="demo-chapter__num">3</span>
+            <span>
+              <span class="demo-chapter__title">双引擎文件扫描</span>
+              <span class="demo-chapter__desc">选择目录、实时进度、检出威胁后一键「清除威胁」送入隔离区。</span>
+              <span class="demo-chapter__time">00:08</span>
+            </span>
+          </button>
+          <button class="demo-chapter" type="button" data-chapter="3" data-reveal="up">
+            <span class="demo-chapter__num">4</span>
+            <span>
+              <span class="demo-chapter__title">威胁拦截 · 用户决策</span>
+              <span class="demo-chapter__desc">未签名 DLL 加载被即时挂起，倒计时内由你决定允许或阻止。</span>
+              <span class="demo-chapter__time">00:15</span>
+            </span>
+          </button>
+          <button class="demo-chapter" type="button" data-chapter="4" data-reveal="up">
+            <span class="demo-chapter__num">5</span>
+            <span>
+              <span class="demo-chapter__title">加密隔离区</span>
+              <span class="demo-chapter__desc">威胁以 AES-128-GCM 加密封存；确认误报可一键恢复原路径。</span>
+              <span class="demo-chapter__time">00:20</span>
+            </span>
+          </button>
+          <button class="demo-chapter" type="button" data-chapter="5" data-reveal="up">
+            <span class="demo-chapter__num">6</span>
+            <span>
+              <span class="demo-chapter__title">EDR 行为监控</span>
+              <span class="demo-chapter__desc">ETW 事件流实时可见：进程、文件、注册表行为分类统计。</span>
+              <span class="demo-chapter__time">00:24</span>
+            </span>
+          </button>
+          <button class="demo-chapter" type="button" data-chapter="6" data-reveal="up">
+            <span class="demo-chapter__num">7</span>
+            <span>
+              <span class="demo-chapter__title">安芯安全</span>
+              <span class="demo-chapter__desc">开源免费、本地优先——给你的 Windows 装上一颗安芯。</span>
+              <span class="demo-chapter__time">00:28</span>
+            </span>
+          </button>
+        </div>
+        <div class="note" data-reveal="fade" style="margin-top:24px">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+          <span><strong>说明</strong>：本演示为按实际软件界面复刻的交互动画示意（非屏幕录像），界面布局与文案与真实应用一致；演示中的文件名、路径与统计数字为示意数据。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 行动区 ==================== -->
+    <section class="section section--tight">
+      <div class="wrap">
+        <div class="cta" data-reveal="scale">
+          <h2 class="cta__title">看完演示，<span class="gradient-text">亲自上手</span></h2>
+          <p class="cta__desc">下载 NSIS 安装包即刻体验演示中的全部防护能力，或先深入了解每项功能的实现细节。</p>
+          <div class="cta__actions">
+            <a class="btn btn--primary btn--lg" href="download.html">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+              下载安装
+            </a>
+            <a class="btn btn--secondary btn--lg" href="features.html">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-check"/></svg>
+              功能特性详解
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 页脚 ==================== -->
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer__grid">
+          <div>
+            <a class="brand" href="index.html">
+              <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+              <span>
+                <span class="brand__name">安芯安全</span>
+                <span class="brand__sub">AnXin Security</span>
+              </span>
+            </a>
+            <p class="footer__about">基于 Tauri 2.0 的 Windows 安全防护桌面应用，提供实时文件扫描、ETW 行为监控和威胁防护功能。以 Fluent 2 设计语言呈现。</p>
+          </div>
+          <div class="footer__col">
+            <h3>产品</h3>
+            <ul>
+              <li><a href="features.html">功能特性</a></li>
+              <li><a href="features.html#architecture">技术架构</a></li>
+              <li><a href="download.html">下载安装</a></li>
+              <li><a href="download.html#faq">问题排查</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>资源</h3>
+            <ul>
+              <li><a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub 仓库</a></li>
+              <li><a href="https://github.com/kelomina/AnXinSecurity/issues" target="_blank" rel="noopener">问题反馈</a></li>
+              <li><a href="https://github.com/kelomina/Axon_ML" target="_blank" rel="noopener">Axon ML 引擎</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>开源</h3>
+            <ul>
+              <li><a href="opensource.html">开源组件</a></li>
+              <li><a href="opensource.html#license">MIT 许可证</a></li>
+              <li><a href="opensource.html#thirdparty">第三方声明</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer__bottom">
+          <span>© <span data-year>2026</span> AnXin Security Team · 基于 MIT 许可证开源</span>
+          <span class="footer__legal">
+            <a href="opensource.html#license">许可证</a>
+            <a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">源代码</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <script src="assets/js/site.js"></script>
+  <script src="assets/js/demo.js"></script>
+</body>
+</html>

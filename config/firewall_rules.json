@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "ruleId": 1,
+      "name": "允许本机回环",
+      "enabled": true,
+      "action": "allow",
+      "direction": "any",
+      "protocol": "any",
+      "remoteAddress": "127.0.0.0/8",
+      "matchLoopback": true,
+      "log": false,
+      "description": "回环流量承载大量本机进程间通信（含本产品自身的命名管道回退路径）。拦截它会造成难以定位的连锁故障，因此这条规则必须排在最前且始终启用。"
+    },
+    {
+      "ruleId": 2,
+      "name": "允许 IPv6 回环",
+      "enabled": true,
+      "action": "allow",
+      "direction": "any",
+      "protocol": "any",
+      "remoteAddress": "::1/128",
+      "matchLoopback": true,
+      "log": false,
+      "description": "IPv6 回环，理由同 ruleId 1。"
+    },
+    {
+      "ruleId": 3,
+      "name": "允许 DHCP",
+      "enabled": true,
+      "action": "allow",
+      "direction": "any",
+      "protocol": "udp",
+      "remotePortRange": { "low": 67, "high": 68 },
+      "log": false,
+      "description": "拦截 DHCP 会让机器在租约到期后彻底失去 IP 地址，且用户没有任何办法在断网状态下改回来。"
+    },
+    {
+      "ruleId": 4,
+      "name": "允许链路本地多播名称解析",
+      "enabled": true,
+      "action": "allow",
+      "direction": "any",
+      "protocol": "udp",
+      "remotePortRange": { "low": 5353, "high": 5355 },
+      "log": false,
+      "description": "mDNS 与 LLMNR。局域网设备发现依赖它，误拦会表现为打印机、投屏设备集体消失。"
+    },
+    {
+      "ruleId": 5,
+      "name": "允许本地网段",
+      "enabled": false,
+      "action": "allow",
+      "direction": "any",
+      "protocol": "any",
+      "remoteAddress": "192.168.0.0/16",
+      "log": false,
+      "description": "默认关闭。启用后整个家用网段直接放行，适合只想管控外网出站的场景。"
+    },
+    {
+      "ruleId": 100,
+      "name": "示例：拦截明文 Telnet 出站",
+      "enabled": false,
+      "action": "block",
+      "direction": "outbound",
+      "protocol": "tcp",
+      "remotePortRange": { "low": 23, "high": 23 },
+      "log": true,
+      "description": "示例规则，默认关闭。演示如何按端口拦截一类过时明文协议。"
+    },
+    {
+      "ruleId": 101,
+      "name": "示例：指定程序询问后放行",
+      "enabled": false,
+      "action": "prompt",
+      "direction": "outbound",
+      "protocol": "any",
+      "processPath": "C:\\Windows\\System32\\curl.exe",
+      "log": true,
+      "description": "示例规则，默认关闭。演示 processPath 匹配：只有 mode 为 prompt 时 action=prompt 才会真正弹窗，否则回落到 app.json 的 defaultOutbound。"
+    },
+    {
+      "ruleId": 102,
+      "name": "示例：拦截指定网段出站",
+      "enabled": false,
+      "action": "block",
+      "direction": "outbound",
+      "protocol": "any",
+      "remoteAddress": "198.51.100.0/24",
+      "log": true,
+      "description": "示例规则，默认关闭。remoteAddress 使用 CIDR 记法；省略 /前缀 时按单主机处理。"
+    }
+  ],
+  "domainRules": [
+    {
+      "ruleId": 1000,
+      "domain": "example-malware-c2.invalid",
+      "action": "block",
+      "matchType": "suffix",
+      "enabled": false,
+      "description": "示例域名规则，默认关闭。matchType=suffix 时 example.com 同时命中 a.example.com，但不会命中 badexample.com。域名管控需要 app.json 的 dnsFiltering 或 contentInspection 打开才会生效。"
+    }
+  ],
+  "rateLimits": [
+    {
+      "processPath": "",
+      "bytesPerSecIn": 0,
+      "bytesPerSecOut": 0,
+      "burstBytes": 0,
+      "enabled": false,
+      "description": "示例限速条目，默认关闭。processPath 为空表示全局限速；上下行同时为 0 的条目不会下发给驱动。限速需要 app.json 的 rateLimiting 打开才会生效。"
+    }
+  ]
+}

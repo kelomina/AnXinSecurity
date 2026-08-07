@@ -16,7 +16,8 @@ import { listen } from '@tauri-apps/api/event'
 import { listEvents } from '../api/behavior'
 import { loadMitreRules, type MitreRule } from '../api/scanRules'
 import type { EtwEvent } from '../api/behavior'
-import { ArrowLeft, Search } from 'lucide-react'
+import { ArrowLeft, Search } from './icons'
+import { useI18nStore } from '../stores/i18nStore'
 import {
   Button,
   Badge,
@@ -107,6 +108,9 @@ const useStyles = makeStyles({
     ...shorthands.gap('8px'),
     marginBottom: '20px',
   },
+  tacticSection: {
+    marginBottom: '20px',
+  },
   tacticCard: {
     backgroundColor: tokens.colorNeutralBackground2,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
@@ -120,10 +124,7 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightSemibold,
     fontSize: tokens.fontSizeBase200,
   },
-  eventList: {
-    maxHeight: '60vh',
-    overflowY: 'auto',
-  },
+  eventList: {},
   eventItem: {
     backgroundColor: tokens.colorNeutralBackground2,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
@@ -201,6 +202,15 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground3,
     fontFamily: 'Consolas, "Courier New", monospace',
   },
+  skeletonRow: {
+    marginBottom: '8px',
+  },
+  skeletonItem: {
+    height: '48px',
+  },
+  mutedText: {
+    color: tokens.colorNeutralForeground3,
+  },
 })
 
 interface BehaviorLifecyclePageProps {
@@ -211,6 +221,7 @@ interface BehaviorLifecyclePageProps {
 
 const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, processName, onBack }) => {
   const styles = useStyles()
+  const { t } = useI18nStore()
   const [events, setEvents] = useState<EtwEvent[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -245,11 +256,16 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
       const result = await listEvents({ pid, limit: 200 })
       setEvents(result)
     } catch (e) {
-      setError(`加载事件失败: ${e}`)
+      setError(`${t('behavior_lifecycle_load_error')}: ${e}`)
     } finally {
       setLoading(false)
     }
-  }, [pid])
+    // t 参与错误文案拼装，必须进依赖数组：切换语言后重新加载要用新语言报错。
+    // useI18nStore 的 t 在语言包变化时才会换引用，不会造成额外重跑。
+    //  t builds the error message, so it belongs in the deps: after a language switch a reload
+    //  must report in the new language. The t reference from useI18nStore only changes when the
+    //  translations change, so this does not cause extra runs.
+  }, [pid, t])
 
   useEffect(() => {
     loadEvents()
@@ -307,7 +323,7 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
           icon={<ArrowLeft size={16} />}
           onClick={onBack}
         >
-          返回
+          {t('btn_back')}
         </Button>
         <div>
           <h2 className={styles.pageTitle}>
@@ -324,7 +340,7 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
         <div className={styles.errorCard}>
           <p className={styles.errorText}>{error}</p>
           <Button appearance="outline" onClick={loadEvents}>
-            重试
+            {t('behavior_lifecycle_retry')}
           </Button>
         </div>
       )}
@@ -333,8 +349,8 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
       {loading && (
         <div>
           {[1, 2, 3, 4, 5].map((i) => (
-            <Skeleton key={i} style={{ marginBottom: '8px' }}>
-              <SkeletonItem style={{ height: '48px' }} />
+            <Skeleton key={i} className={styles.skeletonRow}>
+              <SkeletonItem className={styles.skeletonItem} />
             </Skeleton>
           ))}
         </div>
@@ -344,9 +360,9 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
       {!loading && events.length > 0 && (
         <>
           {/* MITRE ATT&CK 战术面板 / MITRE ATT&CK tactic panel */}
-          <div style={{ marginBottom: '20px' }}>
+          <div className={styles.tacticSection}>
             <h3 className={styles.sectionTitle}>
-              MITRE ATT&CK 映射
+              {t('behavior_lifecycle_mitre_mapping')}
             </h3>
             <div className={styles.tacticGrid}>
               {Object.keys(tacticGroups).map((tactic) => (
@@ -362,7 +378,7 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
 
           {/* 事件时间线列表 / Event timeline list */}
           <h3 className={styles.sectionTitle}>
-            行为时间线 ({events.length} 条记录)
+            {t('behavior_lifecycle_timeline_title')} ({events.length} {t('behavior_event_count_unit')})
           </h3>
           <div className={styles.eventList}>
             {events.map((event, index) => {
@@ -374,7 +390,16 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
                 <div
                   key={eventId}
                   className={styles.eventItem}
+                  tabIndex={0}
+                  role="button"
+                  aria-expanded={isExpanded}
                   onClick={() => setExpandedEvent(isExpanded ? null : eventId)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      setExpandedEvent(isExpanded ? null : eventId)
+                    }
+                  }}
                 >
                   <div className={styles.eventHeader}>
                     <span className={styles.eventTimestamp}>{formatTime(event.timestamp)}</span>
@@ -413,7 +438,7 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
                           }
                         })()
                       ) : (
-                        <span style={{ color: tokens.colorNeutralForeground3 }}>无额外详情</span>
+                        <span className={styles.mutedText}>{t('behavior_lifecycle_no_details')}</span>
                       )}
                     </div>
                   )}
@@ -430,9 +455,9 @@ const BehaviorLifecyclePage: React.FC<BehaviorLifecyclePageProps> = ({ pid, proc
           <div className={styles.emptyIcon}>
             <Search size={48} color={tokens.colorNeutralForeground3} />
           </div>
-          <p className={styles.emptyText}>该进程暂无行为数据</p>
+          <p className={styles.emptyText}>{t('behavior_lifecycle_no_data')}</p>
           <p className={styles.emptySubtext}>
-            请确认行为监控已启用，且该进程产生了系统级操作
+            {t('behavior_lifecycle_empty_hint')}
           </p>
         </div>
       )}

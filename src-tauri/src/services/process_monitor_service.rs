@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -361,15 +362,15 @@ impl ProcessMonitorService {
 }
 
 /// 函数名称：resolve_process_hook_paths
-/// 函数作用：解析 APIHook 注入链路所需的 x64/x86 注入器与 DLL 路径，显式路径优先，空路径才回退到默认候选。
+/// 函数作用：解析 APIHook 注入链路所需的 x64/x86 注入器与 DLL 路径；显式路径必须指向默认可信候选，空路径才按默认候选查找。
 /// Function name: resolve_process_hook_paths
-/// Purpose: Resolves x64/x86 injector and DLL paths needed by the APIHook injection path; explicit paths win, empty paths fall back to defaults.
+/// Purpose: Resolves x64/x86 injector and DLL paths needed by the APIHook injection path; explicit paths must resolve to trusted default candidates, empty paths fall back to defaults.
 /// 调用方：ProcessMonitorService::start_with_resource_dir，process_monitor_service_tests。
 /// Called by: ProcessMonitorService::start_with_resource_dir, process_monitor_service_tests.
 /// 被调用方：resolve_process_hook_file。
 /// Calls: resolve_process_hook_file.
-/// 参数说明：四个字符串为前端兼容参数；resource_dir 为 Tauri 打包资源目录，可为空。
-/// Parameters: the four strings are frontend-compatible parameters; resource_dir is the optional Tauri bundle resource directory.
+/// 参数说明：四个字符串为前端兼容参数；非空时只作为“指定默认资源文件”的兼容入口，不能指向任意路径；resource_dir 为 Tauri 打包资源目录，可为空。
+/// Parameters: the four strings are frontend-compatible parameters; non-empty values only select packaged/default resources and cannot point to arbitrary paths; resource_dir is optional.
 /// 返回值说明：成功时返回四个已存在文件路径；失败时返回明确缺失文件和候选路径。
 /// Returns: existing paths for all four files on success; explicit missing file and candidate paths on failure.
 /// 错误处理：不会启动进程或注入 DLL，只做文件存在性检查并返回 String。
@@ -457,9 +458,9 @@ pub fn process_hook_default_path_candidates(
 }
 
 /// 函数名称：resolve_process_hook_file
-/// 函数作用：解析单个 APIHook 文件路径；前端传入非空路径时只验证该路径，传空时按默认候选查找。
+/// 函数作用：解析单个 APIHook 文件路径；前端传入非空路径时必须与默认可信候选归一化后相同，传空时按默认候选查找。
 /// Function name: resolve_process_hook_file
-/// Purpose: Resolves one APIHook file path; non-empty frontend paths are validated directly, empty paths use default candidates.
+/// Purpose: Resolves one APIHook file path; non-empty frontend paths must canonicalize to a trusted default candidate, empty paths use default candidates.
 /// 调用方：resolve_process_hook_paths。
 /// Called by: resolve_process_hook_paths.
 /// 被调用方：process_hook_default_path_candidates，format_missing_process_hook_file_error。
@@ -475,25 +476,58 @@ fn resolve_process_hook_file(
     file_name: &str,
     resource_dir: Option<&Path>,
 ) -> Result<PathBuf, String> {
+    let candidates = process_hook_default_path_candidates(arch_dir, file_name, resource_dir);
     let trimmed_path = explicit_path.trim();
     if !trimmed_path.is_empty() {
         let explicit = PathBuf::from(trimmed_path);
-        if explicit.is_file() {
-            return Ok(explicit);
-        }
-        return Err(format_missing_process_hook_file_error(
-            role,
-            file_name,
-            &[explicit],
-        ));
+        return resolve_explicit_process_hook_file(&explicit, role, file_name, &candidates);
     }
 
-    let candidates = process_hook_default_path_candidates(arch_dir, file_name, resource_dir);
     candidates
         .iter()
         .find(|candidate| candidate.is_file())
         .cloned()
         .ok_or_else(|| format_missing_process_hook_file_error(role, file_name, &candidates))
+}
+
+fn resolve_explicit_process_hook_file(
+    explicit: &Path,
+    role: &str,
+    file_name: &str,
+    trusted_candidates: &[PathBuf],
+) -> Result<PathBuf, String> {
+    if explicit.file_name().and_then(|name| name.to_str()) != Some(file_name) {
+        return Err(format_untrusted_process_hook_file_error(
+            role,
+            file_name,
+            trusted_candidates,
+        ));
+    }
+
+    let explicit_canonical = fs::canonicalize(explicit).map_err(|_| {
+        format_missing_process_hook_file_error(role, file_name, &[explicit.to_path_buf()])
+    })?;
+    if !explicit_canonical.is_file() {
+        return Err(format_missing_process_hook_file_error(
+            role,
+            file_name,
+            &[explicit.to_path_buf()],
+        ));
+    }
+
+    for candidate in trusted_candidates {
+        if let Ok(candidate_canonical) = fs::canonicalize(candidate) {
+            if candidate_canonical == explicit_canonical {
+                return Ok(candidate_canonical);
+            }
+        }
+    }
+
+    Err(format_untrusted_process_hook_file_error(
+        role,
+        file_name,
+        trusted_candidates,
+    ))
 }
 
 /// 函数名称：locate_process_hook_project_root
@@ -566,6 +600,27 @@ fn format_missing_process_hook_file_error(
 
     format!(
         "Missing APIHook {} file '{}'. Checked paths: {}",
+        role, file_name, checked_paths
+    )
+}
+
+fn format_untrusted_process_hook_file_error(
+    role: &str,
+    file_name: &str,
+    candidates: &[PathBuf],
+) -> String {
+    let checked_paths = if candidates.is_empty() {
+        "no trusted candidate paths were available".to_string()
+    } else {
+        candidates
+            .iter()
+            .map(|candidate| candidate.display().to_string())
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+
+    format!(
+        "Rejected APIHook {} file '{}': explicit paths must resolve to a trusted packaged APIHook resource. Trusted paths: {}",
         role, file_name, checked_paths
     )
 }

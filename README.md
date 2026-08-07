@@ -54,17 +54,17 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 
 ## Fluent 2 设计系统 / Fluent 2 Design System
 
-项目采用自定义实现的 Fluent 2 设计规范，通过 CSS 变量体系实现完整的设计 Token 管理：
+项目已迁移到官方 Fluent UI React v9 组件体系，通过 `FluentProvider`、`webLightTheme` / `webDarkTheme`、`makeStyles` 和 Fluent `tokens` 统一视觉语言：
 
 | Token 类别 | 说明 | 值 / 示例 |
 |------------|------|-----------|
-| **品牌色** | 主色调配套 fill/stroke 系列变量 | `#5E95C6` / `--fill-accent` |
-| **阴影系统** | 5 级阴影 Token | `--shadow-tooltip` → `--shadow-window` |
-| **焦点环** | 双层焦点环设计 | `--focus-ring-accent` + `--focus-ring-high-contrast` |
-| **圆角规范** | 三级圆角体系 | small 4px / medium 6px / large 8px |
-| **材质效果** | Windows 11 Mica/Acrylic 毛玻璃 | `backdrop-filter: blur(40px) saturate(1.2)` |
-| **动画时序** | hover/press/focus 动作 Token | 配合 Framer Motion 页面切换动画 |
-| **双主题** | 深色/浅色主题 + 跟随系统 | `prefers-color-scheme` 媒体查询监听 |
+| **品牌色** | Fluent 默认品牌蓝 | `#0f6cbd` |
+| **主题** | 官方 Web 主题 | `webLightTheme` / `webDarkTheme` |
+| **组件** | 官方 Fluent 组件 | `Button` / `Dialog` / `Table` / `Toaster` |
+| **样式** | 组件内 `makeStyles` | `tokens.colorNeutralForeground1` |
+| **圆角 / 阴影** | Fluent token | `tokens.borderRadiusLarge` / `tokens.shadow8` |
+| **动画时序** | 全局壳层 CSS + 减少动画开关 | `body[data-animations="off"]` |
+| **双主题** | 深色/浅色主题 + 跟随系统 | `themeStore` + FluentProvider |
 | **无边框窗口** | 自定义 TitleBar 组件 | `tauri.conf.json` decorations: false |
 
 ### 扫描页威胁操作规范
@@ -79,7 +79,7 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 
 | 层级 | 技术 |
 |------|------|
-| **前端** | React 18 + TypeScript + Vite + Zustand + Framer Motion |
+| **前端** | React 18 + TypeScript + Vite + Zustand + Fluent UI React v9 |
 | **后端** | Rust (Tauri 2.0) + Tokio 异步运行时 |
 | **原生模块** | C++ DLL (ETW Bridge, Process Watcher, File Hook via Detours) |
 | **安全引擎** | Axon（Apache 2.0 开源，预编译 DLL）/ Raven 扫描引擎 DLL + 签名引擎 DLL |
@@ -91,68 +91,79 @@ A Windows security protection desktop application based on Tauri 2.0, providing 
 
 ## 项目结构 / Project Structure
 
+> 完整目录结构详见 [docs/DIRECTORY_STRUCTURE.md](docs/DIRECTORY_STRUCTURE.md)。
+
 ```
 AnXinSecurity/
 ├── src/                          # React 前端
 │   ├── main.tsx                  # React 入口
 │   ├── App.tsx                   # 根组件（标题栏 + 侧边栏 + 页面路由 + 弹窗集成）
-│   ├── api/                      # Tauri invoke 封装层 — 15 个模块
+│   ├── api/                      # Tauri invoke 封装层 — 18 个模块
 │   │   ├── 扫描类    scanner.ts, scanRules.ts
 │   │   ├── 进程类    process.ts
 │   │   ├── 行为类    behavior.ts
 │   │   ├── 配置类    config.ts, exclusions.ts, allowlist.ts, devSettings.ts
 │   │   ├── 系统类    system.ts, fs.ts, i18n.ts, logs.ts
-│   │   └── 工具类    quarantine.ts, errorTrace.ts
-│   ├── stores/                   # Zustand 状态管理 — 6 个 Store
+│   │   └── 工具类    quarantine.ts, errorTrace.ts, risk.ts, snapshot.ts
+│   ├── stores/                   # Zustand 状态管理 — 7 个 Store
 │   │   ├── configStore.ts        # 全局配置 + 页面路由
 │   │   ├── scannerStore.ts       # 扫描状态
 │   │   ├── quarantineStore.ts    # 隔离区状态
 │   │   ├── themeStore.ts         # 主题与动画状态
 │   │   ├── i18nStore.ts          # 国际化状态
 │   │   └── toastStore.ts         # 全局通知状态
-│   ├── components/               # React 组件 — 13 个
-│   │   ├── TitleBar.tsx          # 自定义窗口标题栏
-│   │   ├── Sidebar.tsx           # 侧边栏导航
-│   │   ├── OverviewPage.tsx      # 概览页
-│   │   ├── ScanPage.tsx          # 文件扫描页
-│   │   ├── QuarantinePage.tsx    # 隔离区管理页
-│   │   ├── BehaviorPage.tsx      # 行为分析页
-│   │   ├── BehaviorLifecyclePage.tsx  # 行为生命周期详情
-│   │   ├── SettingsPage.tsx      # 设置页
-│   │   ├── SplashScreen.tsx      # 启动画面
-│   │   ├── InterceptionModal.tsx  # 进程拦截弹窗
-│   │   ├── TrayExitPrompt.tsx    # 托盘退出确认弹窗
-│   │   ├── Toast.tsx             # 全局通知组件
-│   │   └── ErrorBoundary.tsx     # 错误边界组件
-│   └── styles/global.css         # Fluent 2 设计系统样式
+│   ├── components/               # React 组件 — 15 个
+│   │   ├── common/               # 通用组件（ConfirmDialog 等）
+│   │   ├── 页面组件   OverviewPage / ScanPage / QuarantinePage
+│   │   │             BehaviorPage / BehaviorLifecyclePage
+│   │   │             FirewallPage / SettingsPage
+│   │   ├── 全局组件   TitleBar / Sidebar / SplashScreen / Toast
+│   │   │             InterceptionModal / InterceptionWindowApp
+│   │   │             TrayExitPrompt / ErrorBoundary
+│   ├── styles/global.css         # Fluent 2 应用壳层全局样式
+│   ├── theme/customTheme.ts      # Fluent webLightTheme / webDarkTheme 导出
+│   ├── types/                    # TypeScript 类型定义
+│   └── utils/                    # 前端工具函数
 ├── src-tauri/                    # Rust 后端（Tauri 2.0）
 │   ├── src/
 │   │   ├── main.rs               # Tauri Builder + 服务初始化
 │   │   ├── lib.rs                # 模块导出
-│   │   ├── commands/             # 24 个命令模块（57+ 个 Tauri 命令）
-│   │   ├── services/             # 20 个业务服务
+│   │   ├── commands/             # 23 个命令模块（57+ 个 Tauri 命令）
+│   │   ├── services/             # 37 个服务模块（含 etw/ 子模块）
 │   │   ├── models/               # 数据模型
-│   │   └── utils/                # 工具函数（加密、路径、缓存、过滤）
+│   │   └── utils/                # 工具函数（加密等）
+│   ├── capabilities/             # Tauri 2.0 权限声明
+│   ├── tests/                    # Rust 集成测试 — 18 个
 │   ├── Cargo.toml                # Rust 依赖清单
 │   └── tauri.conf.json           # Tauri 应用配置
-├── native/                       # 仍需 C++ 的原生文件钩子模块
+├── native/                       # 原生 C++ 模块
+│   ├── driver/                   # AnXinProcProtect.sys 进程保护驱动 (WDM)
+│   ├── file_protect/             # AnXinFileProtect.sys 文件保护微过滤器驱动
+│   ├── net_filter/               # AnXinNetFilter.sys WFP 网络防火墙驱动
 │   ├── file_hook/                # 文件钩子 (Detours 4.0.1, MIT)
-│   └── raven_engine/             # Raven 扫描引擎构建产物
+│   │   ├── src/                  # 源码（含 Detours 第三方库）
+│   │   ├── tests/                # 单元测试
+│   │   ├── config/               # 测试探针配置
+│   │   ├── CMakeLists.txt        # CMake 构建
+│   │   └── build-*/              # 构建产物（gitignored）
+│   └── raven_engine/             # Raven 扫描引擎构建
+│       └── build/                # 构建产物（gitignored）
 ├── Engine/                       # 已编译扫描引擎（gitignored，本地构建生成）
+│   ├── Axon/                     # Axon ML 引擎（Apache 2.0）
+│   ├── Raven/                    # Raven 引擎（专有）
+│   └── THIRD-PARTY               # 第三方声明
 ├── config/                       # 运行时配置
 │   ├── app.json                  # 主应用配置
 │   ├── etw_match_rules.json      # ETW 匹配规则
 │   ├── scan_rules.json           # 扫描规则
 │   └── i18n/                     # 国际化（zh-CN, en-US）
-├── tests/                        # 前端测试（Node.js）
-│   ├── unit/
-│   ├── integration/
-│   ├── mocks/
-│   └── fixtures/
-├── data/                         # 运行时数据（gitignored，首次运行自动生成）
-├── build/                        # 构建输出与安装包辅助文件（gitignored，打包生成）
-├── assets/                       # 静态资源
-│   └── ui/pico.min.css           # 基础 CSS 重置
+├── tests/                        # 前端测试（Node.js）— 12 个
+├── docs/                         # 项目文档
+│   ├── continuous-running.md     # 持续运行状态
+│   ├── etw_rules_guide.md        # ETW 规则指南
+│   └── DIRECTORY_STRUCTURE.md    # 完整目录结构
+├── data/                         # 运行时数据（gitignored）
+└── build/                        # 构建辅助文件（gitignored）
 ```
 
 ---
@@ -300,14 +311,14 @@ cargo build
 
 - **Tauri Commands** — 前端通过 `invoke()` 调用 Rust 后端暴露的 57+ 个命令（分布在 24 个命令模块中）
 - **Tauri Events** — Rust 后端通过 Events 向前端推送实时事件（`etw-event`、`scan-progress`、`quarantine-updated`、`process-intercepted`、`tray-exit-requested`）
-- **前端 API 层** — 15 个 API 模块按功能分组封装 Tauri invoke 调用
+- **前端 API 层** — 18 个 API 模块按功能分组封装 Tauri invoke 调用
 
 ### Rust 后端分层
 
 | 层 | 目录 | 职责 |
 |---|------|------|
 | 接口层 | `commands/` | 24 个命令模块（57+ 个 `#[tauri::command]`），透传到服务层 |
-| 应用层 | `services/` | 20 个业务服务，编排领域逻辑 |
+| 应用层 | `services/` | 37 个服务模块，编排领域逻辑 |
 | 领域层 | `models/` | AppConfig、EtwEvent、ScanResult 等数据模型 |
 | 基础设施层 | `utils/` | 加密、路径处理、PID 缓存、过滤工具 |
 
@@ -323,7 +334,7 @@ cargo build
 | **运行时配置** | `runtime_list_store` |
 | **系统/工具** | `tray_service` |
 
-### 前端 15 个 API 模块分组
+### 前端 18 个 API 模块分组
 
 | 分组 | API 模块 |
 |------|---------|
@@ -352,9 +363,9 @@ cargo build
 |------|--------|
 | react, react-dom | MIT |
 | zustand | MIT |
-| framer-motion | MIT |
 | lucide-react | ISC |
 | clsx | MIT |
+| @fluentui/react-components | MIT |
 | @tauri-apps/api | MIT / Apache-2.0 |
 | @tauri-apps/plugin-dialog / plugin-fs / plugin-shell | MIT / Apache-2.0 |
 
@@ -419,7 +430,6 @@ cargo build
 | 组件 | 许可证 |
 |------|--------|
 | Microsoft Research Detours 4.0.1 | MIT (`native/file_hook/src/Detours`) |
-| pico.min.css | MIT (`assets/ui/pico.min.css`) |
 
 </details>
 

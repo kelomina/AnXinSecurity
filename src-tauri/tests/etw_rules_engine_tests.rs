@@ -26,8 +26,8 @@ mod config_loading_tests {
             EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
 
         assert!(
-            engine.rule_count() >= 5,
-            "默认 ETW 配置至少应加载现有文件规则和镜像加载检测规则"
+            engine.rule_count() >= 3,
+            "默认 ETW 配置至少应加载注册表持久化、临时目录落地和临时模块加载三条规则"
         );
 
         let matched = engine.on_event(&ParsedEvent {
@@ -44,29 +44,222 @@ mod config_loading_tests {
             image_base: None,
             image_size: None,
             start_address: None,
+            raw_user_data_len: 0,
+            raw_user_data_preview: String::new(),
         });
 
         let matched = matched.expect("temp file create should match temp_dropper_create");
         assert_eq!(matched.rule_id, "temp_dropper_create");
-        assert_eq!(matched.threat_type, "临时目录落地");
+        assert_eq!(matched.threat_type, "临时目录可执行文件落地");
         assert_eq!(matched.provider, "File");
         assert_eq!(matched.pid, 4242);
         assert_eq!(
             matched.path,
             r"C:\Users\Alice\AppData\Local\Temp\dropper.exe"
         );
-        assert!(
-            matched.severity >= 61,
-            "配置中的 1-5 档 severity 应映射为 RiskService 可识别的 0-100 高风险分数，实际为 {}",
+        // 该规则已从 severity 4 降到 2：临时目录落地在正常软件里极常见，
+        // 必须落在 RiskService 的 medium 区间（<=60）以免自动挂起安装器与更新程序。
+        //  Lowered from severity 4 to 2: dropping files into temp is extremely common in
+        //  legitimate software, so it must stay in RiskService's medium band (<=60) and
+        //  never auto-suspend installers or updaters.
+        assert_eq!(
+            matched.severity, 40,
+            "severity 2 应映射为 40 分，落在 medium 区间，实际为 {}",
             matched.severity
+        );
+        assert_eq!(
+            matched.recommend_action, "alert",
+            "该规则只应告警，不得建议阻断"
         );
         assert!(!matched.description.is_empty());
     }
 
+    /// 收紧后的注册表规则必须仍能命中真实的 Run 键写入。
+    /// target 取 parser 归一化后的形态（值名已被切到 target2），
+    /// 这条用例同时守住 parser 的 off-by-one 修复：若首字符再被吞掉，
+    /// `*\currentversion\run` 仍能命中，但 `HKLM\SOFTWARE\` 形态会退化，
+    /// 因此这里显式断言完整键名。
+    /// The tightened registry rule must still catch a real Run-key write. The target is the
+    /// parser-normalized key (the value name went to target2). Also guards the parser
+    /// off-by-one fix by asserting the full key name.
     #[test]
-    fn default_config_rules_match_calc_probe_image_load_event() {
+    fn tightened_registry_rule_still_matches_run_key_write() {
         let config_path =
             resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
+
+        let key = r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run";
+        let matched = engine.on_event(&ParsedEvent {
+            ts_ms: 1700000000002,
+            pid: 7788,
+            tid: 12,
+            ppid: 0,
+            provider: ProviderKind::Registry,
+            opcode: 0,
+            id: 22,
+            op: "set_value".to_string(),
+            target: key.to_string(),
+            target2: "Updater".to_string(),
+            image_base: None,
+            image_size: None,
+            start_address: None,
+            raw_user_data_len: 0,
+            raw_user_data_preview: String::new(),
+        });
+
+        let matched = matched.expect("Run key write should still match registry_runkey_setvalue");
+        assert_eq!(matched.rule_id, "registry_runkey_setvalue");
+        assert_eq!(
+            matched.severity, 60,
+            "severity 3 应映射为 60 分（medium 上限）"
+        );
+        assert_eq!(matched.recommend_action, "alert");
+    }
+
+    /// 收紧后的注册表规则不得再命中任意 HKLM 写入。
+    /// 修复前 targetContains 里的裸 `hklm\` 因组内 OR 语义等价于匹配全部 HKLM SetValue，
+    /// Windows Update、驱动安装、MSI 安装会被整片误报并挂起。
+    /// The tightened rule must no longer match arbitrary HKLM writes. The bare `hklm\`
+    /// entry previously matched every HKLM SetValue thanks to the OR semantics within
+    /// targetContains, sweeping up Windows Update, driver installs and MSI installers.
+    #[test]
+    fn tightened_registry_rule_ignores_unrelated_hklm_write() {
+        let config_path =
+            resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
+
+        for key in [
+            r"HKLM\SYSTEM\CurrentControlSet\Services\WinDefend",
+            r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Installer\UserData",
+            r"HKLM\SOFTWARE\Google\Update",
+        ] {
+            let matched = engine.on_event(&ParsedEvent {
+                ts_ms: 1700000000003,
+                pid: 7789,
+                tid: 13,
+                ppid: 0,
+                provider: ProviderKind::Registry,
+                opcode: 0,
+                id: 22,
+                op: "set_value".to_string(),
+                target: key.to_string(),
+                target2: "Value".to_string(),
+                image_base: None,
+                image_size: None,
+                start_address: None,
+                raw_user_data_len: 0,
+                raw_user_data_preview: String::new(),
+            });
+            assert!(
+                matched.is_none(),
+                "普通 HKLM 写入 {} 不应命中启动项持久化规则",
+                key
+            );
+        }
+    }
+
+    /// 收紧后的临时目录规则只关心可执行/脚本落地，不再命中任意临时文件。
+    /// The tightened temp rule only covers executable/script drops, not arbitrary temp files.
+    #[test]
+    fn tightened_temp_rule_ignores_non_executable_drops() {
+        let config_path =
+            resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
+
+        for path in [
+            r"C:\Users\Alice\AppData\Local\Temp\update.log",
+            r"C:\Windows\Temp\msi1a2b3.tmp",
+            r"C:\Users\Alice\AppData\Local\Temp\chrome_installer.dat",
+        ] {
+            let matched = engine.on_event(&ParsedEvent {
+                ts_ms: 1700000000004,
+                pid: 7790,
+                tid: 14,
+                ppid: 0,
+                provider: ProviderKind::File,
+                opcode: 0,
+                id: 64,
+                op: "create".to_string(),
+                target: path.to_string(),
+                target2: String::new(),
+                image_base: None,
+                image_size: None,
+                start_address: None,
+                raw_user_data_len: 0,
+                raw_user_data_preview: String::new(),
+            });
+            assert!(
+                matched.is_none(),
+                "临时目录的非可执行文件 {} 不应命中落地规则",
+                path
+            );
+        }
+    }
+
+    /// 生产配置不得包含测试规则。
+    /// calc_probe_payload_image_load 与 test_rule_trigger 的文件名都是公开可知的，
+    /// 留在生产配置里等于给任意本地程序留下可控的检测/冻结触发器（buglist VUL-015）。
+    /// The production config must not ship test rules: both use publicly known file names,
+    /// which would hand any local program a controllable detection/freeze trigger.
+    #[test]
+    fn production_config_contains_no_test_rules() {
+        let config_path =
+            resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let raw = fs::read_to_string(&config_path).expect("read production ETW rule config");
+
+        for forbidden in [
+            "calc_probe_payload",
+            "test_rule_trigger",
+            "anxin_rule_test_trigger",
+        ] {
+            assert!(
+                !raw.contains(forbidden),
+                "生产配置 {:?} 不得包含测试规则 {}",
+                config_path,
+                forbidden
+            );
+        }
+    }
+
+    /// 生产规则不得建议阻断——自动挂起目前只应由链路级强证据触发，
+    /// 单条 ETW 规则命中不构成强证据。
+    /// No production rule may recommend blocking: a single ETW rule hit is not the
+    /// strong evidence that an automatic suspend requires.
+    #[test]
+    fn production_rules_do_not_recommend_blocking() {
+        let config_path =
+            resolve_repo_config_path().expect("config/etw_match_rules.json should exist");
+        let raw = fs::read_to_string(&config_path).expect("read production ETW rule config");
+        let rules: serde_json::Value =
+            serde_json::from_str(&raw).expect("production ETW rule config should be valid JSON");
+
+        for rule in rules.as_array().expect("config should be a JSON array") {
+            let rule_id = rule["ruleId"].as_str().unwrap_or("<unknown>");
+            assert_ne!(
+                rule["recommendAction"].as_str(),
+                Some("block"),
+                "规则 {} 不得在生产配置中建议阻断",
+                rule_id
+            );
+            let severity = rule["severity"].as_u64().unwrap_or(0);
+            assert!(
+                severity <= 3,
+                "规则 {} 的 severity 为 {}，×20 后会落入 high 区间并触发自动挂起",
+                rule_id,
+                severity
+            );
+        }
+    }
+
+    #[test]
+    fn default_config_rules_match_calc_probe_image_load_event() {
+        // 该探针规则已迁出生产配置，只在测试配置里保留
+        //  This probe rule moved out of the production config and lives in the test config
+        let config_path =
+            resolve_test_config_path().expect("config/etw_match_rules.test.json should exist");
         let mut engine =
             EtwRuleEngine::from_config_path(&config_path).expect("default ETW rules should load");
 
@@ -86,6 +279,8 @@ mod config_loading_tests {
             image_base: Some(0x7ff7_0000_0000),
             image_size: Some(0x12000),
             start_address: None,
+            raw_user_data_len: 0,
+            raw_user_data_preview: String::new(),
         });
 
         let matched = matched.expect("calc probe payload image load should match");
@@ -94,6 +289,163 @@ mod config_loading_tests {
         assert_eq!(matched.op, "load");
         assert_eq!(matched.threat_type, "DLL 注入测试样本加载");
         assert!(matched.path.ends_with("calc_probe_payload.dll"));
+    }
+
+    /// 构造一条带时间窗口的规则：临时目录落 exe，且同一 PID 在 5 秒内启动过进程。
+    ///  A windowed rule: an exe dropped into temp by a PID that started within the last 5s.
+    fn window_rule_config() -> &'static str {
+        r#"[{
+            "ruleId": "temp_drop_after_process_start",
+            "provider": "File",
+            "op": "Create",
+            "severity": 3,
+            "threatType": "启动后立即落地",
+            "recommendAction": "alert",
+            "targetPatterns": ["*\\temp\\*.exe"],
+            "windowMs": 5000,
+            "requiredOps": [{ "provider": "Process", "op": "start" }]
+        }]"#
+    }
+
+    fn file_create_event(pid: u32, ts_ms: u64, target: &str) -> ParsedEvent {
+        ParsedEvent {
+            ts_ms,
+            pid,
+            tid: 1,
+            ppid: 0,
+            provider: ProviderKind::File,
+            opcode: 0,
+            id: 64,
+            op: "create".to_string(),
+            target: target.to_string(),
+            target2: String::new(),
+            image_base: None,
+            image_size: None,
+            start_address: None,
+            raw_user_data_len: 0,
+            raw_user_data_preview: String::new(),
+        }
+    }
+
+    fn process_start_event(pid: u32, ts_ms: u64) -> ParsedEvent {
+        ParsedEvent {
+            ts_ms,
+            pid,
+            tid: 1,
+            ppid: 0,
+            provider: ProviderKind::Process,
+            opcode: 1,
+            id: 1,
+            op: "start".to_string(),
+            target: r"C:\Tools\loader.exe".to_string(),
+            target2: String::new(),
+            image_base: None,
+            image_size: None,
+            start_address: None,
+            raw_user_data_len: 0,
+            raw_user_data_preview: String::new(),
+        }
+    }
+
+    /// 窗口内出现过先决事件时，时间窗口规则必须命中。
+    /// 修复前 seen 集合只写常量 "_event"，而判定查 "{provider}:{op}"，任何 requiredOps
+    /// 非空的规则恒不命中——这是一个被文档宣传但实际失效的死特性。
+    /// A windowed rule must fire when the prerequisite occurred inside the window. Before the
+    /// fix the seen set only received the constant "_event" while the check looked for
+    /// "{provider}:{op}" keys, so every rule with requiredOps was dead.
+    #[test]
+    fn window_rule_matches_when_required_op_occurred_in_window() {
+        let config_path = write_temp_rule_config(window_rule_config());
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("window rule config should load");
+
+        // 先决事件：同一 PID 启动 / prerequisite: same PID started
+        assert!(engine.on_event(&process_start_event(4321, 1_000)).is_none());
+
+        let matched = engine.on_event(&file_create_event(
+            4321,
+            3_000,
+            r"C:\Users\Alice\AppData\Local\Temp\payload.exe",
+        ));
+
+        let matched = matched.expect("窗口内已发生先决事件，规则应命中");
+        assert_eq!(matched.rule_id, "temp_drop_after_process_start");
+        assert!(
+            matched
+                .evidence
+                .iter()
+                .any(|item| item.contains("window match")),
+            "命中证据应包含窗口匹配说明，实际为 {:?}",
+            matched.evidence
+        );
+
+        let _ = fs::remove_file(config_path);
+    }
+
+    /// 没有先决事件时不得命中，否则 requiredOps 形同虚设。
+    ///  Without the prerequisite the rule must not fire, or requiredOps means nothing.
+    #[test]
+    fn window_rule_does_not_match_without_required_op() {
+        let config_path = write_temp_rule_config(window_rule_config());
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("window rule config should load");
+
+        let matched = engine.on_event(&file_create_event(
+            5555,
+            3_000,
+            r"C:\Users\Alice\AppData\Local\Temp\payload.exe",
+        ));
+
+        assert!(matched.is_none(), "没有先决事件时不应命中时间窗口规则");
+
+        let _ = fs::remove_file(config_path);
+    }
+
+    /// 先决事件落在窗口之外时不得命中。
+    ///  A prerequisite outside the window must not satisfy the rule.
+    #[test]
+    fn window_rule_does_not_match_when_required_op_is_too_old() {
+        let config_path = write_temp_rule_config(window_rule_config());
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("window rule config should load");
+
+        assert!(engine.on_event(&process_start_event(6666, 1_000)).is_none());
+
+        // windowMs=5000，先决事件距今 20 秒，已超出窗口
+        //  windowMs=5000 and the prerequisite is 20s old, well outside the window
+        let matched = engine.on_event(&file_create_event(
+            6666,
+            21_000,
+            r"C:\Users\Alice\AppData\Local\Temp\payload.exe",
+        ));
+
+        assert!(matched.is_none(), "先决事件超出时间窗口时不应命中");
+
+        let _ = fs::remove_file(config_path);
+    }
+
+    /// 先决事件必须属于同一个 PID，不能被其它进程的事件满足。
+    ///  The prerequisite must belong to the same PID; another process must not satisfy it.
+    #[test]
+    fn window_rule_does_not_match_across_different_pids() {
+        let config_path = write_temp_rule_config(window_rule_config());
+        let mut engine =
+            EtwRuleEngine::from_config_path(&config_path).expect("window rule config should load");
+
+        assert!(engine.on_event(&process_start_event(7777, 1_000)).is_none());
+
+        let matched = engine.on_event(&file_create_event(
+            8888,
+            3_000,
+            r"C:\Users\Alice\AppData\Local\Temp\payload.exe",
+        ));
+
+        assert!(
+            matched.is_none(),
+            "其它 PID 的先决事件不应满足本 PID 的规则"
+        );
+
+        let _ = fs::remove_file(config_path);
     }
 
     #[test]
@@ -128,6 +480,18 @@ mod config_loading_tests {
         [
             PathBuf::from("config/etw_match_rules.json"),
             PathBuf::from("../config/etw_match_rules.json"),
+        ]
+        .into_iter()
+        .find(|path| path.exists())
+    }
+
+    /// 测试专用规则配置。生产配置不加载它，因此不会带来误报与冻结风险。
+    ///  Test-only rule config. The production build never loads it, so it carries no
+    ///  false-positive or process-freeze risk.
+    fn resolve_test_config_path() -> Option<PathBuf> {
+        [
+            PathBuf::from("config/etw_match_rules.test.json"),
+            PathBuf::from("../config/etw_match_rules.test.json"),
         ]
         .into_iter()
         .find(|path| path.exists())

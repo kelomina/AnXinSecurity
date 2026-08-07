@@ -14,7 +14,7 @@
   --shadow-md: 0 4px 8px rgba(0,0,0,0.12), 0 2px 4px rgba(0,0,0,0.08);
   --shadow-lg: 0 8px 16px rgba(0,0,0,0.14), 0 4px 8px rgba(0,0,0,0.10);
   --shadow-xl: 0 16px 32px rgba(0,0,0,0.18), 0 8px 16px rgba(0,0,0,0.12);
-  --shadow-brand-glow: 0 0 0 1px rgba(76,162,255,0.3), 0 4px 12px rgba(76,162,255,0.25);
+  --shadow-brand-glow: 0 0 0 1px rgba(15,108,189,0.3), 0 4px 12px rgba(15,108,189,0.25);
 
   /* 圆角 */
   --radius-small: 4px;
@@ -30,12 +30,12 @@
   --motion-ease-spring: cubic-bezier(0.68, -0.6, 0.32, 1.6);
   --motion-ease-standard: ease;
 
-  /* 品牌色 */
-  --theme-color: #4CA2FF;
-  --color-danger: #ff4d4f;
-  --color-warning: #ffa940;
-  --color-success: #52c41a;
-  --color-info: #4ca2ff;
+  /* 品牌色（Fluent 2 亮色） */
+  --theme-color: #0f6cbd;
+  --color-danger: #d13438;
+  --color-warning: #c19c00;
+  --color-success: #107c10;
+  --color-info: #0f6cbd;
 
   /* 字体 */
   --font-stack: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -44,32 +44,41 @@
 
 /* 深色主题（默认） */
 [data-theme="dark"] {
-  --app-bg: rgba(15, 17, 21, 0.98);
+  /* 品牌色（Fluent 2 暗色） */
+  --theme-color: #2886de;
+  --color-danger: #ff4747;
+  --color-warning: #fcd116;
+  --color-success: #0e700e;
+  --color-info: #2886de;
+  --shadow-brand-glow: 0 0 0 1px rgba(40,134,222,0.3), 0 4px 12px rgba(40,134,222,0.25);
+
+  /* 中性色（Fluent 2 暗色） */
+  --app-bg: rgba(20, 20, 20, 0.98);
   --app-fg: #ffffff;
-  --muted-fg: #b0b8c4;
-  --sidebar-bg: rgba(11, 13, 16, 0.4);
-  --panel-bg: rgba(18, 22, 27, 0.5);
+  --muted-fg: #adadad;
+  --sidebar-bg: rgba(10, 10, 10, 0.4);
+  --panel-bg: rgba(20, 20, 20, 0.5);
   --panel-border: rgba(255, 255, 255, 0.15);
-  --panel-hover: rgba(26, 31, 36, 0.4);
+  --panel-hover: rgba(31, 31, 31, 0.4);
   --divider-color: rgba(255,255,255,0.08);
-  --acrylic-dark: rgba(15,17,21,0.75);
-  --acrylic-blur-bg: rgba(15,17,21,0.85);
+  --acrylic-dark: rgba(20,20,20,0.75);
+  --acrylic-blur-bg: rgba(20,20,20,0.85);
   --input-bg: rgba(255,255,255,0.06);
   --scrollbar-thumb: rgba(255,255,255,0.15);
 }
 
 /* 浅色主题 */
 [data-theme="light"] {
-  --app-bg: rgba(248, 250, 252, 0.98);
-  --app-fg: #0f172a;
-  --muted-fg: #475569;
+  --app-bg: rgba(250, 250, 250, 0.98);
+  --app-fg: #242424;
+  --muted-fg: #616161;
   --sidebar-bg: rgba(255, 255, 255, 0.6);
   --panel-bg: rgba(255, 255, 255, 0.7);
   --panel-border: rgba(0, 0, 0, 0.15);
   --panel-hover: rgba(0, 0, 0, 0.04);
   --divider-color: rgba(0,0,0,0.08);
   --acrylic-dark: rgba(255,255,255,0.75);
-  --acrylic-blur-bg: rgba(248,250,252,0.85);
+  --acrylic-blur-bg: rgba(250,250,250,0.85);
   --input-bg: rgba(0,0,0,0.04);
   --scrollbar-thumb: rgba(0,0,0,0.15);
 }
@@ -165,7 +174,7 @@ a { color: var(--theme-color); text-decoration: none; }
 }
 .nav-item:hover { background: var(--panel-hover); color: var(--app-fg); }
 .nav-item.active {
-  background: rgba(76,162,255,0.12);
+  background: rgba(15,108,189,0.12);
   color: var(--theme-color);
   font-weight: 500;
 }
@@ -259,7 +268,7 @@ a { color: var(--theme-color); text-decoration: none; }
   width: 40px; height: 40px;
   border-radius: var(--radius-medium);
   display: flex; align-items: center; justify-content: center;
-  background: rgba(76,162,255,0.10);
+  background: rgba(15,108,189,0.10);
   color: var(--theme-color);
   margin-bottom: 12px;
 }
@@ -285,12 +294,12 @@ a { color: var(--theme-color); text-decoration: none; }
 .btn-primary { background: var(--theme-color); color: #fff; }
 .btn-primary:hover { box-shadow: var(--shadow-brand-glow); }
 .btn-danger { background: var(--color-danger); color: #fff; }
-.btn-danger:hover { box-shadow: 0 0 0 1px rgba(255,77,79,0.3), 0 4px 12px rgba(255,77,79,0.25); }
+.btn-danger:hover { box-shadow: 0 0 0 1px rgba(209,52,56,0.3), 0 4px 12px rgba(209,52,56,0.25); }
 .btn-success { background: var(--color-success); color: #fff; }
 .btn-outline-primary { background: transparent; border-color: var(--theme-color); color: var(--theme-color); }
-.btn-outline-primary:hover { background: rgba(76,162,255,0.1); box-shadow: var(--shadow-brand-glow); }
+.btn-outline-primary:hover { background: rgba(15,108,189,0.1); box-shadow: var(--shadow-brand-glow); }
 .btn-outline-danger { background: transparent; border-color: var(--color-danger); color: var(--color-danger); }
-.btn-outline-danger:hover { background: rgba(255,77,79,0.1); }
+.btn-outline-danger:hover { background: rgba(209,52,56,0.1); }
 .btn-outline-secondary { background: transparent; border-color: var(--panel-border); color: var(--muted-fg); }
 .btn-outline-secondary:hover { background: var(--panel-hover); color: var(--app-fg); }
 
@@ -301,10 +310,10 @@ a { color: var(--theme-color); text-decoration: none; }
   border-radius: var(--radius-small);
   font-size: 12px; font-weight: 500;
 }
-.severity-high { background: rgba(255,77,79,0.15); color: #ff4d4f; }
-.severity-medium { background: rgba(255,169,64,0.15); color: #ffa940; }
-.severity-low { background: rgba(76,162,255,0.15); color: #4ca2ff; }
-.severity-safe { background: rgba(82,196,26,0.15); color: #52c41a; }
+.severity-high { background: rgba(209,52,56,0.15); color: #d13438; }
+.severity-medium { background: rgba(193,156,0,0.15); color: #c19c00; }
+.severity-low { background: rgba(15,108,189,0.15); color: #0f6cbd; }
+.severity-safe { background: rgba(16,124,16,0.15); color: #107c10; }
 
 /* Tables */
 .table-container {
@@ -370,7 +379,7 @@ tr.selected td { box-shadow: inset 3px 0 0 var(--theme-color); }
 }
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--theme-color), #7ec8ff, var(--theme-color));
+  background: linear-gradient(90deg, var(--theme-color), #2886de, var(--theme-color));
   background-size: 200% 100%;
   border-radius: var(--radius-circular);
   transition: width 0.4s ease;
@@ -439,8 +448,8 @@ tr.selected td { box-shadow: inset 3px 0 0 var(--theme-color); }
 
 /* Breathing animation */
 @keyframes breathe {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(82,196,26,0); }
-  50% { box-shadow: 0 0 12px 4px rgba(82,196,26,0.3); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16,124,16,0); }
+  50% { box-shadow: 0 0 12px 4px rgba(16,124,16,0.3); }
 }
 .breathe { animation: breathe 2.5s ease-in-out infinite; }
 
@@ -453,7 +462,7 @@ tr.selected td { box-shadow: inset 3px 0 0 var(--theme-color); }
 
 /* Event flash */
 @keyframes eventFlash {
-  0% { background: rgba(76,162,255,0.15); }
+  0% { background: rgba(15,108,189,0.15); }
   100% { background: transparent; }
 }
 .event-flash { animation: eventFlash 1s ease; }
@@ -492,7 +501,7 @@ tr.selected td { box-shadow: inset 3px 0 0 var(--theme-color); }
   width: 36px; height: 36px;
   border-radius: var(--radius-medium);
   display: flex; align-items: center; justify-content: center;
-  background: rgba(76,162,255,0.10);
+  background: rgba(15,108,189,0.10);
   color: var(--theme-color);
   flex-shrink: 0;
 }
@@ -513,7 +522,7 @@ tr.selected td { box-shadow: inset 3px 0 0 var(--theme-color); }
   background: var(--input-bg);
 }
 .theme-option:hover { border-color: var(--theme-color); }
-.theme-option.selected { border-color: var(--theme-color); background: rgba(76,162,255,0.08); }
+.theme-option.selected { border-color: var(--theme-color); background: rgba(15,108,189,0.08); }
 .theme-option-icon { font-size: 24px; margin-bottom: 4px; }
 .theme-option-label { font-size: 13px; font-weight: 500; }
 
@@ -635,8 +644,8 @@ html.reduce-motion .btn:active {
       <!-- Engine status card -->
       <div class="card card-no-hover breathe" id="engineStatusCard" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
         <div class="flex items-center gap-12">
-          <div style="width:40px;height:40px;border-radius:var(--radius-medium);display:flex;align-items:center;justify-content:center;background:rgba(82,196,26,0.12);">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#52c41a" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
+          <div style="width:40px;height:40px;border-radius:var(--radius-medium);display:flex;align-items:center;justify-content:center;background:rgba(16,124,16,0.12);">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#107c10" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
           </div>
           <div>
             <div style="font-weight:600;font-size:15px;">引擎运行正常</div>
@@ -658,19 +667,19 @@ html.reduce-motion .btn:active {
           <div class="info-card-sub">持续监控中</div>
         </div>
         <div class="info-card">
-          <div class="info-card-icon" style="background:rgba(255,169,64,0.10);color:var(--color-warning);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></div>
+          <div class="info-card-icon" style="background:rgba(193,156,0,0.10);color:var(--color-warning);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></div>
           <div class="info-card-label">事件记录</div>
           <div class="info-card-value">1,247</div>
           <div class="info-card-sub">今日</div>
         </div>
         <div class="info-card">
-          <div class="info-card-icon" style="background:rgba(255,77,79,0.10);color:var(--color-danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></div>
+          <div class="info-card-icon" style="background:rgba(209,52,56,0.10);color:var(--color-danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5V19A9 3 0 0 0 21 19V5"/><path d="M3 12A9 3 0 0 0 21 12"/></svg></div>
           <div class="info-card-label">隔离文件</div>
           <div class="info-card-value">3</div>
           <div class="info-card-sub">2.4 MB</div>
         </div>
         <div class="info-card">
-          <div class="info-card-icon" style="background:rgba(255,77,79,0.10);color:var(--color-danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
+          <div class="info-card-icon" style="background:rgba(209,52,56,0.10);color:var(--color-danger);"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg></div>
           <div class="info-card-label">风险事件</div>
           <div class="info-card-value text-warning">5</div>
           <div class="info-card-sub">最近: 中危</div>
@@ -848,11 +857,11 @@ html.reduce-motion .btn:active {
             <div class="text-sm text-muted">总计</div>
             <div class="text-lg">247</div>
           </div>
-          <div style="text-align:center;padding:12px;background:rgba(76,162,255,0.06);border-radius:var(--radius-medium);">
+          <div style="text-align:center;padding:12px;background:rgba(15,108,189,0.06);border-radius:var(--radius-medium);">
             <div class="text-sm text-info">进程</div>
             <div class="text-lg text-info">89</div>
           </div>
-          <div style="text-align:center;padding:12px;background:rgba(255,169,64,0.06);border-radius:var(--radius-medium);">
+          <div style="text-align:center;padding:12px;background:rgba(193,156,0,0.06);border-radius:var(--radius-medium);">
             <div class="text-sm text-warning">文件</div>
             <div class="text-lg text-warning">112</div>
           </div>
@@ -902,7 +911,7 @@ html.reduce-motion .btn:active {
           </div>
           <!-- 关闭动效 -->
           <div class="settings-item" style="margin-top:8px;">
-            <div class="settings-item-icon" style="background:rgba(255,169,64,0.10);color:var(--color-warning);">
+            <div class="settings-item-icon" style="background:rgba(193,156,0,0.10);color:var(--color-warning);">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
             </div>
             <div class="settings-item-text">
@@ -932,7 +941,7 @@ html.reduce-motion .btn:active {
             <div class="settings-item-control"><div class="toggle on" onclick="toggleSwitch(this)"><div class="toggle-knob"></div></div></div>
           </div>
           <div class="settings-item">
-            <div class="settings-item-icon" style="background:rgba(255,169,64,0.10);color:var(--color-warning);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></div>
+            <div class="settings-item-icon" style="background:rgba(193,156,0,0.10);color:var(--color-warning);"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></div>
             <div class="settings-item-text"><div class="settings-item-title">文件 Hook 监控</div><div class="settings-item-desc">通过 Detours 注入监控文件读写操作</div></div>
             <div class="settings-item-control"><div class="toggle on" onclick="toggleSwitch(this)"><div class="toggle-knob"></div></div></div>
           </div>
@@ -991,7 +1000,7 @@ html.reduce-motion .btn:active {
       </button>
     </div>
     <p style="font-size:14px;margin-bottom:12px;">确定要恢复文件 <strong id="restoreFileName"></strong> 到原始位置吗？</p>
-    <div style="padding:12px;background:rgba(255,169,64,0.1);border-radius:var(--radius-medium);border:1px solid rgba(255,169,64,0.2);">
+    <div style="padding:12px;background:rgba(193,156,0,0.1);border-radius:var(--radius-medium);border:1px solid rgba(193,156,0,0.2);">
       <p style="font-size:13px;color:var(--color-warning);display:flex;align-items:center;gap:6px;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
         注意：如果原文件位置存在同名文件，可能会被覆盖。
@@ -1079,7 +1088,7 @@ function typeBadgeColor(type) {
 }
 
 function providerBadge(p) {
-  const style = p === 'Hook' ? 'background:rgba(255,169,64,0.15);color:#ffa940;' : 'background:rgba(76,162,255,0.15);color:#4ca2ff;';
+  const style = p === 'Hook' ? 'background:rgba(193,156,0,0.15);color:#c19c00;' : 'background:rgba(15,108,189,0.15);color:#0f6cbd;';
   return `<span class="badge" style="${style}">${p}</span>`;
 }
 

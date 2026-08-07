@@ -4,13 +4,13 @@
 // 通过订阅 ETW 广播频道，过滤文件操作事件，提取文件路径后调用扫描引擎检测。
 // Subscribes to ETW broadcast channel, filters file operation events, extracts file path, and calls scan engine.
 
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 use tokio::time;
 
-use crate::services::app_lifecycle_service::app_is_exiting;
 use crate::services::engine_service::EngineService;
 use crate::services::interception_service::{InterceptionEntry, InterceptionService};
 use crate::services::path_policy_service::should_skip_security_scan;
@@ -19,18 +19,75 @@ use crate::services::process_scanner_service::{
     scan_threat_type, ProcessScannerService,
 };
 use crate::services::scan_result_cache_service::{CachedScanResult, ScanResultCacheService};
-use tauri::{AppHandle, Manager, Runtime};
+use crate::services::service_context::ServiceContext;
 
 const FILE_MONITOR_STOP_POLL_MS: u64 = 250;
 const FILE_MONITOR_LAG_LOG_INTERVAL_SECS: u64 = 10;
+const FILE_MONITOR_SCAN_DEDUP_WINDOW_MS: u64 = 750;
+const FILE_MONITOR_SCAN_DEDUP_KEY_LIMIT: usize = 4096;
 
-// `tokio::spawn` 在 setup 阶段不可用，改用 Tauri 的 async_runtime
-// tokio::spawn is unavailable during setup, use tauri's async_runtime instead
+#[derive(Debug)]
+struct FileScanDedupGate {
+    window: Duration,
+    last_seen_by_path: BTreeMap<String, Instant>,
+    insertion_order: VecDeque<String>,
+}
+
+impl FileScanDedupGate {
+    fn new(window: Duration) -> Self {
+        Self {
+            window,
+            last_seen_by_path: BTreeMap::new(),
+            insertion_order: VecDeque::new(),
+        }
+    }
+
+    fn should_scan(&mut self, file_path: &str, now: Instant) -> bool {
+        let key = normalize_file_scan_dedup_key(file_path);
+        let is_recent_duplicate = self
+            .last_seen_by_path
+            .get(&key)
+            .map(|last_seen| {
+                now.checked_duration_since(*last_seen).unwrap_or_default() < self.window
+            })
+            .unwrap_or(false);
+
+        if is_recent_duplicate {
+            return false;
+        }
+
+        if !self.last_seen_by_path.contains_key(&key) {
+            self.insertion_order.push_back(key.clone());
+        }
+        self.last_seen_by_path.insert(key, now);
+        self.prune(now);
+        true
+    }
+
+    fn prune(&mut self, now: Instant) {
+        let retention = self.window.checked_mul(8).unwrap_or(self.window);
+        self.last_seen_by_path.retain(|_, last_seen| {
+            now.checked_duration_since(*last_seen).unwrap_or_default() <= retention
+        });
+        self.insertion_order
+            .retain(|key| self.last_seen_by_path.contains_key(key));
+
+        while self.last_seen_by_path.len() > FILE_MONITOR_SCAN_DEDUP_KEY_LIMIT {
+            let Some(oldest_key) = self.insertion_order.pop_front() else {
+                break;
+            };
+            self.last_seen_by_path.remove(&oldest_key);
+        }
+    }
+}
+
+// 后台任务使用 Tokio runtime spawn（调用方已在 Tokio 运行时上下文中）
+// Background tasks use Tokio runtime spawn (caller is already in a Tokio runtime context)
 fn spawn_task<F>(fut: F)
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
-    tauri::async_runtime::spawn(fut);
+    tokio::spawn(fut);
 }
 
 /// 文件监控服务
@@ -74,12 +131,12 @@ impl FileMonitorService {
     ///
     /// 中文关键词：启动监控，文件事件，ETW事件，引擎扫描，文件检测，排除项生效，允许列表生效，跳过扫描，运行时列表，实时保护
     /// English keywords: start monitoring, file events, ETW events, engine scan, file detection, exclusion effective, allowlist effective, skip scan, runtime list, realtime protection, stoppable receive
-    pub fn start<R: Runtime>(
+    pub fn start(
         &self,
         engine: Arc<EngineService>,
         cache: Arc<ScanResultCacheService>,
         interception: Arc<InterceptionService>,
-        app_handle: AppHandle<R>,
+        ctx: ServiceContext,
         etw_rx: broadcast::Receiver<String>,
     ) {
         if self.running.load(Ordering::SeqCst) {
@@ -97,6 +154,8 @@ impl FileMonitorService {
             let mut last_lag_log = Instant::now()
                 .checked_sub(Duration::from_secs(FILE_MONITOR_LAG_LOG_INTERVAL_SECS))
                 .unwrap_or_else(Instant::now);
+            let mut scan_dedup_gate =
+                FileScanDedupGate::new(Duration::from_millis(FILE_MONITOR_SCAN_DEDUP_WINDOW_MS));
 
             while running.load(Ordering::SeqCst) {
                 match time::timeout(file_monitor_stop_poll_interval(), rx.recv()).await {
@@ -110,6 +169,10 @@ impl FileMonitorService {
                         // 解析事件 JSON，判断是否为文件操作事件
                         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&json_str) {
                             if let Some(file_path) = extract_file_path_from_etw_event(&val) {
+                                if !scan_dedup_gate.should_scan(&file_path, Instant::now()) {
+                                    continue;
+                                }
+
                                 match should_skip_security_scan(&file_path) {
                                     Ok(true) => {
                                         continue;
@@ -134,13 +197,13 @@ impl FileMonitorService {
                                             );
                                             direct_intercept_malicious_file_writer(
                                                 &interception,
-                                                &app_handle,
+                                                &ctx,
                                                 &val,
                                                 &file_path,
                                                 &scan_result,
                                             );
                                             mark_hot_pid_for_file_event(
-                                                &app_handle,
+                                                &ctx,
                                                 &val,
                                                 "file_monitor_malicious_write",
                                             );
@@ -206,14 +269,14 @@ impl FileMonitorService {
 /// 函数作用：文件实时扫描命中恶意后，直接拦截触发文件写入/创建事件的来源 PID。
 /// Function name: direct_intercept_malicious_file_writer
 /// Purpose: Directly intercepts the source PID that wrote/created a malicious file in realtime.
-fn direct_intercept_malicious_file_writer<R: Runtime>(
+fn direct_intercept_malicious_file_writer(
     interception: &Arc<InterceptionService>,
-    app_handle: &AppHandle<R>,
+    ctx: &ServiceContext,
     event: &serde_json::Value,
     file_path: &str,
     scan_result: &CachedScanResult,
 ) {
-    if app_is_exiting(app_handle) {
+    if ctx.is_exiting() {
         return;
     }
 
@@ -258,18 +321,14 @@ fn direct_intercept_malicious_file_writer<R: Runtime>(
     };
 
     interception.enqueue(entry);
-    interception.try_show_next(app_handle);
+    interception.try_show_next(ctx);
 }
 
-fn mark_hot_pid_for_file_event<R: Runtime>(
-    app_handle: &AppHandle<R>,
-    event: &serde_json::Value,
-    source: &str,
-) {
+fn mark_hot_pid_for_file_event(ctx: &ServiceContext, event: &serde_json::Value, source: &str) {
     let Some(pid) = file_event_pid(event) else {
         return;
     };
-    if let Some(scanner) = app_handle.try_state::<ProcessScannerService>() {
+    if let Some(scanner) = ctx.get::<ProcessScannerService>() {
         scanner.mark_hot_pid(pid, source);
     }
 }
@@ -404,6 +463,10 @@ fn is_file_scan_operation(operation: &str) -> bool {
         || normalized.contains("write")
 }
 
+fn normalize_file_scan_dedup_key(file_path: &str) -> String {
+    file_path.trim().replace('/', "\\").to_ascii_lowercase()
+}
+
 /// 函数名称：string_at_any
 /// 函数作用：按候选路径读取 JSON 字符串字段，返回第一个非空字符串。
 /// Purpose: Reads JSON string fields by candidate paths and returns the first non-empty string.
@@ -440,6 +503,25 @@ mod tests {
             file_monitor_stop_poll_interval() <= Duration::from_millis(250),
             "file monitor stop should not wait on ETW events indefinitely"
         );
+    }
+
+    #[test]
+    fn file_scan_dedup_gate_suppresses_recent_same_path_events() {
+        let start = Instant::now();
+        let mut gate = FileScanDedupGate::new(Duration::from_millis(750));
+
+        assert!(gate.should_scan(r"C:\Temp\dropper.exe", start));
+        assert!(!gate.should_scan(r"c:/temp/dropper.exe", start + Duration::from_millis(200)));
+        assert!(gate.should_scan(r"C:\Temp\dropper.exe", start + Duration::from_millis(900)));
+    }
+
+    #[test]
+    fn file_scan_dedup_gate_keeps_distinct_paths_separate() {
+        let start = Instant::now();
+        let mut gate = FileScanDedupGate::new(Duration::from_millis(750));
+
+        assert!(gate.should_scan(r"C:\Temp\first.exe", start));
+        assert!(gate.should_scan(r"C:\Temp\second.exe", start + Duration::from_millis(200)));
     }
 
     #[test]

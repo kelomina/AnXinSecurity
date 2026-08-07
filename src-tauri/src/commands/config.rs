@@ -4,11 +4,22 @@ use crate::services::etw_service::EtwService;
 use crate::services::file_monitor_service::FileMonitorService;
 use crate::services::hook_service::HookService;
 use crate::services::interception_service::InterceptionService;
+use crate::services::ipc_bridge_service::IpcBridgeService;
+use crate::services::ipc_protocol::methods;
 use crate::services::process_monitor_service::ProcessMonitorService;
 use crate::services::process_scanner_service::ProcessScannerService;
 use crate::services::scan_result_cache_service::ScanResultCacheService;
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, State};
+
+/// 检查 UI 进程是否已通过 IPC 连接到服务进程（双进程架构）
+///  Check whether the UI process is connected to the service process via IPC (dual-process architecture)
+fn is_service_connected(app_handle: &AppHandle) -> bool {
+    app_handle
+        .try_state::<Arc<IpcBridgeService>>()
+        .map(|bridge| bridge.is_connected())
+        .unwrap_or(false)
+}
 
 /// 函数名称：get_config
 /// 函数作用：获取当前应用配置，返回完整 AppConfig 对象。
@@ -38,16 +49,38 @@ pub fn set_behavior_monitoring_enabled(
     state: State<Arc<Mutex<AppConfig>>>,
     enabled: bool,
 ) -> Result<(), String> {
-    let etw_state = app_handle
-        .try_state::<Arc<Mutex<EtwService>>>()
-        .ok_or("EtwService not managed")?;
-    let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
-    if enabled {
-        etw_service.resume(app_handle.clone())?;
+    // 双进程架构下 ETW 跑在服务进程里，必须通过 IPC 让它真正启停，
+    // 而不是只写配置文件——否则关掉开关后服务进程继续采集，
+    // 违反 AGENTS.md「功能开关关闭时，对应监控与采集逻辑必须真正停止」。
+    //  In the dual-process architecture ETW runs inside the service process, so the toggle must
+    //  travel over IPC instead of only rewriting the config file; otherwise the service keeps
+    //  collecting after the switch is turned off.
+    if is_service_connected(&app_handle) {
+        let bridge = app_handle
+            .try_state::<Arc<IpcBridgeService>>()
+            .ok_or("IpcBridgeService not managed")?;
+        bridge
+            .request(
+                methods::SET_BEHAVIOR_MONITORING,
+                serde_json::json!({ "enabled": enabled }),
+            )
+            .map_err(|e| format!("Failed to toggle behavior monitoring via IPC: {}", e))?;
     } else {
-        etw_service.pause()?;
+        let etw_state = app_handle
+            .try_state::<Arc<Mutex<EtwService>>>()
+            .ok_or("EtwService not managed")?;
+        let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
+        if enabled {
+            let ctx = crate::services::service_context::build_etw_service_context(&app_handle);
+            etw_service.resume(ctx)?;
+        } else {
+            etw_service.pause()?;
+        }
     }
 
+    // 运行态切换成功后才落盘，避免"配置说关了但后台还在跑"的不一致状态
+    //  Persist only after the runtime toggle succeeded, so the config never claims the monitor
+    //  is off while it is still running
     persist_behavior_monitoring_enabled(&state, enabled)?;
 
     Ok(())
@@ -87,45 +120,66 @@ pub fn set_process_monitoring_enabled(
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<AppConfig>>>,
     enabled: bool,
 ) -> Result<(), String> {
-    let watcher = app_handle
-        .try_state::<ProcessMonitorService>()
-        .ok_or("ProcessMonitorService not managed")?;
-    let process_scanner = app_handle
-        .try_state::<ProcessScannerService>()
-        .ok_or("ProcessScannerService not managed")?;
-    let hook = app_handle
-        .try_state::<Arc<HookService>>()
-        .ok_or("HookService not managed")?;
-    let file_monitoring_enabled = {
-        let config = state.lock().map_err(|e| e.to_string())?;
-        config.file_monitoring.enabled
-    };
-
-    if enabled {
-        let resource_dir = app_handle.path().resource_dir().ok();
-        hook.start("anxin_security_filehook", app_handle.clone())?;
-        watcher.start_with_resource_dir("", "", "", "", 2000, resource_dir.as_deref())?;
-        let engine = app_handle
-            .try_state::<Arc<EngineService>>()
-            .ok_or("EngineService not managed")?;
-        let cache = app_handle
-            .try_state::<Arc<ScanResultCacheService>>()
-            .ok_or("ScanResultCacheService not managed")?;
-        let interception = app_handle
-            .try_state::<Arc<InterceptionService>>()
-            .ok_or("InterceptionService not managed")?;
-        process_scanner.start(
-            engine.inner().clone(),
-            cache.inner().clone(),
-            interception.inner().clone(),
-            app_handle.clone(),
-            2000,
-        );
+    // 双进程架构下进程监控由服务进程管理，开关必须经 IPC 让服务端启停 APIHook
+    // watcher，而不是只写配置文件（服务模式不运行新进程扫描器，见 ipc_server.rs
+    // SET_PROCESS_MONITORING 的说明）。运行态切换成功后才落盘。
+    //  In the dual-process architecture process monitoring is managed by the service
+    //  process, so the toggle must start/stop the APIHook watcher over IPC instead of
+    //  only rewriting the config file (new-process scanning does not run in service
+    //  mode; see SET_PROCESS_MONITORING in ipc_server.rs). Persist only after the
+    //  runtime toggle succeeded.
+    if is_service_connected(&app_handle) {
+        let bridge = app_handle
+            .try_state::<Arc<IpcBridgeService>>()
+            .ok_or("IpcBridgeService not managed")?;
+        bridge
+            .request(
+                methods::SET_PROCESS_MONITORING,
+                serde_json::json!({ "enabled": enabled }),
+            )
+            .map_err(|e| format!("Failed to toggle process monitoring via IPC: {}", e))?;
     } else {
-        watcher.stop()?;
-        process_scanner.stop();
-        if !file_monitoring_enabled {
-            hook.stop()?;
+        let watcher = app_handle
+            .try_state::<ProcessMonitorService>()
+            .ok_or("ProcessMonitorService not managed")?;
+        let process_scanner = app_handle
+            .try_state::<ProcessScannerService>()
+            .ok_or("ProcessScannerService not managed")?;
+        let hook = app_handle
+            .try_state::<Arc<HookService>>()
+            .ok_or("HookService not managed")?;
+        let file_monitoring_enabled = {
+            let config = state.lock().map_err(|e| e.to_string())?;
+            config.file_monitoring.enabled
+        };
+
+        if enabled {
+            let resource_dir = app_handle.path().resource_dir().ok();
+            let ctx = crate::services::service_context::build_etw_service_context(&app_handle);
+            hook.start("anxin_security_filehook", ctx)?;
+            watcher.start_with_resource_dir("", "", "", "", 2000, resource_dir.as_deref())?;
+            let engine = app_handle
+                .try_state::<Arc<EngineService>>()
+                .ok_or("EngineService not managed")?;
+            let cache = app_handle
+                .try_state::<Arc<ScanResultCacheService>>()
+                .ok_or("ScanResultCacheService not managed")?;
+            let interception = app_handle
+                .try_state::<Arc<InterceptionService>>()
+                .ok_or("InterceptionService not managed")?;
+            process_scanner.start(
+                engine.inner().clone(),
+                cache.inner().clone(),
+                interception.inner().clone(),
+                app_handle.clone(),
+                2000,
+            );
+        } else {
+            watcher.stop()?;
+            process_scanner.stop();
+            if !file_monitoring_enabled {
+                hook.stop()?;
+            }
         }
     }
 
@@ -150,46 +204,64 @@ pub fn set_file_monitoring_enabled(
     state: tauri::State<'_, std::sync::Arc<std::sync::Mutex<AppConfig>>>,
     enabled: bool,
 ) -> Result<(), String> {
-    let file_monitor = app_handle
-        .try_state::<FileMonitorService>()
-        .ok_or("FileMonitorService not managed")?;
-    let hook = app_handle
-        .try_state::<Arc<HookService>>()
-        .ok_or("HookService not managed")?;
-    let process_monitoring_enabled = {
-        let config = state.lock().map_err(|e| e.to_string())?;
-        config.process_monitoring.enabled
-    };
-
-    if enabled {
-        hook.start("anxin_security_filehook", app_handle.clone())?;
-        let engine = app_handle
-            .try_state::<Arc<EngineService>>()
-            .ok_or("EngineService not managed")?;
-        let cache = app_handle
-            .try_state::<Arc<ScanResultCacheService>>()
-            .ok_or("ScanResultCacheService not managed")?;
-        let interception = app_handle
-            .try_state::<Arc<InterceptionService>>()
-            .ok_or("InterceptionService not managed")?;
-        let etw_state = app_handle
-            .try_state::<Arc<Mutex<EtwService>>>()
-            .ok_or("EtwService not managed")?;
-        let etw_rx = {
-            let etw = etw_state.lock().map_err(|e| e.to_string())?;
-            etw.subscribe()
-        };
-        file_monitor.start(
-            engine.inner().clone(),
-            cache.inner().clone(),
-            interception.inner().clone(),
-            app_handle.clone(),
-            etw_rx,
-        );
+    // 双进程架构下文件监控运行在服务进程，开关必须经 IPC 让服务端真正启停，
+    // 而不是只写配置文件——否则服务进程的 FileMonitorService 继续监视。
+    //  In the dual-process architecture file monitoring runs inside the service process,
+    //  so the toggle must travel over IPC instead of only rewriting the config file;
+    //  otherwise the service keeps monitoring after the switch is turned off.
+    if is_service_connected(&app_handle) {
+        let bridge = app_handle
+            .try_state::<Arc<IpcBridgeService>>()
+            .ok_or("IpcBridgeService not managed")?;
+        bridge
+            .request(
+                methods::SET_FILE_MONITORING,
+                serde_json::json!({ "enabled": enabled }),
+            )
+            .map_err(|e| format!("Failed to toggle file monitoring via IPC: {}", e))?;
     } else {
-        file_monitor.stop();
-        if !process_monitoring_enabled {
-            hook.stop()?;
+        let file_monitor = app_handle
+            .try_state::<FileMonitorService>()
+            .ok_or("FileMonitorService not managed")?;
+        let hook = app_handle
+            .try_state::<Arc<HookService>>()
+            .ok_or("HookService not managed")?;
+        let process_monitoring_enabled = {
+            let config = state.lock().map_err(|e| e.to_string())?;
+            config.process_monitoring.enabled
+        };
+
+        if enabled {
+            let ctx = crate::services::service_context::build_etw_service_context(&app_handle);
+            hook.start("anxin_security_filehook", ctx.clone())?;
+            let engine = app_handle
+                .try_state::<Arc<EngineService>>()
+                .ok_or("EngineService not managed")?;
+            let cache = app_handle
+                .try_state::<Arc<ScanResultCacheService>>()
+                .ok_or("ScanResultCacheService not managed")?;
+            let interception = app_handle
+                .try_state::<Arc<InterceptionService>>()
+                .ok_or("InterceptionService not managed")?;
+            let etw_state = app_handle
+                .try_state::<Arc<Mutex<EtwService>>>()
+                .ok_or("EtwService not managed")?;
+            let etw_rx = {
+                let etw = etw_state.lock().map_err(|e| e.to_string())?;
+                etw.subscribe()
+            };
+            file_monitor.start(
+                engine.inner().clone(),
+                cache.inner().clone(),
+                interception.inner().clone(),
+                ctx,
+                etw_rx,
+            );
+        } else {
+            file_monitor.stop();
+            if !process_monitoring_enabled {
+                hook.stop()?;
+            }
         }
     }
 

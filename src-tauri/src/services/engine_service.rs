@@ -20,28 +20,71 @@ pub struct EngineService {
 
 impl EngineService {
     /// 函数名称：new
-    /// 函数作用：创建 EngineService，并立即加载原生扫描引擎。
-    /// Purpose: Creates EngineService and loads the native scan engine immediately.
+    /// 函数作用：创建 EngineService，延迟加载原生扫描引擎。引擎在后台异步加载，不阻塞主线程。
+    /// Purpose: Creates EngineService with deferred engine loading. The engine loads asynchronously in the background without blocking the main thread.
     /// 调用方：main.rs setup
     /// Called by: main.rs setup
-    /// 被调用方：NativeEngineService::new。
-    /// Calls: NativeEngineService::new.
+    /// 被调用方：spawn_background_load（内部异步加载）。
+    /// Calls: spawn_background_load (internal async loading).
     /// 参数说明：engine_dll_path 为 axon_engine.dll 路径；engine_root_path 为 Engine/Axon 根目录。
     /// Parameters: engine_dll_path is axon_engine.dll path; engine_root_path is Engine/Axon root.
-    /// 返回值说明：加载成功返回 EngineService，加载失败返回 String。
-    /// Returns: EngineService when loading succeeds; String error when loading fails.
-    /// 错误处理：DLL 或模型加载失败时向上返回，避免应用误认为引擎可用。
-    /// Error handling: Propagates DLL/model loading failures so the app does not treat the engine as available.
-    /// 中文关键词：引擎服务，初始化，原生引擎封装，引擎启动
-    /// English keywords: engine service, initialization, native engine wrapper, engine start
+    /// 返回值说明：始终返回 EngineService（native 初始为 None），引擎在后台加载完成后自动填充。
+    /// Returns: Always returns EngineService (native initially None); engine fills in after background load completes.
+    /// 错误处理：路径为空时返回错误；后台加载失败只记录日志，不阻断应用启动。
+    /// Error handling: Returns error on empty paths; background load failures are logged without blocking app startup.
+    /// 中文关键词：引擎服务，延迟初始化，异步加载，不阻塞主线程
+    /// English keywords: engine service, deferred init, async loading, non-blocking
     pub fn new(engine_dll_path: String, engine_root_path: String) -> Result<Self, String> {
-        let native = NativeEngineService::new(&engine_dll_path, &engine_root_path)?;
+        if engine_dll_path.trim().is_empty() || engine_root_path.trim().is_empty() {
+            return Err("Engine DLL path and root path must not be empty".to_string());
+        }
         Ok(Self {
-            native: Arc::new(Mutex::new(Some(Arc::new(native)))),
+            native: Arc::new(Mutex::new(None)),
             engine_dll_path,
             engine_root_path,
             cancel_flag: Arc::new(AtomicBool::new(false)),
         })
+    }
+
+    /// 函数名称：spawn_background_load
+    /// 函数作用：在后台异步加载原生引擎 DLL 和模型，加载完成后填充 native 字段。
+    /// Purpose: Loads the native engine DLL and models asynchronously in the background, filling the native field when complete.
+    /// 调用方：main.rs setup（在创建 EngineService 后立即调用）。
+    /// Called by: main.rs setup (called immediately after creating EngineService).
+    /// 被调用方：NativeEngineService::new。
+    /// Calls: NativeEngineService::new.
+    /// 中文关键词：后台加载，异步初始化，引擎加载
+    /// English keywords: background load, async init, engine loading
+    pub fn spawn_background_load(self: &Arc<Self>) {
+        let dll_path = self.engine_dll_path.clone();
+        let root_path = self.engine_root_path.clone();
+        let native_arc = self.native.clone();
+        tauri::async_runtime::spawn(async move {
+            eprintln!("[EngineService] Background engine load started");
+            let result = tokio::task::spawn_blocking(move || {
+                NativeEngineService::new(&dll_path, &root_path).map(Arc::new)
+            })
+            .await;
+            match result {
+                Ok(Ok(engine)) => {
+                    if let Ok(mut guard) = native_arc.lock() {
+                        if guard.is_none() {
+                            *guard = Some(engine);
+                            eprintln!("[EngineService] Background engine load succeeded");
+                        }
+                    }
+                }
+                Ok(Err(e)) => {
+                    eprintln!("[EngineService] Background engine load failed: {}", e);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[EngineService] Background engine load task panicked: {}",
+                        e
+                    );
+                }
+            }
+        });
     }
 
     /// 函数名称：health_check
@@ -475,6 +518,20 @@ impl EngineService {
         self.cancel_flag.load(Ordering::SeqCst)
     }
 
+    /// 函数名称：is_loaded
+    /// 函数作用：返回原生扫描引擎是否已成功加载完成。
+    /// Purpose: Returns whether the native scan engine has finished loading.
+    /// 调用方：ipc_server GET_STATUS（上报引擎真实在线状态，而非"是否注册过"）
+    /// Called by: ipc_server GET_STATUS (reports the engine's real online state, not "was it registered")
+    /// 中文关键词：引擎加载状态，真实运行态
+    /// English keywords: engine load state, real runtime state
+    pub fn is_loaded(&self) -> bool {
+        self.native
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+
     /// 函数名称：reset_cancel_flag
     /// 函数作用：重置取消标志为 false，在开始新扫描前调用。
     /// Purpose: Resets the cancel flag to false, called before starting a new scan.
@@ -493,6 +550,7 @@ impl EngineService {
     /// Called by: process_scanner_service / file_monitor_service
     /// 中文关键词：恶意判断，快速检测
     /// English keywords: malware check, quick detection
+    #[allow(dead_code)]
     pub async fn is_malware(&self, file_path: &str) -> Result<(bool, f64), String> {
         let native = self.require_native()?;
         let file_path = file_path.to_string();

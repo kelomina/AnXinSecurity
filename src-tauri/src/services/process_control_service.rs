@@ -93,6 +93,54 @@ pub(crate) fn is_current_process_or_ancestor(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+/// 函数名称：is_windows_control_chain_process_name
+/// 函数作用：判断进程名是否属于 Windows 调试、运维或 PowerShell Direct 控制链。
+/// Function name: is_windows_control_chain_process_name
+/// Purpose: Returns whether a process name belongs to the Windows control/debug/PowerShell Direct chain.
+pub(crate) fn is_windows_control_chain_process_name(process_name: &str) -> bool {
+    matches!(
+        process_name.trim().to_ascii_lowercase().as_str(),
+        "powershell.exe" | "pwsh.exe" | "cmd.exe" | "wsmprovhost.exe"
+    )
+}
+
+/// 函数名称：is_windows_control_chain_process_path
+/// 函数作用：判断进程路径是否是 Windows 自带控制链可执行文件路径。
+/// Function name: is_windows_control_chain_process_path
+/// Purpose: Returns whether a process path is a Windows-owned control-chain executable.
+pub(crate) fn is_windows_control_chain_process_path(process_path: &str) -> bool {
+    let normalized = process_path.trim().replace('/', "\\").to_ascii_lowercase();
+    let normalized = normalized
+        .strip_prefix("\\\\?\\")
+        .or_else(|| normalized.strip_prefix("\\??\\"))
+        .unwrap_or(&normalized);
+
+    normalized.ends_with("\\windows\\system32\\windowspowershell\\v1.0\\powershell.exe")
+        || normalized.ends_with("\\windows\\syswow64\\windowspowershell\\v1.0\\powershell.exe")
+        || normalized.ends_with("\\windows\\system32\\cmd.exe")
+        || normalized.ends_with("\\windows\\syswow64\\cmd.exe")
+        || normalized.ends_with("\\windows\\system32\\wsmprovhost.exe")
+        || normalized.ends_with("\\program files\\powershell\\7\\pwsh.exe")
+}
+
+/// 函数名称：is_windows_control_chain_process
+/// 函数作用：用进程名和可选进程路径判断目标是否属于控制链。
+/// Function name: is_windows_control_chain_process
+/// Purpose: Uses process name and a trusted process path to identify Windows control-chain processes.
+pub(crate) fn is_windows_control_chain_process(
+    process_name: &str,
+    process_path: Option<&str>,
+) -> bool {
+    if !is_windows_control_chain_process_name(process_name) {
+        return false;
+    }
+
+    match process_path.map(str::trim).filter(|path| !path.is_empty()) {
+        Some(path) => is_windows_control_chain_process_path(path),
+        None => false,
+    }
+}
+
 fn process_ancestor_pids(root_pid: u32) -> Result<Vec<u32>, String> {
     if root_pid == 0 || root_pid == u32::MAX {
         return Ok(Vec::new());
@@ -282,5 +330,47 @@ unsafe fn call_nt_function(func_name: &str, handle: HANDLE) -> Result<bool, Stri
             "{} failed with status: 0x{:X}",
             func_name, status as u32
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_control_chain_path_accepts_windows_owned_tools() {
+        assert!(is_windows_control_chain_process(
+            "powershell.exe",
+            Some(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+        ));
+        assert!(is_windows_control_chain_process(
+            "cmd.exe",
+            Some(r"\\?\C:\Windows\System32\cmd.exe")
+        ));
+        assert!(is_windows_control_chain_process(
+            "wsmprovhost.exe",
+            Some(r"\??\C:\Windows\System32\wsmprovhost.exe")
+        ));
+        assert!(is_windows_control_chain_process(
+            "pwsh.exe",
+            Some(r"C:\Program Files\PowerShell\7\pwsh.exe")
+        ));
+    }
+
+    #[test]
+    fn windows_control_chain_path_rejects_masqueraded_tools() {
+        assert!(!is_windows_control_chain_process(
+            "powershell.exe",
+            Some(r"C:\Temp\powershell.exe")
+        ));
+        assert!(!is_windows_control_chain_process(
+            "cmd.exe",
+            Some(r"C:\Users\Public\cmd.exe")
+        ));
+        assert!(!is_windows_control_chain_process(
+            "notepad.exe",
+            Some(r"C:\Windows\System32\notepad.exe")
+        ));
+        assert!(!is_windows_control_chain_process("powershell.exe", None));
     }
 }

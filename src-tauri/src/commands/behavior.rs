@@ -1,4 +1,6 @@
 use crate::services::etw_service::{EtwDiagnosticsSnapshot, EtwService};
+use crate::services::ipc_bridge_service::IpcBridgeService;
+use crate::services::ipc_protocol::methods;
 use crate::services::runtime_list_store::runtime_file_path;
 use serde::Serialize;
 use std::fs;
@@ -33,14 +35,53 @@ pub fn pause_etw(app_handle: AppHandle) -> Result<bool, String> {
 /// English keywords: ETW status, behavior monitoring status, collection status
 #[tauri::command]
 pub fn get_etw_status(app_handle: AppHandle) -> Result<EtwRuntimeStatus, String> {
-    let etw_state = app_handle
-        .try_state::<Arc<Mutex<EtwService>>>()
-        .ok_or("EtwService not managed")?;
+    // 已连接服务进程时**必须优先**走 IPC：UI 进程无条件 app.manage(EtwService)（main.rs），
+    // 但服务模式下本地实例从未启动，先查本地会让本分支恒命中并返回 running=false，
+    // 把正在 SYSTEM 侧采集的服务显示成"ETW 已停止"，下面的 IPC 分支则成为死代码。
+    // 判据与 commands/config.rs::is_service_connected 保持一致。
+    //  When connected to the service process the IPC path MUST win: the UI process calls
+    //  app.manage(EtwService) unconditionally (main.rs) but never starts that local instance in
+    //  service mode, so checking locally first always returned running=false and rendered a
+    //  actively-collecting service as "ETW stopped", leaving the IPC branch unreachable.
+    if let Some(ipc_bridge) = app_handle.try_state::<Arc<IpcBridgeService>>() {
+        if ipc_bridge.is_connected() {
+            let result = ipc_bridge
+                .request(methods::GET_STATUS, serde_json::json!({}))
+                .map_err(|e| format!("Failed to query ETW status via IPC: {}", e))?;
+            let running = result
+                .get("etw_running")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            // 服务进程分别上报 running 与 collecting；旧版服务不带 etw_collecting 字段时
+            // 回退为 running，避免把已在采集的服务显示成未采集。
+            //  The service reports running and collecting separately; fall back to running when
+            //  an older service omits etw_collecting so a collecting service is not shown idle.
+            let collecting = result
+                .get("etw_collecting")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(running);
+            return Ok(EtwRuntimeStatus {
+                running,
+                collecting,
+            });
+        }
+    }
 
-    let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
+    // 独立模式：查询本地 EtwService state
+    //  Standalone mode: check the local EtwService state
+    if let Some(etw_state) = app_handle.try_state::<Arc<Mutex<EtwService>>>() {
+        let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
+        return Ok(EtwRuntimeStatus {
+            running: etw_service.is_running(),
+            collecting: etw_service.is_collecting(),
+        });
+    }
+
+    // 既无本地 state 也无 IPC 连接，返回默认状态
+    //  No local state and no IPC connection, return default status
     Ok(EtwRuntimeStatus {
-        running: etw_service.is_running(),
-        collecting: etw_service.is_collecting(),
+        running: false,
+        collecting: false,
     })
 }
 
@@ -104,13 +145,13 @@ pub fn export_etw_diagnostics(app_handle: AppHandle) -> Result<String, String> {
 
 #[tauri::command]
 pub fn resume_etw(app_handle: AppHandle) -> Result<bool, String> {
-    let app_handle_clone = app_handle.clone();
     let etw_state = app_handle
         .try_state::<Arc<Mutex<EtwService>>>()
         .ok_or("EtwService not managed")?;
 
+    let ctx = crate::services::service_context::build_etw_service_context(&app_handle);
     let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
-    etw_service.resume(app_handle_clone)?;
+    etw_service.resume(ctx)?;
 
     Ok(true)
 }

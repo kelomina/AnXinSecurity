@@ -1,21 +1,21 @@
 // 文件钩子服务 — 管理命名管道服务端，接收注入进程的实时文件操作事件
 // File hook service — manages named pipe server, receives real-time file operation events from injected processes
 use crate::commands::logs;
-use crate::services::app_lifecycle_service::app_is_exiting;
 use crate::services::behavior_service::BehaviorService;
 use crate::services::interception_diagnostics_service::append_interception_diagnostic;
 use crate::services::risk_service::{RiskEvent, RiskService};
+use crate::services::service_context::ServiceContext;
 use crate::services::trust_service::TrustService;
 use libloading::{Library, Symbol};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::c_void;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
 use std::thread;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Manager};
 use tokio::sync::mpsc;
 
 use crate::services::interception_service::{InterceptionEntry, InterceptionService};
@@ -116,7 +116,7 @@ impl InjectionChainAlert {
     pub fn from_blocked_hook_event(event: &FileHookEvent) -> Option<Self> {
         let api = event.api.as_deref()?;
         let api_lower = api.to_ascii_lowercase();
-        if api_lower != "createremotethread" && api_lower != "createremotethreadex" {
+        if !is_remote_thread_creation_api(&api_lower) {
             return None;
         }
         if !event.blocked.unwrap_or(false) {
@@ -263,7 +263,7 @@ impl InjectionChainTracker {
             state.saw_virtual_alloc_ex = true;
         } else if api_lower == "writeprocessmemory" {
             state.saw_write_process_memory = true;
-        } else if api_lower == "createremotethread" || api_lower == "createremotethreadex" {
+        } else if is_remote_thread_creation_api(&api_lower) {
             state.saw_create_remote_thread = true;
         }
 
@@ -322,6 +322,122 @@ pub enum HookPipeMessage {
     Event(FileHookEvent),
 }
 
+struct PipeSecurityAttributes {
+    security_descriptor: windows::Win32::Security::PSECURITY_DESCRIPTOR,
+    attributes: windows::Win32::Security::SECURITY_ATTRIBUTES,
+}
+
+impl PipeSecurityAttributes {
+    fn new() -> Result<Self, String> {
+        use windows::core::PCWSTR;
+        use windows::Win32::Foundation::BOOL;
+        use windows::Win32::Security::Authorization::{
+            ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+        };
+        use windows::Win32::Security::{PSECURITY_DESCRIPTOR, SECURITY_ATTRIBUTES};
+
+        let user_sid = current_user_sid_string()?;
+        let sddl = format!("D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;{})", user_sid);
+        let mut sddl_wide: Vec<u16> = sddl.encode_utf16().collect();
+        sddl_wide.push(0);
+
+        let mut security_descriptor = PSECURITY_DESCRIPTOR::default();
+        unsafe {
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                PCWSTR(sddl_wide.as_ptr()),
+                SDDL_REVISION_1,
+                &mut security_descriptor,
+                None,
+            )
+            .map_err(|err| {
+                format!(
+                    "Failed to build file hook pipe security descriptor: {}",
+                    err
+                )
+            })?;
+        }
+
+        Ok(Self {
+            security_descriptor,
+            attributes: SECURITY_ATTRIBUTES {
+                nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: security_descriptor.0,
+                bInheritHandle: BOOL(0),
+            },
+        })
+    }
+
+    fn as_raw_ptr(&self) -> *const u8 {
+        &self.attributes as *const windows::Win32::Security::SECURITY_ATTRIBUTES as *const u8
+    }
+}
+
+impl Drop for PipeSecurityAttributes {
+    fn drop(&mut self) {
+        if !self.security_descriptor.0.is_null() {
+            unsafe {
+                let _ = windows::Win32::Foundation::LocalFree(windows::Win32::Foundation::HLOCAL(
+                    self.security_descriptor.0,
+                ));
+            }
+            self.security_descriptor.0 = std::ptr::null_mut();
+        }
+    }
+}
+
+struct OwnedHandle(windows::Win32::Foundation::HANDLE);
+
+impl Drop for OwnedHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+fn current_user_sid_string() -> Result<String, String> {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::{HANDLE, HLOCAL};
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    unsafe {
+        let mut token = HANDLE::default();
+        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token)
+            .map_err(|err| format!("Failed to open current process token: {}", err))?;
+        let _token = OwnedHandle(token);
+
+        let mut required_len = 0u32;
+        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut required_len);
+        if required_len == 0 {
+            return Err("Failed to query current user token size".to_string());
+        }
+
+        let mut buffer = vec![0u8; required_len as usize];
+        GetTokenInformation(
+            token,
+            TokenUser,
+            Some(buffer.as_mut_ptr() as *mut c_void),
+            required_len,
+            &mut required_len,
+        )
+        .map_err(|err| format!("Failed to query current user token: {}", err))?;
+
+        let token_user = &*(buffer.as_ptr() as *const TOKEN_USER);
+        let mut string_sid = PWSTR::null();
+        ConvertSidToStringSidW(token_user.User.Sid, &mut string_sid)
+            .map_err(|err| format!("Failed to stringify current user SID: {}", err))?;
+        let sid = string_sid
+            .to_string()
+            .map_err(|err| format!("Failed to read current user SID: {}", err))?;
+        let _ = windows::Win32::Foundation::LocalFree(HLOCAL(string_sid.0 as *mut c_void));
+        Ok(sid)
+    }
+}
+
 /// 文件钩子服务 — 命名管道服务端
 /// File hook service — named pipe server
 ///
@@ -351,8 +467,8 @@ impl HookService {
     /// Called by: commands::hook::start_hook_service.
     /// 被调用方：serve_pipe_connection、dispatch_hook_event。
     /// Calls: serve_pipe_connection, dispatch_hook_event.
-    /// 参数说明：pipe_name 为管道名称后缀；app_handle 用于访问 Tauri 状态和事件系统。
-    /// Parameters: pipe_name is the pipe name suffix; app_handle accesses Tauri state and events.
+    /// 参数说明：pipe_name 为管道名称后缀；ctx 用于访问服务上下文和事件系统。
+    /// Parameters: pipe_name is the pipe name suffix; ctx accesses service context and events.
     /// 返回值说明：成功返回 Hook 事件接收器；已经启动时返回一个空接收器以保持启动命令幂等；失败返回 String。
     /// Returns: Hook event receiver on success; when already running returns an empty receiver so start commands are idempotent; String error on failure.
     /// 错误处理：重复启动幂等成功；单条事件分发失败记录错误后继续服务；管道等待采用短轮询，避免 stop 无法打断阻塞等待。
@@ -362,7 +478,7 @@ impl HookService {
     pub fn start(
         &self,
         pipe_name: &str,
-        app_handle: AppHandle,
+        ctx: ServiceContext,
     ) -> Result<mpsc::UnboundedReceiver<FileHookEvent>, String> {
         if self.running.load(Ordering::SeqCst) {
             let (_tx, rx) = mpsc::unbounded_channel::<FileHookEvent>();
@@ -389,8 +505,25 @@ impl HookService {
             let running = self.running.clone();
             let injection_tracker = self.injection_tracker.clone();
             let worker_pipe_name = full_pipe_name.clone();
-            let worker_app_handle = app_handle.clone();
+            let worker_ctx = ctx.clone();
             let handle = thread::spawn(move || {
+                let pipe_security = match PipeSecurityAttributes::new() {
+                    Ok(security) => security,
+                    Err(err) => {
+                        append_interception_diagnostic(
+                            "hook_pipe_worker_error",
+                            serde_json::json!({
+                                "workerIndex": worker_index,
+                                "error": err.clone(),
+                            }),
+                        );
+                        eprintln!(
+                            "[HookService] Pipe worker {} failed to initialize security: {}",
+                            worker_index, err
+                        );
+                        return;
+                    }
+                };
                 append_interception_diagnostic(
                     "hook_pipe_worker_started",
                     serde_json::json!({
@@ -399,14 +532,17 @@ impl HookService {
                     }),
                 );
                 while running.load(Ordering::SeqCst) {
-                    match serve_pipe_connection(&worker_pipe_name, &running, worker_index) {
+                    match serve_pipe_connection(
+                        &worker_pipe_name,
+                        &running,
+                        worker_index,
+                        &pipe_security,
+                    ) {
                         Ok(events) => {
                             for event in events {
-                                if let Err(err) = dispatch_hook_event(
-                                    &worker_app_handle,
-                                    event,
-                                    &injection_tracker,
-                                ) {
+                                if let Err(err) =
+                                    dispatch_hook_event(&worker_ctx, event, &injection_tracker)
+                                {
                                     eprintln!("[HookService] Event dispatch error: {}", err);
                                 }
                             }
@@ -621,6 +757,13 @@ pub fn hook_event_to_risk_event(event: &FileHookEvent, app_event: &serde_json::V
         } else {
             Some(event.path.clone())
         },
+        process_path: event.process_path.clone(),
+        // 文件 Hook 事件不来自 ETW 规则，没有建议动作；按不阻断处理。
+        // 这些事件的 severity 本就低于自动挂起阈值，真正的拦截由 InjectionChainTracker 完成。
+        //  File hook events do not come from ETW rules, so there is no recommended action;
+        //  treated as non-blocking. Their severity is already below the auto-suspend threshold,
+        //  and real interception is performed by InjectionChainTracker.
+        recommend_action: None,
         threat_type: if is_injection_api {
             "api_hook_process_activity".to_string()
         } else {
@@ -649,7 +792,7 @@ pub fn hook_event_to_risk_event(event: &FileHookEvent, app_event: &serde_json::V
 }
 
 fn dispatch_hook_event(
-    app_handle: &AppHandle,
+    ctx: &ServiceContext,
     event: FileHookEvent,
     injection_tracker: &Arc<Mutex<InjectionChainTracker>>,
 ) -> Result<(), String> {
@@ -714,24 +857,28 @@ fn dispatch_hook_event(
                 "startAddress": alert.start_address.clone(),
             }),
         );
-        enqueue_injection_target_interception(app_handle, &event, alert);
+        enqueue_injection_target_interception(ctx, &event, alert);
     }
 
     let app_event = hook_event_to_app_event(&event);
 
-    let _ = logs::append_event_log_and_emit(app_handle, &app_event);
-    if !app_is_exiting(app_handle) {
-        let _ = app_handle.emit("etw-event", app_event.clone());
-        let _ = app_handle.emit("file-hook-event", app_event.clone());
+    // 写入日志缓冲区（不再通过 Tauri emit，事件总线由调用方按需桥接）
+    // Append to log buffer only; Tauri emit is replaced by event bus bridging at the caller.
+    if let Ok(entry) = serde_json::to_string(&app_event) {
+        logs::append_log(entry);
+    }
+    if !ctx.is_exiting() {
+        let _ = ctx.emit("etw-event", app_event.clone());
+        let _ = ctx.emit("file-hook-event", app_event.clone());
     }
 
-    if let Some(behavior_state) = app_handle.try_state::<Arc<std::sync::Mutex<BehaviorService>>>() {
+    if let Some(behavior_state) = ctx.get::<std::sync::Mutex<BehaviorService>>() {
         let behavior = {
             let guard = behavior_state.lock().map_err(|e| e.to_string())?;
             guard.clone()
         };
         let behavior_event = app_event.clone();
-        tauri::async_runtime::spawn(async move {
+        tokio::spawn(async move {
             if let Err(err) = behavior.ingest_event(behavior_event).await {
                 eprintln!("[HookService] Behavior ingest error: {}", err);
             }
@@ -739,21 +886,21 @@ fn dispatch_hook_event(
     }
 
     let risk_event = hook_event_to_risk_event(&event, &app_event);
-    let app_handle_risk = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Some(risk_state) = app_handle_risk.try_state::<RiskService>() {
-            let behavior_service = app_handle_risk
-                .try_state::<Arc<std::sync::Mutex<BehaviorService>>>()
+    let ctx_risk = ctx.clone();
+    tokio::spawn(async move {
+        if let Some(risk_state) = ctx_risk.get::<RiskService>() {
+            let behavior_service = ctx_risk
+                .get::<std::sync::Mutex<BehaviorService>>()
                 .and_then(|state| state.lock().ok().map(|guard| guard.clone()));
-            let trust_state = app_handle_risk.try_state::<Arc<TrustService>>();
-            let trust_service = trust_state.as_ref().map(|state| state.inner().as_ref());
+            let trust_state = ctx_risk.get::<TrustService>();
+            let trust_service = trust_state.as_ref().map(|state| state.as_ref());
 
             let _ = risk_state
                 .analyze_event(
                     risk_event,
                     trust_service,
                     behavior_service.as_ref(),
-                    &app_handle_risk,
+                    &ctx_risk,
                 )
                 .await;
         }
@@ -763,7 +910,7 @@ fn dispatch_hook_event(
 }
 
 fn enqueue_injection_target_interception(
-    app_handle: &AppHandle,
+    ctx: &ServiceContext,
     event: &FileHookEvent,
     alert: InjectionChainAlert,
 ) {
@@ -786,7 +933,7 @@ fn enqueue_injection_target_interception(
         alert.target_suspended_by_hook
     );
 
-    if app_is_exiting(app_handle) {
+    if ctx.is_exiting() {
         append_interception_diagnostic(
             "injection_target_interception_skipped",
             serde_json::json!({
@@ -847,7 +994,7 @@ fn enqueue_injection_target_interception(
         "targetProcessPath": target_process_path.clone(),
     });
 
-    if let Some(interception) = app_handle.try_state::<Arc<InterceptionService>>() {
+    if let Some(interception) = ctx.get::<InterceptionService>() {
         let entry = InterceptionEntry {
             pid: alert.target_pid,
             process_name: target_process_name,
@@ -904,7 +1051,7 @@ fn enqueue_injection_target_interception(
                     "[HookService] Injection target queued for interception window: target_pid={}, source_pid={}, pre_suspended={}",
                     alert.target_pid, alert.source_pid, alert.target_suspended_by_hook
                 );
-                interception.try_show_next(app_handle);
+                interception.try_show_next(ctx);
             } else {
                 eprintln!(
                     "[HookService] Injection target was not queued: target_pid={}, source_pid={}, result={:?}",
@@ -926,7 +1073,7 @@ fn enqueue_injection_target_interception(
         rollback_pre_suspended_injection_target(alert.target_pid, "missing interception service");
     }
 
-    if let Some(scanner) = app_handle.try_state::<ProcessScannerService>() {
+    if let Some(scanner) = ctx.get::<ProcessScannerService>() {
         scanner.mark_hot_pid(alert.source_pid, "api_hook_injection_source");
         scanner.mark_hot_pid(alert.target_pid, "api_hook_injection_target");
     }
@@ -972,7 +1119,15 @@ fn is_process_injection_api(api: Option<&str>) -> bool {
                     | "writeprocessmemory"
                     | "createremotethread"
                     | "createremotethreadex"
+                    | "ntcreatethreadex"
             )
+    )
+}
+
+fn is_remote_thread_creation_api(api_lower: &str) -> bool {
+    matches!(
+        api_lower,
+        "createremotethread" | "createremotethreadex" | "ntcreatethreadex"
     )
 }
 
@@ -1008,6 +1163,57 @@ pub fn parse_hook_pipe_line(line: &str) -> Result<Option<HookPipeMessage>, Strin
     Ok(Some(HookPipeMessage::Event(event)))
 }
 
+pub fn split_hook_pipe_messages(message: &str) -> Vec<&str> {
+    let mut ranges = Vec::new();
+    let mut start: Option<usize> = None;
+    let mut depth: i32 = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in message.char_indices() {
+        if start.is_none() {
+            if ch == '{' {
+                start = Some(idx);
+                depth = 1;
+                in_string = false;
+                escaped = false;
+            }
+            continue;
+        }
+
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    if let Some(begin) = start.take() {
+                        ranges.push(&message[begin..idx + ch.len_utf8()]);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    if ranges.is_empty() && !message.trim().is_empty() {
+        vec![message.trim()]
+    } else {
+        ranges
+    }
+}
+
 /// 函数名称：should_retry_hook_pipe_wait
 /// 函数作用：判断命名管道在非阻塞等待中遇到的 Windows 错误码是否可以短暂等待后重试。
 /// Purpose: Determines whether a Windows named-pipe nonblocking wait error can be retried after a short pause.
@@ -1020,10 +1226,23 @@ pub fn parse_hook_pipe_line(line: &str) -> Result<Option<HookPipeMessage>, Strin
 /// 中文关键词：命名管道，非阻塞等待，重试错误码，阻塞防护
 /// English keywords: named pipe, nonblocking wait, retryable error code, blocking guard
 pub fn should_retry_hook_pipe_wait(error_code: u32) -> bool {
-    const ERROR_NO_DATA: u32 = 232;
     const ERROR_PIPE_LISTENING: u32 = 536;
 
-    error_code == ERROR_NO_DATA || error_code == ERROR_PIPE_LISTENING
+    error_code == ERROR_PIPE_LISTENING
+}
+
+pub fn should_retry_hook_pipe_read(error_code: u32) -> bool {
+    const ERROR_NO_DATA: u32 = 232;
+    should_retry_hook_pipe_wait(error_code) || error_code == ERROR_NO_DATA
+}
+
+/// 函数名称：should_accept_hook_event_from_client
+/// 函数作用：校验 Hook 事件声明的 PID 是否等于命名管道实际客户端 PID，避免伪造事件冒充其他进程。
+/// Purpose: Verifies that the hook event PID matches the real named-pipe client PID, preventing forged events from impersonating another process.
+/// 中文关键词：管道鉴权，PID校验，Hook事件防伪
+/// English keywords: pipe authentication, PID validation, hook event anti-spoofing
+pub fn should_accept_hook_event_from_client(event: &FileHookEvent, client_pid: u32) -> bool {
+    client_pid != 0 && client_pid != 4 && client_pid != u32::MAX && event.pid == client_pid
 }
 
 fn diagnostic_preview(input: &str, max_chars: usize) -> String {
@@ -1041,7 +1260,23 @@ fn should_diagnose_hook_pipe_raw(message: &str) -> bool {
         || message.contains(r#""api":"WriteProcessMemory""#)
         || message.contains(r#""api":"CreateRemoteThread""#)
         || message.contains(r#""api":"CreateRemoteThreadEx""#)
+        || message.contains(r#""api":"NtCreateThreadEx""#)
         || message.contains(r#""blocked":true"#)
+}
+
+fn query_hook_pipe_client_pid(pipe_handle: isize) -> Result<u32, String> {
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+
+    let mut client_pid = 0u32;
+    unsafe {
+        GetNamedPipeClientProcessId(
+            HANDLE(pipe_handle as *mut c_void),
+            &mut client_pid as *mut u32,
+        )
+        .map_err(|err| format!("GetNamedPipeClientProcessId failed: {}", err))?;
+    }
+    Ok(client_pid)
 }
 
 /// 函数名称：serve_pipe_connection
@@ -1063,6 +1298,7 @@ fn serve_pipe_connection(
     pipe_name: &str,
     running: &Arc<AtomicBool>,
     worker_index: usize,
+    pipe_security: &PipeSecurityAttributes,
 ) -> Result<Vec<FileHookEvent>, String> {
     // 动态加载 kernel32.dll / Dynamically load kernel32.dll
     let kernel32 = unsafe {
@@ -1125,6 +1361,7 @@ fn serve_pipe_connection(
     const PIPE_TYPE_MESSAGE: u32 = 0x00000004;
     const PIPE_READMODE_MESSAGE: u32 = 0x00000002;
     const PIPE_NOWAIT: u32 = 0x00000001;
+    const PIPE_REJECT_REMOTE_CLIENTS: u32 = 0x00000008;
     const PIPE_UNLIMITED_INSTANCES: u32 = 255;
     const ERROR_BROKEN_PIPE: u32 = 109;
     const ERROR_PIPE_CONNECTED: u32 = 535;
@@ -1138,12 +1375,12 @@ fn serve_pipe_connection(
         create_pipe(
             pipe_name_c.as_ptr() as *const u8,
             PIPE_ACCESS_DUPLEX,
-            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT,
+            PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_NOWAIT | PIPE_REJECT_REMOTE_CLIENTS,
             PIPE_UNLIMITED_INSTANCES,
-            65536,            // out buffer
-            65536,            // in buffer
-            0,                // default timeout
-            std::ptr::null(), // default security
+            65536, // out buffer
+            65536, // in buffer
+            0,     // default timeout
+            pipe_security.as_raw_ptr(),
         )
     };
 
@@ -1184,6 +1421,30 @@ fn serve_pipe_connection(
         return Ok(Vec::new());
     }
 
+    let client_pid = match query_hook_pipe_client_pid(pipe_handle) {
+        Ok(pid) if pid != 0 && pid != 4 && pid != u32::MAX => Some(pid),
+        Ok(pid) => {
+            append_interception_diagnostic(
+                "hook_pipe_client_pid_invalid",
+                serde_json::json!({
+                    "workerIndex": worker_index,
+                    "clientPid": pid,
+                }),
+            );
+            None
+        }
+        Err(err) => {
+            append_interception_diagnostic(
+                "hook_pipe_client_pid_query_failed",
+                serde_json::json!({
+                    "workerIndex": worker_index,
+                    "error": err,
+                }),
+            );
+            None
+        }
+    };
+
     let mut events: Vec<FileHookEvent> = Vec::new();
     let mut buffer = vec![0u8; 65536];
 
@@ -1203,7 +1464,7 @@ fn serve_pipe_connection(
 
         if result == 0 || bytes_read == 0 {
             let error_code = unsafe { get_last_error() };
-            if should_retry_hook_pipe_wait(error_code) {
+            if should_retry_hook_pipe_read(error_code) {
                 empty_read_polls = empty_read_polls.saturating_add(1);
                 if empty_read_polls >= HOOK_PIPE_MAX_EMPTY_READ_POLLS {
                     append_interception_diagnostic(
@@ -1233,6 +1494,8 @@ fn serve_pipe_connection(
             break;
         }
 
+        empty_read_polls = 0;
+
         let msg = String::from_utf8_lossy(&buffer[..bytes_read as usize]);
         let should_diagnose_raw = should_diagnose_hook_pipe_raw(&msg);
         if should_diagnose_raw {
@@ -1246,7 +1509,7 @@ fn serve_pipe_connection(
                 }),
             );
         }
-        for line in msg.lines() {
+        for line in split_hook_pipe_messages(&msg) {
             match parse_hook_pipe_line(line) {
                 Ok(Some(HookPipeMessage::Heartbeat)) => {
                     let ack = b"{\"type\":\"heartbeat_ack\"}\n";
@@ -1262,6 +1525,24 @@ fn serve_pipe_connection(
                     };
                 }
                 Ok(Some(HookPipeMessage::Event(event))) => {
+                    if !client_pid
+                        .map(|pid| should_accept_hook_event_from_client(&event, pid))
+                        .unwrap_or(false)
+                    {
+                        append_interception_diagnostic(
+                            "hook_pipe_event_rejected",
+                            serde_json::json!({
+                                "workerIndex": worker_index,
+                                "reason": "client_pid_mismatch",
+                                "clientPid": client_pid,
+                                "eventPid": event.pid,
+                                "targetPid": event.target_pid,
+                                "api": event.api.clone(),
+                                "source": event.source.clone(),
+                            }),
+                        );
+                        continue;
+                    }
                     if is_process_injection_api(event.api.as_deref())
                         || event.source.as_deref() == Some("detours_process_injection")
                     {
@@ -1295,15 +1576,9 @@ fn serve_pipe_connection(
                 }
             }
         }
-        // file_hook_detours.dll 的上报模型是“一条消息一个短连接”：
-        // CreateFile/OpenProcess/VirtualAllocEx/WriteProcessMemory/CreateRemoteThread 会快速连续
-        // 打开管道、写一行 JSON、关闭管道。服务端读到当前批次后应立即释放本 pipe 实例，
-        // 让外层循环马上创建下一根管道；否则继续在同一实例上空等，会让后续连接在
-        // WaitNamedPipeW 处撞到 ERROR_SEM_TIMEOUT(121)。
-        //
-        // The native hook uses one short pipe connection per message. After reading the current
-        // batch, close this pipe instance promptly so the outer loop can create the next instance.
-        break;
+        // file_hook_detours.dll 会在同一条注入链内复用短生命周期 pipe 连接，连续写入
+        // OpenProcess / VirtualAllocEx / WriteProcessMemory / CreateRemoteThread 等消息。
+        // 因此这里不在第一条消息后立刻关闭，而是继续读取，直到短暂空闲或客户端断开。
     }
 
     unsafe {

@@ -15,12 +15,12 @@ import React from 'react'
 import { useScannerStore } from '../stores/scannerStore'
 import { useI18nStore } from '../stores/i18nStore'
 import { useToastStore } from '../stores/toastStore'
-import { Play, Pause, FolderOpen, FileSearch, AlertTriangle, Loader, X, Shield, CheckCircle, Trash2, ShieldCheck } from 'lucide-react'
+import { Play, Pause, FolderOpen, FileSearch, AlertTriangle, Loader, X, Shield, CheckCircle, Trash2, ShieldCheck } from './icons'
 import { open } from '@tauri-apps/plugin-dialog'
 import { startBackgroundWalk, onWalkFileBatch, onWalkComplete } from '../api/fs'
 import { addToAllowlist } from '../api/allowlist'
 import { isolateFile } from '../api/quarantine'
-import { Button, Checkbox, ProgressBar, makeStyles, shorthands, tokens } from '@fluentui/react-components'
+import { Button, Checkbox, ProgressBar, makeStyles, shorthands, tokens, Table, TableHeader, TableHeaderCell, TableBody, TableRow, TableCell, Badge } from '@fluentui/react-components'
 
 const useStyles = makeStyles({
   page: {
@@ -33,10 +33,11 @@ const useStyles = makeStyles({
     marginBottom: '20px',
   },
   card: {
-    backgroundColor: tokens.colorNeutralBackground2,
+    backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    ...shorthands.padding('16px'),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
+    ...shorthands.padding('16px', '20px'),
     marginBottom: '16px',
   },
   buttonGrid: {
@@ -107,6 +108,9 @@ const useStyles = makeStyles({
     ...shorthands.gap('8px'),
     color: tokens.colorPaletteRedForeground2,
   },
+  errorMessage: {
+    flex: 1,
+  },
   infoGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(4, 1fr)',
@@ -114,10 +118,11 @@ const useStyles = makeStyles({
     marginBottom: '16px',
   },
   infoCard: {
-    backgroundColor: tokens.colorNeutralBackground2,
+    backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
-    ...shorthands.padding('16px'),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
+    ...shorthands.padding('16px', '20px'),
     textAlign: 'center' as const,
   },
   infoCardLabel: {
@@ -130,10 +135,17 @@ const useStyles = makeStyles({
     fontWeight: tokens.fontWeightBold,
     color: tokens.colorNeutralForeground1,
   },
+  infoCardValueThreat: {
+    color: tokens.colorPaletteRedForeground2,
+  },
+  infoCardValueClean: {
+    color: tokens.colorPaletteGreenForeground2,
+  },
   emptyState: {
-    backgroundColor: tokens.colorNeutralBackground2,
+    backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
     ...shorthands.padding('40px', '20px'),
     textAlign: 'center' as const,
   },
@@ -145,9 +157,10 @@ const useStyles = makeStyles({
     color: tokens.colorNeutralForeground2,
   },
   successState: {
-    backgroundColor: tokens.colorNeutralBackground2,
+    backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
     ...shorthands.padding('40px', '20px'),
     textAlign: 'center' as const,
   },
@@ -159,9 +172,10 @@ const useStyles = makeStyles({
     color: tokens.colorPaletteGreenForeground2,
   },
   tableContainer: {
-    backgroundColor: tokens.colorNeutralBackground2,
+    backgroundColor: tokens.colorNeutralBackground1,
     ...shorthands.border('1px', 'solid', tokens.colorNeutralStroke1),
-    ...shorthands.borderRadius(tokens.borderRadiusLarge),
+    ...shorthands.borderRadius(tokens.borderRadiusXLarge),
+    boxShadow: tokens.shadow4,
     overflow: 'hidden',
   },
   tableToolbar: {
@@ -184,9 +198,11 @@ const useStyles = makeStyles({
     display: 'flex',
     ...shorthands.gap('8px'),
   },
+  toolbarWarningIcon: {
+    color: tokens.colorPaletteYellowForeground2,
+  },
   tableScroll: {
     overflowX: 'auto',
-    overflowY: 'auto',
   },
   table: {
     width: '100%',
@@ -199,15 +215,17 @@ const useStyles = makeStyles({
       zIndex: 1,
     },
     '& th': {
-      ...shorthands.padding('12px', '16px'),
+      ...shorthands.padding('10px', '16px'),
       textAlign: 'left' as const,
       fontWeight: tokens.fontWeightSemibold,
-      color: tokens.colorNeutralForeground2,
+      color: tokens.colorNeutralForeground1,
       borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+      whiteSpace: 'nowrap',
     },
     '& td': {
-      ...shorthands.padding('12px', '16px'),
+      ...shorthands.padding('10px', '16px'),
       borderBottom: `1px solid ${tokens.colorNeutralStroke1}`,
+      verticalAlign: 'middle',
     },
     '& tbody tr': {
       ':hover': {
@@ -221,6 +239,9 @@ const useStyles = makeStyles({
   checkboxCell: {
     width: '36px',
   },
+  severityCell: {
+    width: '80px',
+  },
   pathCell: {
     fontFamily: 'Consolas, "Courier New", monospace',
     fontSize: tokens.fontSizeBase200,
@@ -229,38 +250,19 @@ const useStyles = makeStyles({
     textOverflow: 'ellipsis',
     whiteSpace: 'nowrap',
   },
-  badge: {
-    display: 'inline-flex',
-    alignItems: 'center',
-    ...shorthands.gap('4px'),
-    ...shorthands.padding('4px', '8px'),
-    ...shorthands.borderRadius(tokens.borderRadiusSmall),
-    fontSize: tokens.fontSizeBase200,
-    fontWeight: tokens.fontWeightSemibold,
-  },
-  badgeHigh: {
-    backgroundColor: tokens.colorPaletteRedBackground2,
-    color: tokens.colorPaletteRedForeground2,
-  },
-  badgeMedium: {
-    backgroundColor: tokens.colorPaletteYellowBackground2,
-    color: tokens.colorPaletteYellowForeground2,
-  },
-  badgeLow: {
-    backgroundColor: tokens.colorPaletteGreenBackground2,
-    color: tokens.colorPaletteGreenForeground2,
-  },
-  badgeNeutral: {
-    backgroundColor: tokens.colorNeutralBackground5,
-    color: tokens.colorNeutralForeground2,
-  },
-  badgeCount: {
-    backgroundColor: tokens.colorPaletteYellowBackground2,
-    color: tokens.colorPaletteYellowForeground2,
-  },
   threatTypeText: {
     fontSize: tokens.fontSizeBase200,
     color: tokens.colorNeutralForeground3,
+  },
+  dangerButton: {
+    backgroundColor: tokens.colorPaletteRedBackground3,
+    color: tokens.colorNeutralForegroundOnBrand,
+    ':hover': {
+      backgroundColor: tokens.colorPaletteRedBackground2,
+    },
+    ':active': {
+      backgroundColor: tokens.colorPaletteRedBackground1,
+    },
   },
 })
 
@@ -343,6 +345,11 @@ const ScanPage: React.FC = () => {
               resolve()
             }
           }, 100)
+          // 安全网：3.5 秒后强制清理 setInterval，避免 Promise.race 超时后泄漏
+          //  Safety net: force-clear setInterval after 3.5s to prevent leak after Promise.race timeout
+          setTimeout(() => {
+            clearInterval(checkInterval)
+          }, 3500)
         })
       ])
 
@@ -408,26 +415,24 @@ const ScanPage: React.FC = () => {
     switch (verdict) {
       case 'malware':
         return (
-          <span className={`${styles.badge} ${styles.badgeHigh}`}>
-            <AlertTriangle size={14} />
-            {t('intercept_level_critical', '严重')}
-          </span>
+          <Badge appearance="filled" color="danger">
+            {t('intercept_level_critical')}
+          </Badge>
         )
       case 'suspicious':
         return (
-          <span className={`${styles.badge} ${styles.badgeMedium}`}>
-            {t('intercept_level_high', '高')}
-          </span>
+          <Badge appearance="filled" color="warning">
+            {t('intercept_level_high')}
+          </Badge>
         )
       case 'clean':
         return (
-          <span className={`${styles.badge} ${styles.badgeLow}`}>
-            <CheckCircle size={14} />
-            {t('intercept_level_low', '低')}
-          </span>
+          <Badge appearance="filled" color="brand">
+            {t('intercept_level_low')}
+          </Badge>
         )
       default:
-        return <span className={`${styles.badge} ${styles.badgeNeutral}`}>{t('intercept_level_unknown', '未知')}</span>
+        return <Badge appearance="filled" color="informative">{t('intercept_level_unknown')}</Badge>
     }
   }
 
@@ -561,7 +566,7 @@ const ScanPage: React.FC = () => {
             onClick={handleStartScan}
             disabled={selectedFiles.length === 0 && !isScanning}
             icon={isScanning ? <Pause size={18} /> : <Play size={18} />}
-            style={isScanning ? { backgroundColor: tokens.colorPaletteRedBackground3, color: '#fff' } : undefined}
+            className={isScanning ? styles.dangerButton : undefined}
           >
             {isScanning ? t('scan_cancel') : t('scan_start')}
           </Button>
@@ -597,7 +602,7 @@ const ScanPage: React.FC = () => {
             <span className={styles.progressTitle}>{t('scan_progress')}</span>
             <span className={styles.progressValue}>{scanProgress}%</span>
           </div>
-          <ProgressBar value={scanProgress / 100} thickness="large" />
+          <ProgressBar value={scanProgress / 100} thickness="large" aria-label={t('scan_progress')} />
           {currentFile && (
             <div className={styles.progressHelper}>
               {t('scan_scanning_file').replace('{file}', currentFile)}
@@ -611,7 +616,7 @@ const ScanPage: React.FC = () => {
         <div className={styles.errorCard}>
           <div className={styles.errorContent}>
             <AlertTriangle size={20} />
-            <span style={{ flex: 1 }}>{error}</span>
+            <span className={styles.errorMessage}>{error}</span>
             <Button appearance="secondary" size="small" icon={<X size={18} />} onClick={clearError} />
           </div>
         </div>
@@ -626,11 +631,11 @@ const ScanPage: React.FC = () => {
           </div>
           <div className={styles.infoCard}>
             <div className={styles.infoCardLabel}>{t('scan_stat_threats')}</div>
-            <div className={styles.infoCardValue} style={{ color: tokens.colorPaletteRedForeground2 }}>{lastScanStats.threatsFound}</div>
+            <div className={`${styles.infoCardValue} ${styles.infoCardValueThreat}`}>{lastScanStats.threatsFound}</div>
           </div>
           <div className={styles.infoCard}>
             <div className={styles.infoCardLabel}>{t('scan_stat_clean')}</div>
-            <div className={styles.infoCardValue} style={{ color: tokens.colorPaletteGreenForeground2 }}>{lastScanStats.cleanFiles}</div>
+            <div className={`${styles.infoCardValue} ${styles.infoCardValueClean}`}>{lastScanStats.cleanFiles}</div>
           </div>
           {lastScanStats.elapsedTime > 0 && (
             <div className={styles.infoCard}>
@@ -658,9 +663,11 @@ const ScanPage: React.FC = () => {
         <div className={styles.tableContainer}>
           <div className={styles.tableToolbar}>
             <div className={styles.toolbarLeft}>
-              <AlertTriangle size={16} style={{ color: tokens.colorPaletteYellowForeground2 }} />
+              <AlertTriangle size={16} className={styles.toolbarWarningIcon} />
               <span className={styles.toolbarTitle}>{t('scan_threats_found').replace('{count}', String(threats.length))}</span>
-              <span className={`${styles.badge} ${styles.badgeCount}`}>{t('scan_selected_count').replace('{count}', String(selectedThreatPaths.length))}</span>
+              <Badge appearance="filled" color="warning">
+                {t('scan_selected_count').replace('{count}', String(selectedThreatPaths.length))}
+              </Badge>
             </div>
             <div className={styles.toolbarRight}>
               <Button
@@ -669,7 +676,7 @@ const ScanPage: React.FC = () => {
                 onClick={handleClearThreats}
                 disabled={!hasSelectedThreats || threatAction !== null}
                 icon={threatAction === 'clear' ? <Loader size={14} className="spinning" /> : <Trash2 size={14} />}
-                style={{ backgroundColor: tokens.colorPaletteRedBackground3, color: '#fff' }}
+                className={styles.dangerButton}
                 title={t('scan_quarantine_title')}
               >
                 {t('scan_clear_threats')}
@@ -687,56 +694,56 @@ const ScanPage: React.FC = () => {
             </div>
           </div>
           <div className={styles.tableScroll}>
-            <table className={styles.table}>
-              <thead>
-                <tr>
-                  <th className={styles.checkboxCell}>
+            <Table className={styles.table}>
+              <TableHeader>
+                <TableRow>
+                  <TableHeaderCell className={styles.checkboxCell}>
                     <Checkbox
                       checked={threatPaths.length > 0 && selectedThreatPaths.length === threatPaths.length}
                       onChange={(_, data) => handleSelectAllThreats(!!data.checked)}
                       aria-label={t('scan_select_all')}
                     />
-                  </th>
-                  <th>{t('scan_th_file_path')}</th>
-                  <th>{t('scan_th_result')}</th>
-                  <th>{t('scan_th_threat_type')}</th>
-                  <th style={{ width: '80px' }}>{t('scan_th_severity')}</th>
-                </tr>
-              </thead>
-              <tbody>
+                  </TableHeaderCell>
+                  <TableHeaderCell>{t('scan_th_file_path')}</TableHeaderCell>
+                  <TableHeaderCell>{t('scan_th_result')}</TableHeaderCell>
+                  <TableHeaderCell>{t('scan_th_threat_type')}</TableHeaderCell>
+                  <TableHeaderCell className={styles.severityCell}>{t('scan_th_severity')}</TableHeaderCell>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
                 {threats.map((threat, index) => {
                   const threatPath = getThreatFilePath(threat)
                   const isSelected = selectedThreatPaths.includes(threatPath)
 
                   return (
-                    <tr key={`${threatPath}-${index}`} className={isSelected ? 'selected' : ''}>
-                      <td>
+                    <TableRow key={`${threatPath}-${index}`}>
+                      <TableCell>
                         <Checkbox
                           checked={isSelected}
                           disabled={!threatPath}
                           onChange={() => toggleThreatSelection(threatPath)}
                           aria-label={`${t('scan_select_threat_file')} ${threatPath || index + 1}`}
                         />
-                      </td>
-                      <td className={styles.pathCell} title={threatPath || undefined}>
+                      </TableCell>
+                      <TableCell className={styles.pathCell} title={threatPath || undefined}>
                         {threatPath || t('scan_unknown_file')}
-                      </td>
-                      <td>
-                        <span className={`${styles.badge} ${threat.verdict === 'malware' ? styles.badgeHigh : styles.badgeMedium}`}>
+                      </TableCell>
+                      <TableCell>
+                        <Badge appearance="filled" color={threat.verdict === 'malware' ? 'danger' : 'warning'}>
                           {(threat.verdict ?? 'unknown').toUpperCase()}
-                        </span>
-                      </td>
-                      <td className={styles.threatTypeText}>
+                        </Badge>
+                      </TableCell>
+                      <TableCell className={styles.threatTypeText}>
                         {threat.threatType || '-'}
-                      </td>
-                      <td>
+                      </TableCell>
+                      <TableCell>
                         {getSeverityBadge(threat.verdict)}
-                      </td>
-                    </tr>
+                      </TableCell>
+                    </TableRow>
                   )
                 })}
-              </tbody>
-            </table>
+              </TableBody>
+            </Table>
           </div>
         </div>
       ) : null}

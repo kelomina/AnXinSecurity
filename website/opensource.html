@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="system">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="安芯安全 AnXin Security 的开源与许可说明：MIT 主许可证、Axon（Apache 2.0）/ Raven / 签名引擎的授权方式，以及前端、Rust 后端与引擎第三方 DLL 的完整开源组件清单。" />
+  <meta name="theme-color" content="#f5f5f5" />
+  <meta property="og:title" content="开源与许可 — 安芯安全 AnXin Security" />
+  <meta property="og:description" content="项目基于 MIT 许可证开源：Axon 引擎以 Apache 2.0 独立开源，Raven 与签名引擎为专有组件；附完整第三方开源组件清单。" />
+  <meta property="og:type" content="website" />
+  <title>开源与许可 — 安芯安全 AnXin Security</title>
+  <link rel="icon" type="image/x-icon" href="assets/img/favicon.ico" />
+  <link rel="stylesheet" href="assets/css/tokens.css" />
+  <link rel="stylesheet" href="assets/css/site.css" />
+</head>
+<body data-animations="on">
+
+  <!-- ==================== 图标库（复用应用内「安芯」图标集路径） ==================== -->
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M8.5 11.6L11 14.1L15.5 9.4"/></symbol>
+    <symbol id="i-shield-alert" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M12 7.6V12.6"/><circle cx="12" cy="15.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-shield-off" viewBox="0 0 24 24"><path d="M12 2.6L19.8 5.4V11.9L12 21.4L4.2 11.9V5.4Z"/><path d="M5.6 5.2L18.4 18"/></symbol>
+    <symbol id="i-activity" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><path d="M9 6.6H15L17.4 9V15L15 17.4H9L6.6 15V9Z"/><path d="M10.3 10.3H13.7V13.7H10.3Z"/><path d="M10.5 6.6V3.2"/><path d="M13.5 6.6V3.2"/><path d="M10.5 17.4V20.8"/><path d="M13.5 17.4V20.8"/><path d="M6.6 10.5H3.2"/><path d="M6.6 13.5H3.2"/><path d="M17.4 10.5H20.8"/><path d="M17.4 13.5H20.8"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.7" cy="10.7" r="6.7"/><path d="M15.5 15.5L20.8 20.8"/></symbol>
+    <symbol id="i-file-search" viewBox="0 0 24 24"><path d="M12.4 3.2H6.2L4.8 4.6V17.4L6.2 18.8H9.6"/><path d="M12.4 3.2V7.6H16.8"/><path d="M16.8 7.6V11"/><circle cx="14.8" cy="15.2" r="3.7"/><path d="M17.4 17.8L20.6 21"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3.4V15.4"/><path d="M6.9 10.3L12 15.4L17.1 10.3"/><path d="M4.2 17.6V19.4L5.6 20.8H18.4L19.8 19.4V17.6"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24"><path d="M9.21 6.02L9.89 2.84H14.11L14.79 6.02L15.79 6.59L18.87 5.59L20.99 9.25L18.57 11.42V12.58L20.99 14.75L18.87 18.41L15.79 17.41L14.79 17.98L14.11 21.16H9.89L9.21 17.98L8.21 17.41L5.13 18.41L3.01 14.75L5.43 12.58V11.42L3.01 9.25L5.13 5.59L8.21 6.59Z"/><circle cx="12" cy="12" r="3.05"/></symbol>
+    <symbol id="i-layout" viewBox="0 0 24 24"><path d="M3.4 4.8L4.8 3.4H9.4L10.8 4.8V10.6L9.4 12H4.8L3.4 10.6Z"/><path d="M13.2 4.8L14.6 3.4H19.2L20.6 4.8V7L19.2 8.4H14.6L13.2 7Z"/><path d="M13.2 12.4L14.6 11H19.2L20.6 12.4V19.2L19.2 20.6H14.6L13.2 19.2Z"/><path d="M3.4 16L4.8 14.6H9.4L10.8 16V19.2L9.4 20.6H4.8L3.4 19.2Z"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3.6 6.4H20.4"/><path d="M9.4 6.4V4.6L10.4 3.6H13.6L14.6 4.6V6.4"/><path d="M5.8 6.4V19.4L7.2 20.8H16.8L18.2 19.4V6.4"/><path d="M10.2 10.4V16.8"/><path d="M13.8 10.4V16.8"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.4 19.4V6.6L4.8 5.2H9.4L11.6 7.6H18.6L20 9V12.2"/><path d="M3.4 19.4L6.4 12.2H21.2L18.2 19.4Z"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M11.5 4.6H6L4.6 6V18L6 19.4H18L19.4 18V12.5"/><path d="M14.4 4.6H19.4V9.6"/><path d="M19.4 4.6L11.8 12.2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M4.6 12.6L9.6 17.6L19.4 6.4"/></symbol>
+    <symbol id="i-check-circle" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M7.9 12.4L10.9 15.4L16.3 9.3"/></symbol>
+    <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="M12 3.4L21.4 19.8H2.6Z"/><path d="M12 9.6V13.8"/><circle cx="12" cy="17" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8.3" cy="15.7" r="4.4"/><path d="M11.4 12.6L20.6 3.4"/><path d="M16.6 7.4L19 9.8"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="M8.6 5.1V18.9L19.4 12.6C19.9 12.3 19.9 11.7 19.4 11.4Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8.6 4.6H10L11 5.6V18.4L10 19.4H8.6L7.6 18.4V5.6Z" fill="currentColor" stroke="none"/><path d="M14 4.6H15.4L16.4 5.6V18.4L15.4 19.4H14L13 18.4V5.6Z" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3.2V11.8"/><path d="M6.9 6.4A7.9 7.9 0 1 0 17.1 6.4"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M5.6 5.6L18.4 18.4"/><path d="M18.4 5.6L5.6 18.4"/></symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24"><path d="M4.6 12H19.4"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24"><path d="M5.6 5.6H18.4V18.4H5.6Z"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12H21"/><path d="M12 3A5.4 9 0 0 1 12 21"/><path d="M12 3A5.4 9 0 0 0 12 21"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.8"/><path d="M18.4 12H21.2"/><path d="M16.53 16.53L18.51 18.51"/><path d="M12 18.4V21.2"/><path d="M7.47 16.53L5.49 18.51"/><path d="M5.6 12H2.8"/><path d="M7.47 7.47L5.49 5.49"/><path d="M12 5.6V2.8"/><path d="M16.53 7.47L18.51 5.49"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20.4 14.6A9 9 0 1 1 9.4 3.6A7.2 7.2 0 0 0 20.4 14.6Z"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><path d="M4.6 4.2H19.4L20.8 5.6V15.4L19.4 16.8H4.6L3.2 15.4V5.6Z"/><path d="M12 16.8V20.4"/><path d="M9.4 20.4H14.6"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M3.4 12A8.6 8.6 0 0 1 17.9 5.7L20.6 8.2"/><path d="M20.6 3.6V8.5H15.7"/><path d="M20.6 12A8.6 8.6 0 0 1 6.1 18.3L3.4 15.8"/><path d="M3.4 20.4V15.5H8.3"/></symbol>
+    <symbol id="i-rotate-ccw" viewBox="0 0 24 24"><path d="M3.5 3.6V9.4H9.3"/><path d="M3.6 9.3A8.7 8.7 0 1 1 3.9 15.4"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 6.6V12H16.4"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11V16.4"/><circle cx="12" cy="7.9" r="0.95" fill="currentColor" stroke="none"/></symbol>
+    <symbol id="i-chevron-down" viewBox="0 0 24 24"><path d="M6 9.4L12 15.4L18 9.4"/></symbol>
+    <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4.6 7H19.4"/><path d="M4.6 12H19.4"/><path d="M4.6 17H19.4"/></symbol>
+    <symbol id="i-motion-off" viewBox="0 0 24 24"><path d="M2.6 12H7.3L9.7 5.2L14.2 18.9L16.6 12H21.4"/><path d="M4.2 4.2L19.8 19.8"/></symbol>
+    <symbol id="i-github" viewBox="0 0 24 24"><path fill="currentColor" stroke="none" d="M12 .5C5.65.5.5 5.65.5 12c0 5.08 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56 0-.28-.01-1.02-.02-2-3.2.7-3.88-1.54-3.88-1.54-.52-1.33-1.28-1.68-1.28-1.68-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.03 1.75 2.69 1.25 3.35.95.1-.75.4-1.25.72-1.54-2.55-.29-5.23-1.28-5.23-5.68 0-1.26.45-2.28 1.18-3.09-.12-.29-.51-1.46.11-3.05 0 0 .96-.31 3.15 1.18a10.9 10.9 0 0 1 5.74 0c2.19-1.49 3.15-1.18 3.15-1.18.62 1.59.23 2.76.11 3.05.73.81 1.18 1.83 1.18 3.09 0 4.41-2.69 5.38-5.25 5.66.41.35.77 1.05.77 2.12 0 1.53-.01 2.76-.01 3.14 0 .3.21.67.8.55A10.99 10.99 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5z"/></symbol>
+  </svg>
+
+  <a class="skip-link" href="#main">跳转到主要内容</a>
+  <div class="scroll-progress" data-progress></div>
+
+  <!-- ==================== 背景光效 ==================== -->
+  <div class="aurora" aria-hidden="true">
+    <div class="aurora__blob aurora__blob--a"></div>
+    <div class="aurora__blob aurora__blob--b"></div>
+    <div class="aurora__blob aurora__blob--c"></div>
+    <div class="aurora__blob aurora__blob--d"></div>
+    <div class="aurora__grid"></div>
+    <div class="aurora__noise"></div>
+    <div class="aurora__veil"></div>
+  </div>
+
+  <!-- ==================== 顶栏 ==================== -->
+  <header class="topbar" data-topbar>
+    <div class="wrap topbar__inner">
+      <a class="brand" href="index.html" aria-label="安芯安全 首页">
+        <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+        <span>
+          <span class="brand__name">安芯安全</span>
+          <span class="brand__sub">AnXin Security</span>
+        </span>
+      </a>
+
+      <nav class="nav" data-nav aria-label="主导航">
+        <a class="nav__link" href="index.html">首页</a>
+        <a class="nav__link" href="features.html">功能特性</a>
+        <a class="nav__link" href="demo.html">功能演示</a>
+        <a class="nav__link" href="download.html">下载安装</a>
+        <a class="nav__link is-active" href="opensource.html" aria-current="page">开源与许可</a>
+      </nav>
+
+      <div class="topbar__actions">
+        <button class="icon-btn" type="button" data-theme-btn>
+          <svg class="icon-btn__glyph is-shown" data-theme-glyph="system" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-monitor"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="light" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-sun"/></svg>
+          <svg class="icon-btn__glyph" data-theme-glyph="dark" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-moon"/></svg>
+        </button>
+        <button class="icon-btn" type="button" data-motion-btn aria-pressed="true">
+          <svg class="icon-btn__glyph is-shown" data-motion-glyph="on" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-activity"/></svg>
+          <svg class="icon-btn__glyph" data-motion-glyph="off" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-motion-off"/></svg>
+        </button>
+        <a class="icon-btn" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener" title="GitHub 仓库" aria-label="GitHub 仓库">
+          <svg width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+        </a>
+        <a class="btn btn--primary" href="download.html">
+          <svg class="btn__icon" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-download"/></svg>
+          免费下载
+        </a>
+        <button class="icon-btn nav-toggle" type="button" data-drawer-btn aria-expanded="false" aria-controls="drawer" aria-label="打开导航菜单">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-menu"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- 移动端抽屉 -->
+  <nav class="drawer" id="drawer" data-drawer aria-hidden="true" aria-label="移动端导航">
+    <a class="drawer__link" href="index.html">首页</a>
+    <a class="drawer__link" href="features.html">功能特性</a>
+    <a class="drawer__link" href="demo.html">功能演示</a>
+    <a class="drawer__link" href="download.html">下载安装</a>
+    <a class="drawer__link is-active" href="opensource.html" aria-current="page">开源与许可</a>
+    <a class="drawer__link" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-external"/></svg>
+    </a>
+  </nav>
+
+  <main class="page" id="main">
+
+    <!-- ==================== 页头 ==================== -->
+    <section class="pagehero">
+      <div class="wrap">
+        <nav class="breadcrumb" aria-label="面包屑" data-reveal="fade">
+          <a href="index.html">首页</a>
+          <span aria-hidden="true">›</span>
+          <span>开源与许可</span>
+        </nav>
+        <h1 class="pagehero__title" data-reveal="up">开源<span class="gradient-text">与许可</span></h1>
+        <p class="pagehero__lead" data-reveal="up">
+          安芯安全（AnXin Security）基于 <strong>MIT 许可证</strong>开源，并站在众多优秀开源组件的肩上——从
+          React、Tauri 到 LightGBM、Detours。本页汇总项目的许可证结构（License）、三类引擎组件的授权方式，
+          以及前端、Rust 后端与引擎第三方 DLL 的完整开源组件清单（Open Source Components）。
+        </p>
+        <nav class="toc" aria-label="页内导航" data-reveal="up">
+          <a href="#license"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg>许可证</a>
+          <a href="#engines"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>引擎与第三方 DLL</a>
+          <a href="#thirdparty"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-layout"/></svg>开源组件清单</a>
+        </nav>
+        <div class="badgerow" data-reveal="up">
+          <span class="chip chip--brand"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check"/></svg>MIT 主许可证</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg>Axon · Apache 2.0</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg>Raven · 专有组件</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg>签名引擎 · 专有组件</span>
+          <span class="chip"><svg width="13" height="13" fill="none" stroke="none"><use href="#i-github"/></svg>源代码公开可审计</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 许可证 ==================== -->
+    <section class="section" id="license">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>许可证</span>
+          <h2 class="section__title">MIT 为主，边界清晰<span class="en">License</span></h2>
+          <p class="section__desc">本项目基于 MIT 许可证开源，具体参见各组件对应的许可证文件；引擎组件的授权详情见 <span class="mono">License</span> 文件中的 Engine DLL License Notice 章节。</p>
+        </div>
+
+        <div class="card card--pad glow" data-reveal="up">
+          <span class="feature__icon"><svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg></span>
+          <h3 class="feature__title">MIT 主许可证</h3>
+          <p class="feature__en">MIT License</p>
+          <p class="feature__desc">
+            安芯安全整体以 <strong>MIT 许可证</strong>开源发布——开源、免费，源代码公开可审计。
+            各组件（前端、Rust 后端、原生模块、引擎 DLL）保留各自对应的许可证文件；
+            其中引擎 DLL 的授权细则以 <span class="mono">License</span> 文件中的
+            Engine DLL License Notice 章节为准。
+          </p>
+          <div class="feature__tags">
+            <span class="chip chip--brand">MIT</span>
+            <span class="chip">开源免费</span>
+            <span class="chip">Engine DLL License Notice</span>
+          </div>
+        </div>
+
+        <div class="features" style="margin-top:20px">
+          <article class="feature glow" data-reveal="up">
+            <span class="feature__icon"><svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-cpu"/></svg></span>
+            <h3 class="feature__title">Axon 引擎</h3>
+            <p class="feature__en">Axon ML Engine</p>
+            <p class="feature__desc">
+              <span class="mono">Engine/Axon/axon_engine.dll</span> 以 <strong>Apache 2.0</strong>
+              协议独立开源，机器学习检测能力完全公开，欢迎审阅与复用。
+            </p>
+            <div class="feature__tags">
+              <span class="chip chip--success">Apache 2.0 开源</span>
+              <a class="chip chip--brand" href="https://github.com/kelomina/Axon_ML" target="_blank" rel="noopener">kelomina/Axon_ML
+                <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-external"/></svg>
+              </a>
+            </div>
+          </article>
+
+          <article class="feature glow" data-reveal="up">
+            <span class="feature__icon"><svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield"/></svg></span>
+            <h3 class="feature__title">Raven 引擎</h3>
+            <p class="feature__en">Raven Engine</p>
+            <p class="feature__desc">
+              <span class="mono">Engine/Raven/raven_engine.dll</span> 为<strong>专有组件</strong>，
+              以 MIT 许可证授权但仅限于作为本应用的组成部分使用。未经明确书面许可，
+              不得单独分发、逆向工程或独立使用。
+            </p>
+            <div class="feature__tags">
+              <span class="chip chip--warn">专有组件</span>
+              <span class="chip">MIT · 仅限随应用使用</span>
+            </div>
+          </article>
+
+          <article class="feature glow" data-reveal="up">
+            <span class="feature__icon"><svg width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-key"/></svg></span>
+            <h3 class="feature__title">签名引擎</h3>
+            <p class="feature__en">Signature Engine</p>
+            <p class="feature__desc">
+              <span class="mono">Engine/Axon/signature_engine.dll</span> 与
+              <span class="mono">Engine/Raven/signature_engine.dll</span> 为<strong>专有组件</strong>，
+              与项目深度集成，适用与 Raven 引擎相同的使用限制。
+            </p>
+            <div class="feature__tags">
+              <span class="chip chip--warn">专有组件</span>
+              <span class="chip">深度集成</span>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 引擎与第三方 DLL ==================== -->
+    <section class="section section--alt" id="engines">
+      <div class="wrap">
+        <div class="section__head section__head--center" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>引擎依赖</span>
+          <h2 class="section__title">引擎与第三方 DLL<span class="en">Engine Third-party DLLs</span></h2>
+          <p class="section__desc">随 <span class="mono">Engine/</span> 目录分发的第三方动态链接库及其许可证与位置。</p>
+        </div>
+
+        <div class="tablewrap" data-reveal="up">
+          <table class="dtable">
+            <thead>
+              <tr>
+                <th>组件</th>
+                <th>许可证</th>
+                <th>位置</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="mono">LIEF</span></td>
+                <td>Apache 2.0</td>
+                <td><span class="mono">Engine/Axon/LIEF.dll</span></td>
+              </tr>
+              <tr>
+                <td><span class="mono">LightGBM</span></td>
+                <td>MIT</td>
+                <td><span class="mono">Engine/Axon/lib_lightgbm.dll</span></td>
+              </tr>
+              <tr>
+                <td><span class="mono">spdlog</span></td>
+                <td>MIT</td>
+                <td><span class="mono">Engine/Axon/spdlog.dll</span></td>
+              </tr>
+              <tr>
+                <td><span class="mono">{fmt}</span></td>
+                <td>MIT</td>
+                <td><span class="mono">Engine/Axon/fmt.dll</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="note" data-reveal="fade" style="margin-top:20px">
+          <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-info"/></svg>
+          <span>完整的第三方归属声明（Third-party Attribution）见仓库内 <span class="mono">Engine/THIRD-PARTY</span> 文件。</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 开源组件清单 ==================== -->
+    <section class="section" id="thirdparty">
+      <div class="wrap">
+        <div class="section__head" data-reveal="up">
+          <span class="eyebrow"><span class="eyebrow__dot"></span>组件清单</span>
+          <h2 class="section__title">开源组件与协议<span class="en">Open Source Components</span></h2>
+          <p class="section__desc">安芯安全由这些开源组件构建而成。感谢每一位开源作者——没有它们，就没有这款应用。</p>
+        </div>
+
+        <!-- a. 前端运行时依赖 -->
+        <div data-reveal="up">
+          <h3 class="feature__title">前端运行时依赖</h3>
+          <p class="feature__en">Frontend Runtime Dependencies</p>
+          <p class="muted">随应用一同打包的 npm 运行时依赖。</p>
+          <div class="tablewrap" style="margin-top:16px">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th>组件</th>
+                  <th>许可证</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td><span class="mono">react</span> / <span class="mono">react-dom</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">zustand</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">lucide-react</span></td><td>ISC</td></tr>
+                <tr><td><span class="mono">clsx</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">@fluentui/react-components</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">@tauri-apps/api</span></td><td>MIT / Apache-2.0</td></tr>
+                <tr><td><span class="mono">@tauri-apps/plugin-dialog</span> / <span class="mono">plugin-fs</span> / <span class="mono">plugin-shell</span></td><td>MIT / Apache-2.0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- b. 前端开发依赖 -->
+        <div data-reveal="up" style="margin-top:40px">
+          <h3 class="feature__title">前端开发依赖</h3>
+          <p class="feature__en">Frontend Dev Dependencies</p>
+          <p class="muted">用于本地开发与构建的工具链依赖。</p>
+          <div class="tablewrap" style="margin-top:16px">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th>组件</th>
+                  <th>许可证</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td><span class="mono">@tauri-apps/cli</span></td><td>MIT / Apache-2.0</td></tr>
+                <tr><td><span class="mono">vite</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">@vitejs/plugin-react</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">typescript</span></td><td>Apache-2.0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- c. Rust 后端依赖 -->
+        <div data-reveal="up" style="margin-top:40px">
+          <h3 class="feature__title">Rust 后端依赖</h3>
+          <p class="feature__en">Rust Backend Dependencies</p>
+          <p class="muted"><span class="mono">src-tauri/Cargo.toml</span> 中声明的主要 Rust 依赖。</p>
+          <div class="tablewrap" style="margin-top:16px">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th>组件</th>
+                  <th>许可证</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><td><span class="mono">tauri 2.0</span>（tray-icon, image-ico）</td><td>Apache-2.0 OR MIT</td></tr>
+                <tr><td><span class="mono">tauri-plugin-shell</span> / <span class="mono">dialog</span> / <span class="mono">fs</span></td><td>MIT / Apache-2.0</td></tr>
+                <tr><td><span class="mono">tauri-build</span></td><td>MIT / Apache-2.0</td></tr>
+                <tr><td><span class="mono">serde</span> / <span class="mono">serde_json</span></td><td>MIT OR Apache-2.0</td></tr>
+                <tr><td><span class="mono">tokio</span></td><td>MIT</td></tr>
+                <tr><td><span class="mono">windows 0.58</span></td><td>MIT OR Apache-2.0</td></tr>
+                <tr><td><span class="mono">sqlx</span>（SQLite）</td><td>MIT OR Apache-2.0</td></tr>
+                <tr><td><span class="mono">aes-gcm</span> / <span class="mono">sha2</span> / <span class="mono">rand</span> / <span class="mono">hex</span></td><td>Apache-2.0 OR MIT</td></tr>
+                <tr><td><span class="mono">chrono</span></td><td>MIT OR Apache-2.0</td></tr>
+                <tr><td><span class="mono">libloading</span></td><td>ISC</td></tr>
+                <tr><td><span class="mono">thiserror</span> / <span class="mono">once_cell</span></td><td>MIT OR Apache-2.0</td></tr>
+                <tr><td><span class="mono">uuid</span></td><td>MIT / Apache-2.0</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- d. 仓库内第三方代码 -->
+        <div data-reveal="up" style="margin-top:40px">
+          <h3 class="feature__title">仓库内第三方代码</h3>
+          <p class="feature__en">Vendored Third-party Code</p>
+          <p class="muted">直接包含在仓库中的第三方源码与样式文件。</p>
+          <div class="tablewrap" style="margin-top:16px">
+            <table class="dtable">
+              <thead>
+                <tr>
+                  <th>组件</th>
+                  <th>许可证</th>
+                  <th>位置</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="mono">Microsoft Research Detours 4.0.1</span></td>
+                  <td>MIT</td>
+                  <td><span class="mono">native/file_hook/src/Detours</span></td>
+                </tr>
+                <tr>
+                  <td><span class="mono">pico.min.css</span></td>
+                  <td>MIT</td>
+                  <td><span class="mono">assets/ui/pico.min.css</span></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 行动区 ==================== -->
+    <section class="section section--alt">
+      <div class="wrap">
+        <div class="cta" data-reveal="scale">
+          <h2 class="cta__title">一起把<span class="gradient-text">安芯</span>做得更好</h2>
+          <p class="cta__desc">项目开源、行为可审计，欢迎在 GitHub 提交 Issue 与 PR。想先看看它能做什么？前往<a href="features.html">功能特性</a>；准备好了，就到<a href="download.html">下载安装</a>页体验最新版本。</p>
+          <div class="cta__actions">
+            <a class="btn btn--primary btn--lg" href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="none"><use href="#i-github"/></svg>
+              前往 GitHub 仓库
+            </a>
+            <a class="btn btn--secondary btn--lg" href="index.html">
+              <svg class="btn__icon" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><use href="#i-shield-check"/></svg>
+              返回首页
+            </a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ==================== 页脚 ==================== -->
+    <footer class="footer">
+      <div class="wrap">
+        <div class="footer__grid">
+          <div>
+            <a class="brand" href="index.html">
+              <img class="brand__mark" src="assets/img/favicon.ico" alt="" aria-hidden="true" />
+              <span>
+                <span class="brand__name">安芯安全</span>
+                <span class="brand__sub">AnXin Security</span>
+              </span>
+            </a>
+            <p class="footer__about">基于 Tauri 2.0 的 Windows 安全防护桌面应用，提供实时文件扫描、ETW 行为监控和威胁防护功能。以 Fluent 2 设计语言呈现。</p>
+          </div>
+          <div class="footer__col">
+            <h3>产品</h3>
+            <ul>
+              <li><a href="features.html">功能特性</a></li>
+              <li><a href="features.html#architecture">技术架构</a></li>
+              <li><a href="download.html">下载安装</a></li>
+              <li><a href="download.html#faq">问题排查</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>资源</h3>
+            <ul>
+              <li><a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">GitHub 仓库</a></li>
+              <li><a href="https://github.com/kelomina/AnXinSecurity/issues" target="_blank" rel="noopener">问题反馈</a></li>
+              <li><a href="https://github.com/kelomina/Axon_ML" target="_blank" rel="noopener">Axon ML 引擎</a></li>
+            </ul>
+          </div>
+          <div class="footer__col">
+            <h3>开源</h3>
+            <ul>
+              <li><a href="opensource.html">开源组件</a></li>
+              <li><a href="opensource.html#license">MIT 许可证</a></li>
+              <li><a href="opensource.html#thirdparty">第三方声明</a></li>
+            </ul>
+          </div>
+        </div>
+        <div class="footer__bottom">
+          <span>© <span data-year>2026</span> AnXin Security Team · 基于 MIT 许可证开源</span>
+          <span class="footer__legal">
+            <a href="opensource.html#license">许可证</a>
+            <a href="https://github.com/kelomina/AnXinSecurity" target="_blank" rel="noopener">源代码</a>
+          </span>
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <script src="assets/js/site.js"></script>
+</body>
+</html>

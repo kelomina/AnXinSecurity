@@ -2,26 +2,35 @@
 /// ETW monitoring service — controls ETW session lifecycle, polls events, and separates high-volume capture from high-value response.
 use serde::Serialize;
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
-use tauri::{AppHandle, Emitter, Manager};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::sync::broadcast;
 
 use super::etw::session::{
     EtwSession, DEFAULT_FILE_ANY_KEYWORD, DEFAULT_NETWORK_ANY_KEYWORD, DEFAULT_PROCESS_ANY_KEYWORD,
     DEFAULT_REGISTRY_ANY_KEYWORD,
 };
-use crate::commands::logs;
-use crate::services::app_lifecycle_service::app_is_exiting;
 use crate::services::behavior_service::BehaviorService;
+use crate::services::interception_diagnostics_service::append_interception_diagnostic;
 use crate::services::interception_service::{InterceptionEntry, InterceptionService};
+use crate::services::process_control_service::is_windows_control_chain_process;
 use crate::services::process_scanner_service::{
     enumerate_process_module_info, file_name_from_path, ProcessScannerService,
 };
+use crate::services::service_context::ServiceContext;
 use crate::services::trust_service::TrustService;
 
 const ETW_DIAGNOSTIC_RECENT_CACHE_LIMIT: usize = 4096;
 const ETW_DIAGNOSTIC_BUCKET_LIMIT: usize = 16_384;
 const ETW_DIAGNOSTIC_TEXT_PREVIEW_LIMIT: usize = 4096;
+const ETW_POLL_LOG_INTERVAL_SECS: u64 = 10;
+const ETW_IMAGE_LOAD_SKIP_LOG_INTERVAL_SECS: u64 = 10;
+const ETW_BEHAVIOR_DB_DEDUP_INTERVAL_SECS: u64 = 10;
+const ETW_BEHAVIOR_DB_DEDUP_KEY_LIMIT: usize = 4096;
+const ETW_RESPONSE_DEDUP_INTERVAL_SECS: u64 = 2;
+const ETW_RESPONSE_DEDUP_KEY_LIMIT: usize = 4096;
+
+static ETW_IMAGE_LOAD_SKIP_LOG_STATE: OnceLock<Mutex<EtwImageLoadSkipLogState>> = OnceLock::new();
 
 /// ETW 诊断缓存中的单条事件摘要。
 /// 这个结构只用于现场取证：它记录“我们实际看见了什么”，不参与拦截判定。
@@ -134,6 +143,202 @@ struct EtwDiagnosticsCache {
     recent_normalized: VecDeque<EtwDiagnosticEvent>,
     aggregate_buckets: BTreeMap<String, EtwDiagnosticBucket>,
     aggregate_order: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct EtwPollLogSummary {
+    polls: u64,
+    events: u64,
+    non_empty_batches: u64,
+    max_batch: usize,
+}
+
+#[derive(Debug)]
+struct EtwPollLogAccumulator {
+    interval: Duration,
+    last_log: Instant,
+    polls: u64,
+    events: u64,
+    non_empty_batches: u64,
+    max_batch: usize,
+}
+
+impl EtwPollLogAccumulator {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last_log: Instant::now(),
+            polls: 0,
+            events: 0,
+            non_empty_batches: 0,
+            max_batch: 0,
+        }
+    }
+
+    #[cfg(test)]
+    fn new_with_last_log(interval: Duration, last_log: Instant) -> Self {
+        Self {
+            interval,
+            last_log,
+            polls: 0,
+            events: 0,
+            non_empty_batches: 0,
+            max_batch: 0,
+        }
+    }
+
+    fn record(&mut self, event_count: usize, now: Instant) -> Option<EtwPollLogSummary> {
+        self.polls = self.polls.saturating_add(1);
+        self.events = self.events.saturating_add(event_count as u64);
+        if event_count > 0 {
+            self.non_empty_batches = self.non_empty_batches.saturating_add(1);
+            self.max_batch = self.max_batch.max(event_count);
+        }
+
+        if self.events == 0
+            || now
+                .checked_duration_since(self.last_log)
+                .unwrap_or_default()
+                < self.interval
+        {
+            return None;
+        }
+
+        let summary = EtwPollLogSummary {
+            polls: self.polls,
+            events: self.events,
+            non_empty_batches: self.non_empty_batches,
+            max_batch: self.max_batch,
+        };
+        self.last_log = now;
+        self.polls = 0;
+        self.events = 0;
+        self.non_empty_batches = 0;
+        self.max_batch = 0;
+        Some(summary)
+    }
+}
+
+#[derive(Debug, Default)]
+struct EtwImageLoadSkipLogState {
+    last_logged_by_key: BTreeMap<String, Instant>,
+    suppressed_by_key: BTreeMap<String, u64>,
+}
+
+#[derive(Debug)]
+struct EtwBehaviorDbGate {
+    interval: Duration,
+    last_recorded_by_key: BTreeMap<String, Instant>,
+}
+
+impl EtwBehaviorDbGate {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last_recorded_by_key: BTreeMap::new(),
+        }
+    }
+
+    fn should_record(&mut self, event: &serde_json::Value, now: Instant) -> bool {
+        let key = etw_behavior_db_dedup_key(event);
+        let is_recent_duplicate = self
+            .last_recorded_by_key
+            .get(&key)
+            .map(|last_recorded| {
+                now.checked_duration_since(*last_recorded)
+                    .unwrap_or_default()
+                    < self.interval
+            })
+            .unwrap_or(false);
+
+        if is_recent_duplicate {
+            return false;
+        }
+
+        self.last_recorded_by_key.insert(key, now);
+        self.prune(now);
+        true
+    }
+
+    fn prune(&mut self, now: Instant) {
+        if self.last_recorded_by_key.len() <= ETW_BEHAVIOR_DB_DEDUP_KEY_LIMIT {
+            return;
+        }
+
+        let retention = self.interval.checked_mul(6).unwrap_or(self.interval);
+        self.last_recorded_by_key.retain(|_, last_recorded| {
+            now.checked_duration_since(*last_recorded)
+                .unwrap_or_default()
+                <= retention
+        });
+
+        while self.last_recorded_by_key.len() > ETW_BEHAVIOR_DB_DEDUP_KEY_LIMIT {
+            let Some(oldest_key) = self.last_recorded_by_key.keys().next().cloned() else {
+                break;
+            };
+            self.last_recorded_by_key.remove(&oldest_key);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct EtwResponseGate {
+    interval: Duration,
+    last_forwarded_by_key: BTreeMap<String, Instant>,
+}
+
+impl EtwResponseGate {
+    fn new(interval: Duration) -> Self {
+        Self {
+            interval,
+            last_forwarded_by_key: BTreeMap::new(),
+        }
+    }
+
+    fn should_forward(&mut self, event: &serde_json::Value, now: Instant) -> bool {
+        if !is_high_value_realtime_etw_event(event) {
+            return false;
+        }
+
+        let key = etw_response_dedup_key(event);
+        let is_recent_duplicate = self
+            .last_forwarded_by_key
+            .get(&key)
+            .map(|last_forwarded| {
+                now.checked_duration_since(*last_forwarded)
+                    .unwrap_or_default()
+                    < self.interval
+            })
+            .unwrap_or(false);
+
+        if is_recent_duplicate {
+            return false;
+        }
+
+        self.last_forwarded_by_key.insert(key, now);
+        self.prune(now);
+        true
+    }
+
+    fn prune(&mut self, now: Instant) {
+        if self.last_forwarded_by_key.len() <= ETW_RESPONSE_DEDUP_KEY_LIMIT {
+            return;
+        }
+
+        let retention = self.interval.checked_mul(30).unwrap_or(self.interval);
+        self.last_forwarded_by_key.retain(|_, last_forwarded| {
+            now.checked_duration_since(*last_forwarded)
+                .unwrap_or_default()
+                <= retention
+        });
+
+        while self.last_forwarded_by_key.len() > ETW_RESPONSE_DEDUP_KEY_LIMIT {
+            let Some(oldest_key) = self.last_forwarded_by_key.keys().next().cloned() else {
+                break;
+            };
+            self.last_forwarded_by_key.remove(&oldest_key);
+        }
+    }
 }
 
 impl EtwDiagnosticsCache {
@@ -389,13 +594,13 @@ impl EtwService {
     /// Event dispatch chain: all valid events enter diagnostics; File events go to file monitoring; only high-value events enter logs, behavior DB, risk analysis, interception, and realtime frontend push.
     /// 调用方：main.rs start_etw_monitoring，commands::config::set_behavior_monitoring_enabled，commands::behavior::resume_etw。
     /// Called by: main.rs start_etw_monitoring, commands::config::set_behavior_monitoring_enabled, commands::behavior::resume_etw.
-    /// 被调用方：EtwSession::new，EtwSession::start，tauri::async_runtime::spawn。
-    /// Calls: EtwSession::new, EtwSession::start, tauri::async_runtime::spawn.
-    /// 错误处理：ETW 创建/启动错误以 Result 返回；后台任务使用 Tauri runtime，避免设置页同步命令线程缺少 Tokio 上下文时 panic。
-    /// Error handling: ETW creation/start errors are returned; background tasks use the Tauri runtime to avoid panic when a settings command thread has no Tokio context.
+    /// 被调用方：EtwSession::new，EtwSession::start，tokio::spawn。
+    /// Calls: EtwSession::new, EtwSession::start, tokio::spawn.
+    /// 错误处理：ETW 创建/启动错误以 Result 返回；后台任务使用 Tokio runtime，避免设置页同步命令线程缺少 Tokio 上下文时 panic。
+    /// Error handling: ETW creation/start errors are returned; background tasks use the Tokio runtime to avoid panic when a settings command thread has no Tokio context.
     /// 中文关键词：启动ETW，事件监控，风险管线，拦截管线，运行时上下文
     /// English keywords: start ETW, event monitoring, risk pipeline, interception pipeline, runtime context
-    pub fn start(&self, app_handle: AppHandle) -> Result<(), String> {
+    pub fn start(&self, ctx: ServiceContext) -> Result<(), String> {
         if self.running.load(std::sync::atomic::Ordering::SeqCst) {
             return Ok(());
         }
@@ -440,9 +645,15 @@ impl EtwService {
         self.collecting
             .store(collecting, std::sync::atomic::Ordering::SeqCst);
 
-        let app_handle_clone = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
+        let ctx_clone = ctx.clone();
+        tokio::spawn(async move {
             let mut poll_count = 0u64;
+            let mut poll_log =
+                EtwPollLogAccumulator::new(Duration::from_secs(ETW_POLL_LOG_INTERVAL_SECS));
+            let mut behavior_db_gate =
+                EtwBehaviorDbGate::new(Duration::from_secs(ETW_BEHAVIOR_DB_DEDUP_INTERVAL_SECS));
+            let mut response_gate =
+                EtwResponseGate::new(Duration::from_secs(ETW_RESPONSE_DEDUP_INTERVAL_SECS));
             while running.load(std::sync::atomic::Ordering::SeqCst) {
                 let events = {
                     let guard = session_arc.lock().unwrap_or_else(|e| e.into_inner());
@@ -454,11 +665,16 @@ impl EtwService {
                 };
 
                 poll_count += 1;
-                if poll_count == 1 || (!events.is_empty() && poll_count % 100 == 0) {
+                if poll_count == 1 {
+                    eprintln!("[EtwService] Poll #1: {} events collected", events.len());
+                } else if let Some(summary) = poll_log.record(events.len(), Instant::now()) {
                     eprintln!(
-                        "[EtwService] Poll #{}: {} events collected",
-                        poll_count,
-                        events.len()
+                        "[EtwService] Poll summary: {} events across {} polls in the last {}s (nonEmptyBatches={}, maxBatch={})",
+                        summary.events,
+                        summary.polls,
+                        ETW_POLL_LOG_INTERVAL_SECS,
+                        summary.non_empty_batches,
+                        summary.max_batch
                     );
                 }
                 record_etw_poll_batch(&diagnostics, events.len());
@@ -483,58 +699,59 @@ impl EtwService {
                     // 先标准化 JSON 格式，再追加到日志缓冲区并通知前端日志面板。
                     // Normalize JSON format first, then append to log buffer and notify frontend log panel.
                     let mut app_event = normalize_etw_app_event(&val);
-                    apply_image_load_injection_detection(&app_handle_clone, &mut app_event);
+                    apply_image_load_injection_detection(&ctx_clone, &mut app_event);
                     apply_remote_thread_start_detection(&mut app_event);
                     record_etw_normalized_event(&diagnostics, &app_event);
-                    direct_intercept_realtime_injection_event(&app_handle_clone, &app_event);
-                    mark_hot_pid_for_realtime_event(&app_handle_clone, &app_event);
                     if should_forward_to_file_monitor(&app_event) {
                         let _ = tx.send(json_str.clone());
                     }
-                    if should_emit_user_visible_etw_event(&app_event) {
-                        let _ = logs::append_event_log_and_emit(&app_handle_clone, &app_event);
+
+                    let should_forward_realtime_response =
+                        response_gate.should_forward(&app_event, Instant::now());
+
+                    if should_forward_realtime_response {
+                        direct_intercept_realtime_injection_event(&ctx_clone, &app_event);
+                        mark_hot_pid_for_realtime_event(&ctx_clone, &app_event);
+                        // 写入日志缓冲区并推送实时 log-event。
+                        // 前端 OverviewPage 通过 onLogEvent 订阅该事件做实时日志面板；
+                        // 此前重构只保留了 append_log（仅入缓冲区、靠轮询才看得到），
+                        // 实时推送链路断掉。append_event_log_and_emit 同时负责过滤
+                        // PID 0/4/u32::MAX 这类系统噪音。
+                        //  Append to the log buffer and push the realtime log-event. The frontend
+                        //  OverviewPage subscribes via onLogEvent for its live log panel; the
+                        //  refactor had left only append_log (buffer-only, visible solely through
+                        //  polling), breaking the realtime path. append_event_log_and_emit also
+                        //  filters system noise from PID 0/4/u32::MAX.
+                        crate::commands::logs::append_event_log_and_emit(&ctx_clone, &app_event);
 
                         // 推送到前端 / Emit to frontend
-                        if !app_is_exiting(&app_handle_clone) {
-                            let _ = app_handle_clone.emit("etw-event", app_event.clone());
-                        }
-                    }
-
-                    if should_ingest_behavior_etw_event(&app_event) {
-                        if let Some(behavior_state) =
-                            app_handle_clone.try_state::<Arc<Mutex<BehaviorService>>>()
-                        {
-                            let behavior = {
-                                let guard = behavior_state.lock().map_err(|e| e.to_string()).ok();
-                                guard.map(|svc| svc.clone())
-                            };
-                            if let Some(behavior) = behavior {
-                                let behavior_event = app_event.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    if let Err(err) = behavior.ingest_event(behavior_event).await {
-                                        eprintln!("[EtwService] Behavior ingest error: {}", err);
-                                    }
-                                });
-                            }
+                        if !ctx_clone.is_exiting() {
+                            let _ = ctx_clone.emit("etw-event", app_event.clone());
                         }
                     }
 
                     // 风险分析只接收强信号或低频规则命中。观察型 Thread/start 异常保留在 ETW 诊断缓存，
-                    // 避免每个线程事件都写行为库、跑风险分析并唤醒后置扫描。
+                    // 避免每个线程事件都写行为库、跑风险分析并唤醒后置扫描。行为库只由 RiskService 写入，
+                    // 且同一 PID/规则/路径短窗口内只落一条代表记录，避免 ETW 重复命中刷 SQLite。
                     // Risk analysis only receives strong signals or low-volume rule hits. Observation-only
-                    // Thread/start anomalies stay in ETW diagnostics to avoid DB/risk/scanner storms.
-                    if should_analyze_etw_risk_event(&app_event) {
+                    // Thread/start anomalies stay in ETW diagnostics to avoid DB/risk/scanner storms. Behavior DB
+                    // writes are owned by RiskService and deduplicated before passing BehaviorService to it.
+                    if should_forward_realtime_response {
                         let val_risk = app_event.clone();
-                        let app_handle_risk = app_handle_clone.clone();
-                        tauri::async_runtime::spawn(async move {
+                        let ctx_risk = ctx_clone.clone();
+                        let behavior_service =
+                            if behavior_db_gate.should_record(&app_event, Instant::now()) {
+                                ctx_clone
+                                    .get::<Mutex<BehaviorService>>()
+                                    .and_then(|state| state.lock().ok().map(|guard| guard.clone()))
+                            } else {
+                                None
+                            };
+                        tokio::spawn(async move {
                             if let (Some(risk_state), Some(trust_state)) = (
-                                app_handle_risk
-                                    .try_state::<crate::services::risk_service::RiskService>(),
-                                app_handle_risk.try_state::<Arc<TrustService>>(),
+                                ctx_risk.get::<crate::services::risk_service::RiskService>(),
+                                ctx_risk.get::<TrustService>(),
                             ) {
-                                let behavior_service = app_handle_risk
-                                    .try_state::<Arc<Mutex<BehaviorService>>>()
-                                    .and_then(|state| state.lock().ok().map(|guard| guard.clone()));
                                 let risk_event = crate::services::risk_service::RiskEvent {
                                     pid: val_risk.get("pid").and_then(|v| v.as_u64()).unwrap_or(0)
                                         as u32,
@@ -546,6 +763,16 @@ impl EtwService {
                                     file_path: val_risk
                                         .get("path")
                                         .or_else(|| val_risk.get("filePath"))
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
+                                    process_path: val_risk
+                                        .get("processPath")
+                                        .and_then(|v| v.as_str())
+                                        .map(|s| s.to_string()),
+                                    // 规则的建议动作，决定是否允许自动挂起（见 RiskService）
+                                    //  The rule's recommended action, which now gates auto-suspend
+                                    recommend_action: val_risk
+                                        .get("recommendAction")
                                         .and_then(|v| v.as_str())
                                         .map(|s| s.to_string()),
                                     threat_type: val_risk
@@ -581,9 +808,9 @@ impl EtwService {
                                 let _ = risk_state
                                     .analyze_event(
                                         risk_event,
-                                        Some(trust_state.inner().as_ref()),
+                                        Some(trust_state.as_ref()),
                                         behavior_service.as_ref(),
-                                        &app_handle_risk,
+                                        &ctx_risk,
                                     )
                                     .await;
                             }
@@ -638,8 +865,8 @@ impl EtwService {
     /// Called by: commands::behavior::resume_etw
     /// 中文关键词：恢复ETW，重启监控
     /// English keywords: resume ETW, restart monitoring
-    pub fn resume(&self, app_handle: AppHandle) -> Result<(), String> {
-        self.start(app_handle)
+    pub fn resume(&self, ctx: ServiceContext) -> Result<(), String> {
+        self.start(ctx)
     }
 
     /// 函数名称：is_running
@@ -1086,7 +1313,7 @@ pub fn normalize_etw_app_event(value: &serde_json::Value) -> serde_json::Value {
 /// Called by: EtwService::start background dispatch loop.
 /// 安全边界：检测只读取目标 PID 路径和模块签名，不修改目标进程；路径缺失或验证失败时保守不升级为可信。
 /// Security boundary: Read-only checks only; missing paths or verification errors are not treated as trusted.
-fn apply_image_load_injection_detection(app_handle: &AppHandle, event: &mut serde_json::Value) {
+fn apply_image_load_injection_detection(ctx: &ServiceContext, event: &mut serde_json::Value) {
     if !event_is_image_load(event) {
         return;
     }
@@ -1102,9 +1329,10 @@ fn apply_image_load_injection_detection(app_handle: &AppHandle, event: &mut serd
     }
 
     let Some(module_path) = etw_image_path_to_verifiable_path(&raw_module_path) else {
-        eprintln!(
-            "[EtwService] skip image-load injection decision: module path is not verifiable: {}",
-            raw_module_path
+        log_image_load_skip(
+            "module_path_not_verifiable",
+            &raw_module_path,
+            "module path is not verifiable",
         );
         return;
     };
@@ -1112,9 +1340,10 @@ fn apply_image_load_injection_detection(app_handle: &AppHandle, event: &mut serd
 
     let module_path_ref = std::path::Path::new(&module_path);
     if !module_path_ref.is_absolute() || !module_path_ref.is_file() {
-        eprintln!(
-            "[EtwService] skip image-load injection decision: module path does not resolve to a file: {}",
-            module_path
+        log_image_load_skip(
+            "module_path_not_file",
+            &module_path,
+            "module path does not resolve to a file",
         );
         return;
     }
@@ -1127,17 +1356,18 @@ fn apply_image_load_injection_detection(app_handle: &AppHandle, event: &mut serd
         return;
     }
 
-    let Some(trust_state) = app_handle.try_state::<Arc<TrustService>>() else {
+    let Some(trust_state) = ctx.get::<TrustService>() else {
         return;
     };
-    let trust = trust_state.inner();
+    let trust = trust_state.as_ref();
 
     let module_verdict = match trust.verify_file(&module_path) {
         Ok(verdict) => verdict,
         Err(err) => {
-            eprintln!(
-                "[EtwService] skip image-load injection decision: module signature check failed for {}: {}",
-                module_path, err
+            log_image_load_skip(
+                "module_signature_check_failed",
+                &module_path,
+                &format!("module signature check failed: {}", err),
             );
             return;
         }
@@ -1153,9 +1383,10 @@ fn apply_image_load_injection_detection(app_handle: &AppHandle, event: &mut serd
     let process_trusted = match trust.verify_file(&process_path) {
         Ok(verdict) => verdict.trusted,
         Err(err) => {
-            eprintln!(
-                "[EtwService] skip image-load injection decision: host signature check failed for PID {}: {}",
-                pid, err
+            log_image_load_skip(
+                "host_signature_check_failed",
+                &process_path,
+                &format!("host signature check failed for PID {}: {}", pid, err),
             );
             return;
         }
@@ -1174,7 +1405,15 @@ fn apply_image_load_injection_detection(app_handle: &AppHandle, event: &mut serd
     event["ruleId"] = serde_json::Value::String("trusted_process_unsigned_image_load".to_string());
     event["threatType"] = serde_json::Value::String("可信进程加载未签名模块".to_string());
     event["severity"] = serde_json::Value::Number(serde_json::Number::from(70));
-    event["recommendAction"] = serde_json::Value::String("alert".to_string());
+    // 这条合成规则是全链路唯一的强证据：模块未签名 + 宿主已签名可信，两段验签都过了才会到这里。
+    // 自动挂起改由 recommendAction 显式驱动后，这里必须写 block，否则唯一有效的自动拦截会被关掉。
+    // RiskService 侧同时把本 ruleId 排除在签名豁免之外——宿主可信正是本规则的前提。
+    //  This synthetic rule is the only strong evidence in the whole pipeline: an unsigned module
+    //  inside a signed, trusted host, reached only after both verification stages pass. Now that
+    //  auto-suspend is driven explicitly by recommendAction, this must be "block" or the only
+    //  effective automatic interception is switched off. RiskService correspondingly excludes this
+    //  ruleId from the signature exemption, since host trust is the rule's premise.
+    event["recommendAction"] = serde_json::Value::String("block".to_string());
     event["description"] = serde_json::Value::String(
         "可信宿主进程加载了未签名镜像模块，可能是远程线程 DLL 注入、插件注入或旁加载行为。"
             .to_string(),
@@ -1196,6 +1435,7 @@ fn etw_image_path_to_verifiable_path(path: &str) -> Option<String> {
     }
 
     let normalized_prefix = strip_windows_namespace_prefix(trimmed);
+    let normalized_prefix = trim_etw_path_noise_before_device_prefix(normalized_prefix);
     if normalized_prefix.starts_with("\\Device\\") {
         return device_path_to_dos_path(normalized_prefix);
     }
@@ -1203,10 +1443,60 @@ fn etw_image_path_to_verifiable_path(path: &str) -> Option<String> {
     Some(normalized_prefix.to_string())
 }
 
+fn trim_etw_path_noise_before_device_prefix(path: &str) -> &str {
+    if path.starts_with("\\Device\\") {
+        return path;
+    }
+    path.find("\\Device\\")
+        .map(|index| &path[index..])
+        .unwrap_or(path)
+}
+
 fn strip_windows_namespace_prefix(path: &str) -> &str {
     path.strip_prefix(r"\\?\")
         .or_else(|| path.strip_prefix(r"\??\"))
         .unwrap_or(path)
+}
+
+fn log_image_load_skip(reason_key: &str, path: &str, message: &str) {
+    let key = format!(
+        "{}|{}",
+        reason_key,
+        diagnostic_path_key(path).unwrap_or_else(|| "unknown".to_string())
+    );
+    let now = Instant::now();
+    let state = ETW_IMAGE_LOAD_SKIP_LOG_STATE
+        .get_or_init(|| Mutex::new(EtwImageLoadSkipLogState::default()));
+    let mut guard = state.lock().unwrap_or_else(|err| err.into_inner());
+    let should_log = guard
+        .last_logged_by_key
+        .get(&key)
+        .map(|last| {
+            now.checked_duration_since(*last).unwrap_or_default()
+                >= Duration::from_secs(ETW_IMAGE_LOAD_SKIP_LOG_INTERVAL_SECS)
+        })
+        .unwrap_or(true);
+
+    if should_log {
+        let suppressed = guard.suppressed_by_key.remove(&key).unwrap_or(0);
+        guard.last_logged_by_key.insert(key, now);
+        if suppressed > 0 {
+            eprintln!(
+                "[EtwService] skip image-load injection decision: {}: {} (suppressed {} similar messages in the last {}s)",
+                message,
+                path,
+                suppressed,
+                ETW_IMAGE_LOAD_SKIP_LOG_INTERVAL_SECS
+            );
+        } else {
+            eprintln!(
+                "[EtwService] skip image-load injection decision: {}: {}",
+                message, path
+            );
+        }
+    } else {
+        *guard.suppressed_by_key.entry(key).or_insert(0) += 1;
+    }
 }
 
 #[cfg(windows)]
@@ -1355,11 +1645,8 @@ fn apply_remote_thread_start_detection(event: &mut serde_json::Value) {
 /// 函数作用：ETW 注入类事件命中后直接进入拦截队列，避免等待轮询或异步风险分析链路。
 /// Function name: direct_intercept_realtime_injection_event
 /// Purpose: Directly enqueues realtime ETW injection findings so interception happens before post-event polling/rescans.
-fn direct_intercept_realtime_injection_event<R: tauri::Runtime>(
-    app_handle: &AppHandle<R>,
-    event: &serde_json::Value,
-) {
-    if app_is_exiting(app_handle) {
+fn direct_intercept_realtime_injection_event(ctx: &ServiceContext, event: &serde_json::Value) {
+    if ctx.is_exiting() {
         return;
     }
 
@@ -1367,6 +1654,26 @@ fn direct_intercept_realtime_injection_event<R: tauri::Runtime>(
         return;
     };
     if !is_realtime_preblock_rule(rule_id) {
+        return;
+    }
+
+    if should_skip_realtime_preblock_for_control_chain(event) {
+        append_interception_diagnostic(
+            "etw_realtime_preblock_skipped",
+            serde_json::json!({
+                "reason": "windows_control_chain_process",
+                "ruleId": rule_id,
+                "pid": event.get("pid").and_then(|value| value.as_u64()).unwrap_or(0),
+                "processName": event.get("processName").and_then(|value| value.as_str()).unwrap_or(""),
+                "processPath": event.get("processPath").and_then(|value| value.as_str()).unwrap_or(""),
+            }),
+        );
+        eprintln!(
+            "[EtwService] Skipping realtime preblock for Windows control-chain process: rule={}, processName={}, processPath={}",
+            rule_id,
+            event.get("processName").and_then(|value| value.as_str()).unwrap_or(""),
+            event.get("processPath").and_then(|value| value.as_str()).unwrap_or("")
+        );
         return;
     }
 
@@ -1378,7 +1685,7 @@ fn direct_intercept_realtime_injection_event<R: tauri::Runtime>(
         return;
     }
 
-    let Some(interception_state) = app_handle.try_state::<Arc<InterceptionService>>() else {
+    let Some(interception_state) = ctx.get::<InterceptionService>() else {
         return;
     };
     let mut process_path = event
@@ -1413,6 +1720,39 @@ fn direct_intercept_realtime_injection_event<R: tauri::Runtime>(
         .get("description")
         .and_then(|value| value.as_str())
         .unwrap_or("实时 ETW 注入类事件命中");
+    // 实时前置挂起是绕过 RiskService 的第二条拦截路径，判据必须与策略层一致，
+    // 否则用户配置的排除目录对它完全无效（策略层拦不住的这里照挂）。
+    //  The realtime pre-block is a second interception path that bypasses RiskService, so it
+    //  must apply the same criteria; otherwise user-configured exclusions have no effect here.
+    if !process_path.trim().is_empty() {
+        match crate::services::path_policy_service::is_excluded_path(&process_path) {
+            Ok(true) => {
+                append_interception_diagnostic(
+                    "realtime_preblock_skipped_excluded_path",
+                    serde_json::json!({
+                        "pid": pid,
+                        "ruleId": rule_id,
+                        "processPath": process_path,
+                    }),
+                );
+                eprintln!(
+                    "[EtwService] Skipping realtime preblock for user-excluded path: rule={}, processPath={}",
+                    rule_id, process_path
+                );
+                return;
+            }
+            Ok(false) => {}
+            Err(err) => {
+                // 读排除表失败不能变成绕过通道，按未排除处理
+                //  A failed exclusion lookup must not become a bypass; treat as not excluded
+                eprintln!(
+                    "[EtwService] Exclusion lookup failed for {}: {} (treated as not excluded)",
+                    process_path, err
+                );
+            }
+        }
+    }
+
     let payload = serde_json::json!({
         "source": "etw_realtime_preblock",
         "targetType": "process",
@@ -1430,22 +1770,38 @@ fn direct_intercept_realtime_injection_event<R: tauri::Runtime>(
         timestamp: chrono::Utc::now().timestamp_millis() as u64,
     };
 
-    interception_state.inner().enqueue(entry);
-    interception_state.inner().try_show_next(app_handle);
+    interception_state.enqueue(entry);
+    interception_state.try_show_next(ctx);
 }
 
 /// 函数名称：mark_hot_pid_for_realtime_event
 /// 函数作用：把已由 ETW 强信号命中的 PID 交给进程扫描器马上做后置证据补全。
 /// Function name: mark_hot_pid_for_realtime_event
 /// Purpose: Hands strong ETW-matched PIDs to ProcessScannerService for immediate post-event evidence collection.
-fn mark_hot_pid_for_realtime_event<R: tauri::Runtime>(
-    app_handle: &AppHandle<R>,
-    event: &serde_json::Value,
-) {
+fn mark_hot_pid_for_realtime_event(ctx: &ServiceContext, event: &serde_json::Value) {
     let Some(rule_id) = event.get("ruleId").and_then(|value| value.as_str()) else {
         return;
     };
     if !is_realtime_evidence_collection_rule(rule_id) {
+        return;
+    }
+    if should_skip_realtime_evidence_collection_for_control_chain(event) {
+        append_interception_diagnostic(
+            "etw_realtime_evidence_skipped",
+            serde_json::json!({
+                "reason": "windows_control_chain_process",
+                "ruleId": rule_id,
+                "pid": event.get("pid").and_then(|value| value.as_u64()).unwrap_or(0),
+                "processName": event.get("processName").and_then(|value| value.as_str()).unwrap_or(""),
+                "processPath": event.get("processPath").and_then(|value| value.as_str()).unwrap_or(""),
+            }),
+        );
+        eprintln!(
+            "[EtwService] Skipping hot PID evidence collection for Windows control-chain process: rule={}, processName={}, processPath={}",
+            rule_id,
+            event.get("processName").and_then(|value| value.as_str()).unwrap_or(""),
+            event.get("processPath").and_then(|value| value.as_str()).unwrap_or("")
+        );
         return;
     }
 
@@ -1453,13 +1809,40 @@ fn mark_hot_pid_for_realtime_event<R: tauri::Runtime>(
         .get("pid")
         .and_then(|value| value.as_u64())
         .unwrap_or(0) as u32;
-    if let Some(scanner) = app_handle.try_state::<ProcessScannerService>() {
+    if let Some(scanner) = ctx.get::<ProcessScannerService>() {
         scanner.mark_hot_pid(pid, rule_id);
     }
 }
 
 fn is_realtime_preblock_rule(rule_id: &str) -> bool {
     matches!(rule_id, "trusted_process_unsigned_image_load")
+}
+
+fn should_skip_realtime_preblock_for_control_chain(event: &serde_json::Value) -> bool {
+    let rule_id = event
+        .get("ruleId")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    if rule_id != "trusted_process_unsigned_image_load" {
+        return false;
+    }
+
+    let process_name = event
+        .get("processName")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    let process_path = event
+        .get("processPath")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty());
+    let Some(process_path) = process_path else {
+        return false;
+    };
+    is_windows_control_chain_process(process_name, Some(process_path))
+}
+
+fn should_skip_realtime_evidence_collection_for_control_chain(event: &serde_json::Value) -> bool {
+    should_skip_realtime_preblock_for_control_chain(event)
 }
 
 fn is_realtime_evidence_collection_rule(rule_id: &str) -> bool {
@@ -1477,16 +1860,41 @@ fn should_forward_to_file_monitor(event: &serde_json::Value) -> bool {
         .is_some_and(|provider| provider.eq_ignore_ascii_case("File"))
 }
 
-fn should_emit_user_visible_etw_event(event: &serde_json::Value) -> bool {
-    is_high_value_realtime_etw_event(event)
+fn etw_behavior_db_dedup_key(event: &serde_json::Value) -> String {
+    let pid = event
+        .get("pid")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    let provider = event
+        .get("provider")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let operation = event
+        .get("operation")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let signal = event
+        .get("ruleId")
+        .or_else(|| event.get("threatType"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+    let path_key = event
+        .get("path")
+        .or_else(|| event.get("filePath"))
+        .or_else(|| event.get("processPath"))
+        .and_then(|value| value.as_str())
+        .and_then(diagnostic_path_key)
+        .unwrap_or_else(|| "no-path".to_string());
+
+    format!("{pid}|{provider}|{operation}|{signal}|{path_key}")
 }
 
-fn should_ingest_behavior_etw_event(event: &serde_json::Value) -> bool {
-    is_high_value_realtime_etw_event(event)
-}
-
-fn should_analyze_etw_risk_event(event: &serde_json::Value) -> bool {
-    is_high_value_realtime_etw_event(event)
+fn etw_response_dedup_key(event: &serde_json::Value) -> String {
+    etw_behavior_db_dedup_key(event)
 }
 
 fn is_high_value_realtime_etw_event(event: &serde_json::Value) -> bool {
@@ -1578,7 +1986,21 @@ fn should_drop_system_etw_event(value: &serde_json::Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::services::app_lifecycle_service::AppLifecycleService;
+    use crate::services::event_bus::EventBus;
+    use crate::services::service_context::{ServiceContext, ServiceRegistry};
     use serde_json::json;
+
+    /// 构造用于单元测试的 ServiceContext，并注册传入的拦截服务。
+    ///  Build a ServiceContext for unit tests, registering the given interception service.
+    fn make_test_context(interception: Arc<InterceptionService>) -> ServiceContext {
+        let registry = Arc::new(ServiceRegistry::new());
+        let lifecycle = Arc::new(AppLifecycleService::new());
+        let event_bus = Arc::new(EventBus::new(64));
+        let ctx = ServiceContext::new(registry, lifecycle, event_bus);
+        ctx.register::<InterceptionService>(interception);
+        ctx
+    }
 
     #[test]
     fn should_drop_system_etw_event_filters_nested_pid_zero_and_four() {
@@ -1763,6 +2185,155 @@ mod tests {
     }
 
     #[test]
+    fn etw_poll_log_accumulator_suppresses_empty_polls() {
+        let start = Instant::now();
+        let mut accumulator =
+            EtwPollLogAccumulator::new_with_last_log(Duration::from_secs(10), start);
+
+        assert_eq!(accumulator.record(0, start + Duration::from_secs(10)), None);
+        assert_eq!(accumulator.record(0, start + Duration::from_secs(20)), None);
+    }
+
+    #[test]
+    fn etw_poll_log_accumulator_emits_windowed_summary() {
+        let start = Instant::now();
+        let mut accumulator =
+            EtwPollLogAccumulator::new_with_last_log(Duration::from_secs(10), start);
+
+        assert_eq!(accumulator.record(2, start + Duration::from_secs(5)), None);
+        assert_eq!(
+            accumulator.record(3, start + Duration::from_secs(11)),
+            Some(EtwPollLogSummary {
+                polls: 2,
+                events: 5,
+                non_empty_batches: 2,
+                max_batch: 3,
+            })
+        );
+        assert_eq!(accumulator.record(0, start + Duration::from_secs(21)), None);
+    }
+
+    #[test]
+    fn etw_behavior_db_gate_suppresses_recent_duplicate_signals() {
+        let start = Instant::now();
+        let mut gate = EtwBehaviorDbGate::new(Duration::from_secs(10));
+        let event = json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "load",
+            "ruleId": "trusted_process_unsigned_image_load",
+            "path": r"C:\Temp\probe.dll"
+        });
+
+        assert!(gate.should_record(&event, start));
+        assert!(!gate.should_record(&event, start + Duration::from_secs(5)));
+        assert!(gate.should_record(&event, start + Duration::from_secs(11)));
+    }
+
+    #[test]
+    fn etw_behavior_db_gate_keeps_distinct_paths_separate() {
+        let start = Instant::now();
+        let mut gate = EtwBehaviorDbGate::new(Duration::from_secs(10));
+        let first = json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "load",
+            "ruleId": "trusted_process_unsigned_image_load",
+            "path": r"C:\Temp\first.dll"
+        });
+        let second = json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "load",
+            "ruleId": "trusted_process_unsigned_image_load",
+            "path": r"C:\Temp\second.dll"
+        });
+
+        assert!(gate.should_record(&first, start));
+        assert!(gate.should_record(&second, start + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn etw_behavior_db_dedup_key_uses_stable_signal_shape() {
+        let left = etw_behavior_db_dedup_key(&json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "Load",
+            "ruleId": "trusted_process_unsigned_image_load",
+            "path": r"C:\Temp\probe.dll"
+        }));
+        let right = etw_behavior_db_dedup_key(&json!({
+            "pid": 4242,
+            "provider": "image",
+            "operation": "load",
+            "ruleId": "TRUSTED_PROCESS_UNSIGNED_IMAGE_LOAD",
+            "path": r"C:\Temp\probe.dll"
+        }));
+
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn etw_response_gate_suppresses_recent_duplicate_realtime_responses() {
+        let start = Instant::now();
+        let mut gate = EtwResponseGate::new(Duration::from_secs(2));
+        let event = json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "load",
+            "matched": true,
+            "ruleId": "trusted_process_unsigned_image_load",
+            "threatType": "可信进程加载未签名模块",
+            "path": r"C:\Temp\probe.dll"
+        });
+
+        assert!(gate.should_forward(&event, start));
+        assert!(!gate.should_forward(&event, start + Duration::from_millis(500)));
+        assert!(gate.should_forward(&event, start + Duration::from_secs(3)));
+    }
+
+    #[test]
+    fn etw_response_gate_keeps_distinct_realtime_signals_separate() {
+        let start = Instant::now();
+        let mut gate = EtwResponseGate::new(Duration::from_secs(2));
+        let first = json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "load",
+            "matched": true,
+            "ruleId": "trusted_process_unsigned_image_load",
+            "path": r"C:\Temp\first.dll"
+        });
+        let second = json!({
+            "pid": 4242,
+            "provider": "Image",
+            "operation": "load",
+            "matched": true,
+            "ruleId": "trusted_process_unsigned_image_load",
+            "path": r"C:\Temp\second.dll"
+        });
+
+        assert!(gate.should_forward(&first, start));
+        assert!(gate.should_forward(&second, start + Duration::from_millis(500)));
+    }
+
+    #[test]
+    fn etw_response_gate_rejects_observation_only_events() {
+        let start = Instant::now();
+        let mut gate = EtwResponseGate::new(Duration::from_secs(2));
+        let observation_only = json!({
+            "pid": 4242,
+            "provider": "Thread",
+            "operation": "start",
+            "matched": true,
+            "ruleId": "remote_thread_start_outside_image",
+            "threatType": "可疑远程线程入口"
+        });
+
+        assert!(!gate.should_forward(&observation_only, start));
+    }
+
+    #[test]
     fn etw_image_path_strips_windows_namespace_prefixes() {
         assert_eq!(
             etw_image_path_to_verifiable_path(r"\\?\C:\Windows\System32\netapi32.dll").as_deref(),
@@ -1773,6 +2344,20 @@ mod tests {
             Some(r"C:\Windows\System32\netapi32.dll")
         );
         assert!(etw_image_path_to_verifiable_path("   ").is_none());
+    }
+
+    #[test]
+    fn etw_image_path_trims_noise_before_device_prefix() {
+        assert_eq!(
+            trim_etw_path_noise_before_device_prefix(
+                r"@\Device\HarddiskVolume3\Windows\System32\kernel32.dll"
+            ),
+            r"\Device\HarddiskVolume3\Windows\System32\kernel32.dll"
+        );
+        assert_eq!(
+            trim_etw_path_noise_before_device_prefix(r"C:\Windows\System32\kernel32.dll"),
+            r"C:\Windows\System32\kernel32.dll"
+        );
     }
 
     #[cfg(windows)]
@@ -1872,9 +2457,7 @@ mod tests {
             "ruleId": "remote_thread_start_outside_image",
             "threatType": "可疑远程线程入口"
         });
-        assert!(!should_emit_user_visible_etw_event(&observation_only));
-        assert!(!should_ingest_behavior_etw_event(&observation_only));
-        assert!(!should_analyze_etw_risk_event(&observation_only));
+        assert!(!is_high_value_realtime_etw_event(&observation_only));
 
         let strong_image_load = json!({
             "provider": "Image",
@@ -1883,24 +2466,22 @@ mod tests {
             "ruleId": "trusted_process_unsigned_image_load",
             "threatType": "可信进程加载未签名模块"
         });
-        assert!(should_emit_user_visible_etw_event(&strong_image_load));
-        assert!(should_ingest_behavior_etw_event(&strong_image_load));
-        assert!(should_analyze_etw_risk_event(&strong_image_load));
+        assert!(is_high_value_realtime_etw_event(&strong_image_load));
 
-        assert!(should_emit_user_visible_etw_event(&json!({
+        assert!(is_high_value_realtime_etw_event(&json!({
             "provider": "Image",
             "operation": "load",
             "matched": true,
             "ruleId": "trusted_process_unsigned_image_load",
             "threatType": "可信进程加载未签名模块"
         })));
-        assert!(should_emit_user_visible_etw_event(&json!({
+        assert!(is_high_value_realtime_etw_event(&json!({
             "provider": "File",
             "operation": "Rename",
             "matched": true,
             "ruleId": "test_rule_trigger"
         })));
-        assert!(!should_emit_user_visible_etw_event(&json!({
+        assert!(!is_high_value_realtime_etw_event(&json!({
             "provider": "Network",
             "operation": "connect",
             "pid": 47216
@@ -1909,12 +2490,11 @@ mod tests {
 
     #[test]
     fn direct_realtime_interception_queues_strong_image_load_event() {
-        let app = tauri::test::mock_app();
         let interception = Arc::new(InterceptionService::new_for_tests());
-        app.manage(interception.clone());
+        let ctx = make_test_context(interception.clone());
 
         direct_intercept_realtime_injection_event(
-            app.handle(),
+            &ctx,
             &json!({
                 "pid": 43210,
                 "processName": "notepad.exe",
@@ -1938,13 +2518,89 @@ mod tests {
     }
 
     #[test]
-    fn direct_realtime_interception_does_not_queue_observation_only_thread_event() {
-        let app = tauri::test::mock_app();
+    fn direct_realtime_interception_skips_windows_control_chain_preblock() {
         let interception = Arc::new(InterceptionService::new_for_tests());
-        app.manage(interception.clone());
+        let ctx = make_test_context(interception.clone());
 
         direct_intercept_realtime_injection_event(
-            app.handle(),
+            &ctx,
+            &json!({
+                "pid": 43211,
+                "processName": "powershell.exe",
+                "processPath": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+                "path": r"C:\Temp\unsigned-module.dll",
+                "ruleId": "trusted_process_unsigned_image_load",
+                "description": "PowerShell Direct control process loaded unsigned image",
+                "severity": 90
+            }),
+        );
+
+        assert!(
+            interception.entry_for_pid(43211).is_none(),
+            "PowerShell Direct/control-chain processes should keep diagnostics but skip auto-suspend"
+        );
+    }
+
+    #[test]
+    fn realtime_evidence_collection_skips_windows_control_chain() {
+        let control_chain = json!({
+            "pid": 43213,
+            "processName": "powershell.exe",
+            "processPath": r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+            "path": r"C:\Temp\unsigned-module.dll",
+            "ruleId": "trusted_process_unsigned_image_load",
+            "description": "PowerShell Direct control process loaded unsigned image",
+            "severity": 90
+        });
+        let masqueraded = json!({
+            "pid": 43214,
+            "processName": "powershell.exe",
+            "processPath": r"C:\Temp\powershell.exe",
+            "path": r"C:\Temp\unsigned-module.dll",
+            "ruleId": "trusted_process_unsigned_image_load",
+            "description": "masqueraded powershell loaded unsigned image",
+            "severity": 90
+        });
+
+        assert!(should_skip_realtime_evidence_collection_for_control_chain(
+            &control_chain
+        ));
+        assert!(!should_skip_realtime_evidence_collection_for_control_chain(
+            &masqueraded
+        ));
+    }
+
+    #[test]
+    fn direct_realtime_interception_queues_masqueraded_control_chain_name() {
+        let interception = Arc::new(InterceptionService::new_for_tests());
+        let ctx = make_test_context(interception.clone());
+
+        direct_intercept_realtime_injection_event(
+            &ctx,
+            &json!({
+                "pid": 43212,
+                "processName": "powershell.exe",
+                "processPath": r"C:\Temp\powershell.exe",
+                "path": r"C:\Temp\unsigned-module.dll",
+                "ruleId": "trusted_process_unsigned_image_load",
+                "description": "masqueraded PowerShell name loaded unsigned image",
+                "severity": 90
+            }),
+        );
+
+        assert!(
+            interception.entry_for_pid(43212).is_some(),
+            "a suspicious process name alone must not bypass realtime preblock"
+        );
+    }
+
+    #[test]
+    fn direct_realtime_interception_does_not_queue_observation_only_thread_event() {
+        let interception = Arc::new(InterceptionService::new_for_tests());
+        let ctx = make_test_context(interception.clone());
+
+        direct_intercept_realtime_injection_event(
+            &ctx,
             &json!({
                 "pid": 43210,
                 "processName": "cmd.exe",

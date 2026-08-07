@@ -266,6 +266,105 @@ pub mod methods {
     /// UI → 服务: 主动撤销提权
     ///  UI → service: revoke elevation
     pub const REVOKE_ELEVATION: &str = "revoke_elevation";
+
+    // ----------------------------------------------------------------
+    // 运行态开关 / Runtime toggles
+    // ----------------------------------------------------------------
+
+    /// UI → 服务: 启用/停止行为监控（ETW 采集）。
+    /// 参数：`{ "enabled": bool }`。
+    ///
+    /// 没有这个方法时，UI 侧关闭开关只会写配置文件，服务进程继续采集，
+    /// 违反 AGENTS.md「功能开关关闭时后台必须真停止」。
+    ///  UI → service: enable/disable behavior monitoring (ETW collection).
+    ///  Params: `{ "enabled": bool }`. Without it, toggling off in the UI only rewrote the
+    ///  config file while the service kept collecting.
+    pub const SET_BEHAVIOR_MONITORING: &str = "set_behavior_monitoring";
+
+    /// UI → 服务: 启用/停止文件监控。
+    /// 参数：`{ "enabled": bool }`。
+    ///
+    /// 与 SET_BEHAVIOR_MONITORING 同理：文件监控运行在服务进程，UI 关掉开关
+    /// 若只写配置，服务进程的 FileMonitorService 仍在运行。
+    ///  UI → service: enable/disable file monitoring.
+    ///  Params: `{ "enabled": bool }`. Same rationale as SET_BEHAVIOR_MONITORING: the
+    ///  FileMonitorService lives in the service process, so toggling it off in the UI
+    ///  must stop it there, not just rewrite the config file.
+    pub const SET_FILE_MONITORING: &str = "set_file_monitoring";
+
+    /// UI → 服务: 启用/停止进程监控（APIHook watcher）。
+    /// 参数：`{ "enabled": bool }`。
+    ///
+    /// 注意：服务进程无法运行 ProcessScannerService（其 start 需要 Tauri AppHandle
+    /// 来弹出拦截窗口），因此此方法只启停 ProcessMonitorService（APIHook 注入
+    /// 监控）；新进程扫描在服务模式下不运行（架构限制，见 continuous-running.md）。
+    ///  UI → service: enable/disable process monitoring (APIHook watcher).
+    ///  Params: `{ "enabled": bool }`. Note the service process cannot run
+    ///  ProcessScannerService (its start() needs a Tauri AppHandle to show the
+    ///  interception modal), so this only starts/stops the ProcessMonitorService
+    ///  (APIHook injection watcher); new-process scanning does not run in service
+    ///  mode (architecture limitation, see continuous-running.md).
+    pub const SET_PROCESS_MONITORING: &str = "set_process_monitoring";
+
+    // ----------------------------------------------------------------
+    // 网络防火墙 / Network firewall
+    //
+    // 双进程架构下驱动句柄由服务进程持有（打开 \\.\AnXinNetFilter 需要
+    // SYSTEM 或管理员权限），因此 UI 进程的全部防火墙操作都必须经这些方法
+    // 转发，UI 侧不会也不应该直接接触驱动。
+    //  In the dual-process architecture the service process owns the driver
+    //  handle (opening \\.\AnXinNetFilter requires SYSTEM or Administrators), so
+    //  every firewall operation from the UI is forwarded through these methods.
+    //  The UI process neither does nor should touch the driver directly.
+    // ----------------------------------------------------------------
+
+    /// UI → 服务: 查询防火墙运行状态
+    ///  UI → service: query firewall runtime status
+    pub const GET_FIREWALL_STATUS: &str = "get_firewall_status";
+
+    /// UI → 服务: 提交网络连接裁决。
+    /// 参数：`{ "decisionId": u64, "action": "allow"|"block",
+    ///          "remember": bool, "rememberProcess": bool }`
+    ///  UI → service: submit a network connection verdict.
+    pub const HANDLE_NETWORK_DECISION: &str = "handle_network_decision";
+
+    /// UI → 服务: 获取待用户裁决的连接队列
+    ///  UI → service: get connections awaiting a verdict
+    pub const GET_NETWORK_PENDING: &str = "get_network_pending";
+
+    /// UI → 服务: 获取最近的网络事件。参数：`{ "limit": usize }`
+    ///  UI → service: get recent network events. Params: `{ "limit": usize }`
+    pub const GET_NETWORK_EVENTS: &str = "get_network_events";
+
+    /// UI → 服务: 获取按进程的流量统计
+    ///  UI → service: get per-process traffic statistics
+    pub const GET_NETWORK_STATS: &str = "get_network_stats";
+
+    /// UI → 服务: 重新加载并整表下发防火墙规则
+    ///  UI → service: reload and push the firewall rule tables
+    pub const RELOAD_FIREWALL_RULES: &str = "reload_firewall_rules";
+
+    /// UI → 服务: 设置防火墙总开关。参数：`{ "enabled": bool }`
+    ///  UI → service: set the firewall master switch. Params: `{ "enabled": bool }`
+    pub const SET_FIREWALL_ENABLED: &str = "set_firewall_enabled";
+
+    /// UI → 服务: 设置运行模式。参数：`{ "mode": "silent"|"prompt"|"learn" }`
+    ///  UI → service: set the operating mode.
+    pub const SET_FIREWALL_MODE: &str = "set_firewall_mode";
+
+    /// UI → 服务: 清空内核裁决缓存，让全部连接重新走规则与询问
+    ///  UI → service: flush the kernel verdict cache so everything is re-evaluated
+    pub const FLUSH_FIREWALL_CACHE: &str = "flush_firewall_cache";
+
+    // ── 元核防护（Hypervisor）── / Hypervisor
+
+    /// UI → 服务: 查询元核防护运行状态
+    ///  UI → service: query hypervisor runtime status
+    pub const GET_HYPERVISOR_STATUS: &str = "get_hypervisor_status";
+
+    /// UI → 服务: 设置元核防护总开关。参数：`{ "enabled": true|false }`
+    ///  UI → service: set the hypervisor master switch.
+    pub const SET_HYPERVISOR_ENABLED: &str = "set_hypervisor_enabled";
 }
 
 // ============================================================================
@@ -277,15 +376,25 @@ pub mod methods {
 ///  Protection status response
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtectionStatus {
-    /// ETW 监控是否运行中
-    ///  Whether ETW monitoring is running
+    /// ETW 监控后台任务是否运行中
+    ///  Whether the ETW monitoring background task is running
     pub etw_running: bool,
+    /// ETW 是否真的在采集（会话建成功、provider 已启用）。
+    /// 与 `etw_running` 区分：无管理员权限时 StartTraceW 会失败，此时任务在跑但没有数据。
+    ///  Whether ETW is actually collecting (session created, providers enabled). Distinct from
+    ///  `etw_running`: without administrator rights StartTraceW fails, so the task runs but no
+    ///  events arrive.
+    #[serde(default)]
+    pub etw_collecting: bool,
     /// 文件钩子是否运行中
     ///  Whether file hook is running
     pub file_hook_running: bool,
     /// 文件监控是否运行中
     ///  Whether file monitor is running
     pub file_monitor_running: bool,
+    /// 进程监控是否运行中
+    ///  Whether process monitor is running
+    pub process_monitor_running: bool,
     /// 拦截队列长度
     ///  Interception queue length
     pub interception_queue_len: usize,
@@ -306,6 +415,17 @@ pub struct InterceptionDecisionParams {
     pub pid: u32,
     /// 决策：allow 或 block
     ///  Decision: allow or block
+    ///
+    /// UI 侧 `commands/interception.rs` 一直发的是 `action`，而这里原本只声明了
+    /// `decision`，导致服务模式下每一次拦截决策都以 `missing field \`decision\``
+    /// 失败——进程 Allow 后永远挂着、Block 后仍然活着。加 alias 让协议类型与
+    /// 线上实际报文一致，并同时兼容两种键名。
+    ///  The UI in `commands/interception.rs` has always sent `action` while this
+    ///  field only declared `decision`, so in service mode every verdict failed
+    ///  with `missing field \`decision\`` — leaving Allow'd processes suspended
+    ///  forever and Block'd ones still alive. The alias makes the protocol type
+    ///  match what actually goes over the wire and accepts either key.
+    #[serde(alias = "action")]
     pub decision: String,
 }
 
@@ -462,6 +582,35 @@ mod tests {
         }
     }
 
+    /// UI 侧发的是 `action`，服务端声明的是 `decision`。这两个键名不一致曾让
+    /// 服务模式下的每一次拦截决策都静默失败，因此两种写法都必须能解析。
+    ///  The UI sends `action` while the server declares `decision`. That mismatch
+    ///  silently broke every interception verdict in service mode, so both
+    ///  spellings must parse.
+    #[test]
+    fn interception_params_accept_both_action_and_decision_keys() {
+        let from_ui: InterceptionDecisionParams =
+            serde_json::from_value(serde_json::json!({"pid": 1234, "action": "allow"}))
+                .expect("the 'action' key the UI actually sends must parse");
+        assert_eq!(from_ui.pid, 1234);
+        assert_eq!(from_ui.decision, "allow");
+
+        let from_protocol: InterceptionDecisionParams =
+            serde_json::from_value(serde_json::json!({"pid": 99, "decision": "block"}))
+                .expect("the declared 'decision' key must keep working");
+        assert_eq!(from_protocol.pid, 99);
+        assert_eq!(from_protocol.decision, "block");
+    }
+
+    /// 两个键都缺失时必须报错，不能默默当成某个默认动作。
+    ///  Missing both keys must error rather than silently defaulting to an action.
+    #[test]
+    fn interception_params_reject_missing_decision() {
+        let result: Result<InterceptionDecisionParams, _> =
+            serde_json::from_value(serde_json::json!({"pid": 1}));
+        assert!(result.is_err());
+    }
+
     #[test]
     fn from_line_empty_returns_error() {
         assert!(IpcMessage::from_line("").is_err());
@@ -471,6 +620,68 @@ mod tests {
     #[test]
     fn from_line_invalid_json_returns_error() {
         assert!(IpcMessage::from_line("not json").is_err());
+    }
+
+    /// 行为监控开关必须有对应的 IPC 方法，否则服务模式下关不掉后台采集。
+    ///  The behaviour-monitoring toggle needs an IPC method, or service-mode collection cannot
+    ///  actually be stopped.
+    #[test]
+    fn set_behavior_monitoring_method_is_defined() {
+        assert_eq!(methods::SET_BEHAVIOR_MONITORING, "set_behavior_monitoring");
+        // 方法名必须唯一，避免与既有方法撞名被错误分派
+        //  The name must be unique so it is not mis-dispatched onto an existing method
+        for existing in [
+            methods::GET_STATUS,
+            methods::HANDLE_INTERCEPTION,
+            methods::START_ENGINE,
+            methods::STOP_ENGINE,
+            methods::PING,
+        ] {
+            assert_ne!(methods::SET_BEHAVIOR_MONITORING, existing);
+        }
+    }
+
+    /// ETW 的"在跑"与"真在采集"必须是两个独立字段。
+    /// 无管理员权限时 StartTraceW 失败，后台任务仍在跑但一条事件都收不到；
+    /// 只上报一个布尔会把这种半降级状态显示成正常采集。
+    ///  "running" and "actually collecting" must stay separate: without administrator rights
+    ///  StartTraceW fails, so the task runs while no events arrive. A single boolean would
+    ///  render that half-degraded state as healthy collection.
+    #[test]
+    fn protection_status_reports_running_and_collecting_separately() {
+        let status = ProtectionStatus {
+            etw_running: true,
+            etw_collecting: false,
+            file_hook_running: false,
+            file_monitor_running: false,
+            process_monitor_running: false,
+            interception_queue_len: 0,
+            engine_online: false,
+            started_at: 0,
+        };
+        let value = serde_json::to_value(&status).expect("ProtectionStatus 应可序列化");
+        assert_eq!(value["etw_running"], true);
+        assert_eq!(value["etw_collecting"], false);
+    }
+
+    /// 旧版服务进程不带 etw_collecting 字段时必须仍能反序列化，避免升级期间 IPC 直接报错。
+    ///  An older service process omitting etw_collecting must still deserialize, so a mixed-version
+    ///  upgrade does not break IPC outright.
+    #[test]
+    fn protection_status_tolerates_missing_collecting_field() {
+        let legacy = serde_json::json!({
+            "etw_running": true,
+            "file_hook_running": false,
+            "file_monitor_running": false,
+            "process_monitor_running": false,
+            "interception_queue_len": 0,
+            "engine_online": false,
+            "started_at": 0
+        });
+        let status: ProtectionStatus =
+            serde_json::from_value(legacy).expect("缺少 etw_collecting 字段时应回退为默认值");
+        assert!(status.etw_running);
+        assert!(!status.etw_collecting);
     }
 
     #[test]
