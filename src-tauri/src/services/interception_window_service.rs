@@ -97,6 +97,14 @@ fn build_interception_window<R: Runtime>(
     .skip_taskbar(false)
     .content_protected(true)
     .center()
+    // 与主窗口保持一致的 WebView2 浏览器参数：不同的 CoreWebView2EnvironmentOptions
+    // 在同一 user data folder 下会导致 WebView2 启动独立的浏览器进程（内存翻倍）或创建失败，
+    // 因此拦截窗口必须逐字节复用主窗口的 additionalBrowserArgs（见 tauri.conf.json）。
+    // Keep the same WebView2 browser arguments as the main window: different
+    // CoreWebView2EnvironmentOptions under the same user data folder make WebView2 spin up a
+    // separate browser process (doubling memory) or fail, so this must byte-for-byte match
+    // the main window's additionalBrowserArgs (see tauri.conf.json).
+    .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu --disable-background-networking --disable-component-update")
     .build()
     .map_err(|err| {
         let message = format!("Failed to create interception window: {}", err);

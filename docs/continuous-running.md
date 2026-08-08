@@ -1457,3 +1457,68 @@ npm run test
   - 恢复 REG_KEY 按需登记需重加已删除的 IOCTL 族 + 运行时 ObjectID 缓存 + Rust 侧接线，重造本次迁移刻意消除的「安装期静默失效」死握手。
   - 后续方向：若未来产品把敏感配置写入 `HKLM\SOFTWARE\AnXin Security`，应改用文件型/APPDATA+DPAPI 存储而非扩充注册表自保列表；卸载器反篡改的正确载体是文件层而非注册表。
 
+### 2026-08-08 修复服务模式启动卡死 + 跨会话 IPC 管道不可达（Hyper-V VM 实测通过）
+
+**背景（根因）**
+
+报告症状：通过服务启动后端时卡死，导致无法启动服务、无法连接前端。拆出两个独立根因：
+
+1. **跨会话命名管道不可达（确定性）**：`ipc_protocol.rs::IPC_PIPE_NAME` 原为 `\\.\pipe\AnXinSecurityIPC`（无 `Global\` 前缀）。Windows 命名管道命名空间按会话隔离：服务进程以 SYSTEM 身份运行在 Session 0，创建的会话级管道仅 Session 0 可见；UI 进程运行在 Session 1+，按同一名字打开必然 `ERROR_FILE_NOT_FOUND` → 前端永远连不上服务。服务持有 `SeCreateGlobalPrivilege`，创建 `Global\` 前缀管道后所有会话均可见。
+2. **服务进入 Running 前的同步阻塞（结构性）**：`start_protection_runtime()` 在服务达到 Running 之前同步调用 `init_driver_protection()`，其中 `DriverClient::connect()` / `register_file_protection()` 使用无超时的 `DeviceIoControl` / `FilterSendMessage`。若驱动已加载但分发例程不响应，主线程无限阻塞 → 服务卡在 START_PENDING，超过 SCM 30s wait_hint 被杀 → “无法启动服务”。主线程在 Running 前被阻塞任务占用，违背“主线程不应被任何任务占用以确保能响应消息”。
+
+**修复内容（已验证）**
+
+- `src-tauri/src/services/ipc_protocol.rs`（`IPC_PIPE_NAME`）：改为 `\\.\pipe\Global\AnXinSecurityIPC`，补充中英文注释说明必须使用 `Global\` 前缀的原因（服务在 Session 0、UI 在 Session 1，服务持有 `SeCreateGlobalPrivilege`）。
+- `src-tauri/src/services/windows_service.rs`（`start_protection_runtime`）：`init_driver_protection()` 移到独立线程 `anxin-driver-init`，不再等待；驱动缺失/挂起只阻塞该后台线程，服务照常进入 Running。补充注释说明 DeviceIoControl/FilterSendMessage 同步无超时、SCM 30s wait_hint 语义。
+- `src-tauri/src/services/ipc_server.rs` / `ipc_client.rs`：管道名注释同步更新为 Global 版本（无功能变更）。
+
+**验证结果（已验证）**
+
+- `cargo check` 通过；`cargo test --lib` 346/346 通过。
+- Hyper-V VM `病毒测试`（Win10 IoT Enterprise LTSC；`test` 用户交互会话 Session 1；服务以 SYSTEM 运行 Session 0）实测：
+  - **启动不卡死**：`sc start` 后 START_PENDING → RUNNING 约 2 秒（08:50:45 → 08:50:47），远低于 SCM 30s wait_hint；服务持续 RUNNING，PID 4036（Session 0），ws≈162MB（无 4GB 内存尖峰）。
+  - **跨会话管道可达**：Session 1 交互会话 `NamedPipeClientStream.Connect` 到 `Global\AnXinSecurityIPC` 成功（CONNECT-OK）；同一会话按旧名 `AnXinSecurityIPC` 连接超时（操作已超时），复现修复前症状。Session 0 枚举管道确认 `Global\AnXinSecurityIPC` 存在、会话级 `AnXinSecurityIPC` 不存在。
+  - **端到端链路**：服务启动后经 `CreateProcessAsUserW` 把 UI（`C:\AnXinVmTest\anxin-security.exe`）拉起进 Session 1，UI 又启动 msedgewebview2（Tauri WebView），前端进程存活。PowerShell 探针连上 Global 管道后写 PING 被 `verify_pipe_client` 拒绝（管道已中断）——证明管道存活且身份校验仍生效。
+
+**残余**
+
+- 本轮 VM 未安装三个内核驱动（AnXinProcProtect/FileProtect/NetFilter），因此“驱动分发例程挂起导致旧代码卡死”的负面对照无法在 VM 内复现（驱动缺失时旧代码会快速失败而非挂起）。修复正确性由代码层面（阻塞调用移出主线程）保证，VM 验证证明修复后启动路径畅通、服务正常进入 Running。
+- 服务进程的 stderr 在 Windows 服务上下文被丢弃，本轮服务日志靠 `sc query` 状态轮询与外部管道探针验证，未落盘服务端 eprintln。
+
+### 2026-08-08 前端启动内存减负：WebView2 浏览器参数裁剪（Hyper-V VM 实测通过）
+
+**背景（根因）**
+
+报告症状：前端启动时占用太大。Hyper-V VM `病毒测试` 内实测 standalone 模式（无引擎模型部署）启动前 2 秒即达稳定态、无尖峰，内存构成：
+
+| 进程 | 工作集 | 说明 |
+|---|---|---|
+| `anxin-security.exe`（UI 宿主） | ~26MB | 引擎模型未部署；真机 standalone 额外 +139MB |
+| `msedgewebview2.exe` × 8 | ~254MB | browser 114MB + renderer 45MB + GPU 40MB + utility ~60MB |
+| **合计** | **~280MB** | WebView2 占 90% |
+
+前端 JS 本身很小：renderer 仅 ~45MB，日志封顶 200 条（展示 8 条），快照结果 payload 是小 JSON。因此“前端占用大”不是前端代码/数据问题，而是 WebView2 的固定开销（Chromium 浏览器进程 + renderer + GPU + utility 进程）。
+
+**修复内容（已验证）**
+
+- `src-tauri/tauri.conf.json`：主窗口新增 `additionalBrowserArgs`，值为
+  `--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --disable-gpu --disable-background-networking --disable-component-update`。
+  前段 `msWebOOUI,msPdfOOUI,msSmartScreenProtection` 是 wry 默认参数，必须显式保留（`additional_browser_args` 会整体替换默认串）。
+- `src-tauri/src/services/interception_window_service.rs`：拦截窗口 `WebviewWindowBuilder` 追加逐字节相同的 `additional_browser_args`，并补注释说明原因：
+  不同 `CoreWebView2EnvironmentOptions` 在同一 user data folder 下会导致 WebView2 启动独立浏览器进程（内存翻倍）或创建失败，因此主窗口与拦截窗口必须共用同一组浏览器参数。两个窗口共享同一 WebView2 环境，只保留一个浏览器进程。
+
+**验证结果（已验证）**
+
+- `cargo build --release --bin anxin-security` 通过（仅既有 dead_code warnings）。新产物 SHA256 与 VM 内 `C:\AnXinVmTest\anxin-security.exe` 一致后复测。
+- **standalone A/B（同一条启动路径，仅浏览器参数不同）**：
+  - WebView2 合计 ~254MB → **~212MB**（净省 ~40MB / ~14%）；
+  - WebView2 进程数 8 → **6**（GPU 进程被移除，浏览器进程自身 ~114MB → ~78MB）；
+  - 前端栈合计 ~280MB → **~240MB**。
+- **拦截窗口兼容性**：每次启动都会 `prepare_interception_window`（创建后隐藏）。实测进程数保持 6、无崩溃，证明主窗口与拦截窗口共享同一 WebView2 环境、参数一致生效，未出现第二个浏览器进程。
+- **服务模式（部署形态）**：服务启动后 `CreateProcessAsUserW` 拉起 UI，UI 宿主 ~24MB，WebView2 6 个进程（GPU 进程已移除，进程数 8→6），服务进程（Session 0）~154MB。服务模式 UI 的 WebView2 合计（~277MB）高于 standalone（~212MB），因为连接服务后 UI 渲染实时防护数据（IPC 日志/状态事件），浏览器与 renderer 持有更多状态——这不是浏览器参数失效，而是实时数据负载更高。
+
+**残余 / 权衡**
+
+- `--disable-gpu` 使 WebView2 回退软件渲染（SwiftShader）。对 Fluent UI 控制台可用，但低端机器上滚屏/动画的 CPU 占用可能略升；这是“内存换渲染”的明确取舍。未验证真实硬件上的视觉差异。
+- WebView2 的剩余 ~210-280MB 是 Chromium 固有下限，浏览器进程 + renderer 无法通过合法参数进一步压缩（`--single-process` 会破坏进程隔离，对安全产品不可接受）。
+- **standalone 引擎的 139MB 模型内存未被本轮处理**：该内存是 `kvd_create` 加载全部 ONNX 模型的代价，启动快照、文件监控、ETW 风险分析都依赖它。延迟加载会留下“启动后防护未生效”的空窗，故未做。服务模式下 UI 进程本就不加载引擎（引擎在服务进程内），所以部署形态的前端栈已基本只含 WebView2。
