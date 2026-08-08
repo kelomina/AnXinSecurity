@@ -3,7 +3,7 @@
 //
 // 职责：
 //  Responsibilities:
-// - 连接到服务进程的命名管道 \\.\pipe\AnXinSecurityIPC
+// - 连接到服务进程的命名管道 \\.\pipe\Global\AnXinSecurityIPC
 // - 向服务进程发送请求（状态查询、拦截决策等）
 // - 接收服务进程推送的事件（ETW 事件、拦截通知等），转发到 Tauri 事件系统
 //

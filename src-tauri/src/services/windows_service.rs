@@ -349,16 +349,33 @@ fn start_protection_runtime(
         }
     });
 
-    // 尝试连接 AnXinProcProtect 内核驱动并注册本进程 PID
-    //  Attempt to connect to AnXinProcProtect kernel driver and register own PID
-    if let Err(e) = init_driver_protection() {
-        eprintln!(
-            "[Service] Driver protection not available (non-fatal): {}",
-            e
-        );
-        // 驱动缺失不阻断服务功能，仅丢失内核级进程保护
-        //  Driver absence does not block service; only kernel-level process protection is lost
-    }
+    // 尝试连接 AnXinProcProtect 内核驱动并注册本进程 PID。
+    // 在独立线程中执行且不等待：驱动登记是"防御纵深"，不必阻塞服务进入 Running。
+    // DeviceIoControl / FilterSendMessage 是同步且无超时的，若驱动已加载但分发例程
+    // 不响应，在主线程上执行会把服务卡死在 StartPending，超过 SCM 的 30s wait_hint
+    // 即被杀 —— 这正是"无法启动服务"的症状。移出关键路径后，驱动卡死只阻塞这个
+    // 后台线程，服务照常进入 Running、UI 照常可连。
+    //  Attempt to connect to AnXinProcProtect kernel driver and register own PID.
+    //  Runs on a detached thread and is not awaited: driver registration is defence in
+    //  depth and must not delay the service entering Running. DeviceIoControl /
+    //  FilterSendMessage are synchronous with no timeout — if a driver is loaded but its
+    //  dispatch does not answer, executing this on the main thread wedges the service in
+    //  StartPending past SCM's 30s wait_hint, which is exactly the "service fails to
+    //  start" symptom. Off the critical path, a hung driver only blocks this background
+    //  thread while the service starts normally and the UI can still connect.
+    std::thread::Builder::new()
+        .name("anxin-driver-init".to_string())
+        .spawn(|| {
+            if let Err(e) = init_driver_protection() {
+                eprintln!(
+                    "[Service] Driver protection not available (non-fatal): {}",
+                    e
+                );
+                // 驱动缺失不阻断服务功能，仅丢失内核级进程保护
+                //  Driver absence does not block service; only kernel-level process protection is lost
+            }
+        })
+        .map_err(|e| format!("Failed to spawn driver init thread: {}", e))?;
 
     Ok(ProtectionRuntime {
         ipc_server,

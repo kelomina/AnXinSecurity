@@ -16,7 +16,22 @@ use serde::{Deserialize, Serialize};
 
 /// IPC 管道名称
 ///  IPC pipe name
-pub const IPC_PIPE_NAME: &str = r"\\.\pipe\AnXinSecurityIPC";
+///
+/// 必须使用 `Global\` 前缀：服务进程运行在 Session 0，UI 进程由
+/// CreateProcessAsUserW 启动到交互会话（Session 1+）。Windows 命名管道
+/// 命名空间按会话隔离，不带 Global 前缀的管道只在本会话可见，跨会话客户端
+/// 一律 ERROR_FILE_NOT_FOUND，导致前后端分离彻底失效。
+/// 服务以 SYSTEM 运行持有 SeCreateGlobalPrivilege，可创建全局管道；
+/// 客户端（交互用户）打开全局管道无需该特权，仅受管道 DACL（IU）约束。
+///  Must use the `Global\` prefix: the service runs in Session 0 while the UI is
+///  launched into an interactive session (Session 1+) via CreateProcessAsUserW.
+///  Windows named-pipe namespaces are per-session; a pipe without the Global prefix
+///  is only visible in its own session and every cross-session client gets
+///  ERROR_FILE_NOT_FOUND, silently breaking the frontend-backend split.
+///  The service (SYSTEM) holds SeCreateGlobalPrivilege and can create a global pipe;
+///  the client (interactive user) needs no such privilege to open it, only the
+///  pipe DACL (IU) access.
+pub const IPC_PIPE_NAME: &str = r"\\.\pipe\Global\AnXinSecurityIPC";
 
 /// 请求 ID 类型
 ///  Request ID type

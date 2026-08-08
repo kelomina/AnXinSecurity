@@ -3,7 +3,7 @@
 //
 // 职责：
 //  Responsibilities:
-// - 监听命名管道 \\.\pipe\AnXinSecurityIPC，接受 UI 进程连接
+// - 监听命名管道 \\.\pipe\Global\AnXinSecurityIPC，接受 UI 进程连接
 // - 接收 UI 进程的请求（状态查询、拦截决策等），分发给防护组件
 // - 将防护组件产生的事件（ETW 事件、拦截通知等）推送给已连接的 UI 进程
 //
