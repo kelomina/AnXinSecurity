@@ -5,7 +5,7 @@
  * 负责：布局骨架（标题栏 + 侧边栏 + 主内容区）、页面路由分发、
  *       TrayExitPrompt 全局弹窗集成、Toast 容器挂载、启动画面。
  * Responsible for: Layout skeleton (titlebar + sidebar + content), page routing,
- *       TrayExitPrompt global modal, Toast container, SplashScreen.
+ *       Toast container, SplashScreen. (exit-confirm modal moved to the Tray process)
  *
  * 调用方：main.tsx（通过 ReactDOM.createRoot 渲染）
  * Called by: main.tsx (rendered via ReactDOM.createRoot)
@@ -25,7 +25,6 @@ import { startEngine, scannerHealth } from './api/scanner'
 import Sidebar from './components/Sidebar'
 import TitleBar from './components/TitleBar'
 import Toast from './components/Toast'
-import TrayExitPrompt from './components/TrayExitPrompt'
 import SplashScreen, {
   type StartupPhaseItem,
   type StartupPhaseStatus,
@@ -45,6 +44,7 @@ const BehaviorPage = lazy(() => import('./components/BehaviorPage'))
 const FirewallPage = lazy(() => import('./components/FirewallPage'))
 const SettingsPage = lazy(() => import('./components/SettingsPage'))
 const BehaviorLifecyclePage = lazy(() => import('./components/BehaviorLifecyclePage'))
+const ProcessLifecyclePage = lazy(() => import('./components/ProcessLifecyclePage'))
 
 const PHASE_STATUS_RANK: Record<StartupPhaseStatus, number> = {
   pending: 0,
@@ -109,7 +109,6 @@ const App: React.FC = () => {
   const initializeTheme = useThemeStore((state) => state.initializeTheme)
   const syncFromConfig = useThemeStore((state) => state.syncFromConfig)
   const { loadTranslations, t } = useI18nStore()
-  const [isExitPromptOpen, setIsExitPromptOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   // 非管理员权限提示 / Non-admin privilege warning
   const [showPrivilegeWarning, setShowPrivilegeWarning] = useState(false)
@@ -289,9 +288,6 @@ const App: React.FC = () => {
 
       setPhaseStatus('listeners', 'active')
       setStatusKey('splash_status_events')
-      addAsyncCleanup(listen('tray-exit-requested', () => {
-        setIsExitPromptOpen(true)
-      }))
 
       // 监听内存节省模式切换（主窗口隐藏到托盘时进入，显示时退出）
       //  Listen for memory-saving mode changes (enter when main window hidden to tray, exit when shown)
@@ -409,6 +405,8 @@ const App: React.FC = () => {
         )
       case 'firewall':
         return <FirewallPage />
+      case 'process-lifecycle':
+        return <ProcessLifecyclePage />
       case 'settings':
         return <SettingsPage />
       default:
@@ -463,12 +461,6 @@ const App: React.FC = () => {
           </div>
         </Suspense>
       </main>
-
-      {/* 托盘退出确认弹窗 */}
-      <TrayExitPrompt
-        isOpen={isExitPromptOpen}
-        onClose={() => setIsExitPromptOpen(false)}
-      />
 
       {/* 全局 Toast 通知 */}
       <Toast />

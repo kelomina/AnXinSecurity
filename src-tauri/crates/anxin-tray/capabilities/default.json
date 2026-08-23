@@ -1,0 +1,12 @@
+{
+  "identifier": "default",
+  "description": "托盘进程退出确认窗口最小权限配置（事件监听、窗口隐藏）",
+  "windows": ["exit-confirm"],
+  "permissions": [
+    "core:default",
+    "core:event:allow-listen",
+    "core:event:allow-unlisten",
+    "core:window:allow-hide",
+    "core:window:allow-show"
+  ]
+}

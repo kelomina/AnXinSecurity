@@ -36,10 +36,13 @@
       "../native/bin/win32-x64/file_hook_detours.dll",
       "../native/bin/win32-x86/file_hook_detours.dll",
       "../config/etw_match_rules.json",
+      "../config/app.json",
+      "../config/proc_filter_rules.json",
       "../config/i18n/zh-CN.json",
       "../config/i18n/en-US.json",
       "../config/firewall_rules.json",
       "../native/net_filter/build/x64/Release/AnXinNetFilter.sys",
+      "../native/proc_monitor/build/x64/Release/AnXinProcMon.sys",
       "../Engine/**/*"
     ],
     "windows": {

@@ -1,7 +1,7 @@
 # AnXinSecurity 安全漏洞清单
 
 > 本文件记录项目中已发现的安全漏洞，需持续更新。
-> 最后更新：2026-08-07
+> 最后更新：2026-08-13
 
 ---
 
@@ -103,6 +103,17 @@
 | VUL-093 | Low | NetFilter FwpsPendClassify0 失败后对未挂起分类调用 FwpsCompleteClassify0 | native/net_filter/src/callouts.c | Fixed |
 | VUL-094 | Medium | NetFilter 状态修改类 IOCTL 未校验调用方为已接管客户端（BYOVD） | native/net_filter/src/driver.c | Fixed |
 | VUL-095 | High | 注册表保护迁移后应用自身服务键静默失去保护，且 Rust 仍调用已删除的 REG_KEY 死 IOCTL | native/file_protect/src/minifilter.c / utils/driver_client.rs / services/windows_service.rs | Fixed |
+| VUL-096 | High | WebView2 前端进程未受进程保护（isChildOfProtected 遗漏 pending 队列，2s 提升窗口内子进程永不受保护） | native/driver/src/driver.c | Fixed |
+| VUL-097 | High | 安装目录文件保护运行期注册未生效，exe 未运行时可直接删除/覆盖安装目录文件 | native/file_protect/src/minifilter.c / services/windows_service.rs / utils/driver_client.rs | Fixed |
+| VUL-098 | High | 驱动服务键注册表保护运行时仅 2/4 键生效，AnXinSecurityService 与 AnXinNetFilter 键可被管理员删除（VUL-095 修复在运行时未生效） | native/file_protect/src/minifilter.c | Fixed |
+| VUL-099 | Critical | IOCTL_ANXIN_SET_DIAG 无调用方授权校验，任意管理员可置 DIAG_DISABLE_* 关闭 Ob 进程/线程自保护 | native/driver/src/driver.c | Fixed |
+| VUL-100 | Critical | Ob 进程授权仅按 14 字节 ANSI 文件名前缀匹配（无路径校验），名称伪装进程可终止受保护服务与 UI 进程 | native/driver/src/driver.c | Fixed |
+| VUL-101 | Medium | 卸载程序重启一次后残留 3 个驱动 .sys 文件（重启删除登记被仍在加载的 minifilter 拦截） | build/nsis-hooks.nsh / services/driver_install_service.rs | Fixed |
+| VUL-102 | Low | FpmQueryPaths 诊断查询挂起（FilterSendMessage 无响应），`--query-protected-paths` 死锁 | native/file_protect/src/minifilter.c | Fixed |
+| VUL-103 | Low | 受保护进程线程的 OpenThread(THREAD_GET/SET_CONTEXT) 句柄可打开，存在线程劫持面 | native/driver/src/driver.c | Fixed |
+| VUL-104 | High | AnXinProcMon 构建缺 /INTEGRITYCHECK，进程/线程回调注册被 CI 拒绝（0xC0000022） | native/proc_monitor/AnXinProcMon.vcxproj | Fixed |
+| VUL-105 | Medium | 服务模式 IPC 唯一处理线程被批量扫描阻塞，状态刷新 broken-pipe、开关卡死、扫描无法取消 | services/ipc_server.rs | Fixed |
+| VUL-106 | Medium | IPC 客户端身份校验仅按镜像文件名白名单（无安装目录/签名比对），同名伪装进程可通过校验并驱动拦截决策/停服通道；三进程拆分白名单扩至 anxin-tray.exe 后伪装面增大 | services/identity_verification_service.rs | Open |
 
 ---
 
@@ -1135,3 +1146,165 @@
   4. **仅回调（不加 DACL）会破坏升级**：只要运行时把该键登记进 ObjectID 列表，升级/覆盖安装器（管理员用户、非授权调用方）重写卸载入口就会被 CmCallback 拦截，升级中断；旧按需机制同样存在此问题（升级前须先 `--uninstall-drivers` 清登记，增加耦合与失败面）。
   5. **恢复按需登记重造死握手**：REG_KEY IOCTL 族（0x806-0x808）已从 driver.c 彻底删除，FileProtect 为 minifilter（通信端口、无 IOCTL 设备）；恢复需重加 IOCTL 族 + 运行时 ObjectID 缓存 + Rust 侧 `add_reg_key` + 启动期接线，正是本次迁移刻意消除的「安装期静默失效」模式（旧 `register_registry_protection` 二次 connect 因共享冲突必然失败且仅被 eprintln 吞掉），违背迁移到确定性硬编码保护的方向。
   **后续方向**：若未来产品把敏感配置写入 `HKLM\SOFTWARE\AnXin Security`，应改用文件型/APPDATA+DPAPI 存储（复用 config.rs 现有文件型方案）而非扩充注册表自保列表；对卸载器反篡改的正确载体是文件层（`unins000.exe` 已随安装目录受文件自保保护），而非注册表。
+
+---
+
+### VUL-096: WebView2 前端进程未受进程保护（isChildOfProtected 遗漏 pending 队列）
+
+- **严重等级**: High
+- **漏洞类型**: 防护失效 / 自保绕过（前端依赖进程）
+- **影响模块**: `native/driver/src/driver.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: `ProcessNotifyCallback` 的子进程保护判断 `isChildOfProtected`（driver.c:1637）覆盖 pending 待提升队列——父进程处于 2s 提升窗口（pending 队列）时其子进程同样登记保护（driver.c:1653-1656），消除提升窗口内产生的 webview 子进程永不受保护问题。
+- **描述**: 进程自保的 `ProcessNotifyCallback`（driver.c:1230）对子进程继承判断用 `isChildOfProtected`（driver.c:1270），它只查**已提升（fully-promoted）保护列表** `IsProtectedPidTry`，不查 **pending 待提升队列**。进程创建后需经 `PROMOTION_DELAY_MS = 2000`（driver.c:168）的 DPC 延迟才提升进保护列表；UI 进程（anxin-security.exe）启动后立刻创建 webview 子进程，这些子进程在 2s 提升窗口内产生，父进程当时不在保护列表 → 子进程**永不被注册保护**。
+- **攻击向量**: 本地任意进程执行 `taskkill /f /im msedgewebview2.exe` 即可一次性终止软件前端所依赖的全部 WebView2 进程（browser/renderer/GPU/utility），导致前端界面崩溃/降级。与 TER-05（VUL-100）组合，可先杀 UI 再杀 webview，完整瘫痪前端。
+- **验证（2026-08-13 来宾实测）**: TER-03 `taskkill /f /im msedgewebview2.exe` 成功终止全部 7 个 webview 进程（保护有效时 UI/service 的 taskkill 均被拒）。对照：受保护 PID 的 taskkill/TerminateProcess/NtSuspendProcess/NtSuspendThread/DebugActiveProcess 全部被拒（TER-01/02/04、SUS-01/02/04），唯独 webview 子进程无任何拦截。
+- **修复方向**: `isChildOfProtected` 需同时检查 pending 队列（对父进程在 pending 中的情况同样登记子进程），或将 `PROMOTION_DELAY_MS` 改为父进程的"保护作用域"传播（子进程继承父进程保护状态），消除提升窗口内产生的子进程漏洞。
+
+---
+
+### VUL-097: 安装目录文件保护运行期注册未生效，exe 未运行时可直接删除/覆盖安装目录文件
+
+- **严重等级**: High
+- **漏洞类型**: 防护失效 / 自保绕过（软件本体文件）
+- **影响模块**: `src-tauri/src/services/windows_service.rs`、`src-tauri/src/utils/driver_client.rs`、`native/file_protect/src/minifilter.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: Rust 侧 `register_file_protection_paths`（driver_client.rs）改为独立线程 + 有效回复缓冲（4 + MAX_PROTECTED_PATHS*520*2）+ 8s 超时守卫发送 `FpmAddPath`（原来主线程 NULL 缓冲调用在 FLTLIB.DLL 内 AV），安装目录 NT 路径运行期注册生效；2026-08-13 重测安装目录 `anxin-security.exe` 的 DEL / OVERWRITE / RENAME 全部 DENIED。
+- **描述**: 安装目录文件保护依赖服务启动时 `register_file_protection()` 经 `FilterConnectCommunicationPort` + `FpmAddPath` 把安装目录 NT 路径登记进 AnXinFileProtect minifilter。实测该登记**在运行期未生效**：minifilter 只对 3 个 .sys 驱动文件（boot-time `IsKernelDriverFile` 后缀匹配）生效，对安装目录文件无任何拦截。
+- **攻击向量**: 本地管理员在 `anxin-security.exe` 未运行时可直接 `del C:\Program Files\AnXinSecurity\anxin-security.exe`（实测成功）或 `echo evil >` 覆盖成 7 字节文件（实测成功），篡改/删除软件本体可执行文件。即使 exe 运行时 rename 被 OS 镜像锁拦下，进程停止后立即失效。
+- **验证（2026-08-13 来宾实测）**: UI+service 被 TER-05 终止后，`del /f` 安装目录 exe 返回成功（EXISTS_AFTER=False），随后 echo 覆盖成功（SIZE=7）。与 APP-05（rename 成功）、APP-07（新建文件成功）一致。Rust 侧 `register_file_protection_paths` 对 `FpmAddPath` 的 send_result 有错误检查（driver_client.rs:71），故注册失败会返回 Err 但仅被 `init_driver_protection` eprintln 吞掉（非致命）；`--query-protected-paths` 又因 FpmQueryPaths 挂起（见 VUL-102）无法自证，最终表现为静默失效。根因待抓 DbgPrint 定位：可能是服务启动时 minifilter 端口尚未就绪、FpmAddPath 消息结构不匹配、或路径匹配逻辑失效。
+- **修复方向**: ① 让 `register_file_protection` 失败**非静默**（进事件日志/持久化状态）；② 修复 FpmQueryPaths 以便自证；③ 卸载期/运行期补抓 DbgPrint 确定 FpmAddPath 具体失败点；④ 考虑把安装目录也纳入 boot-time 硬编码保护（与 .sys 同级），消除运行时注册依赖。
+
+---
+
+### VUL-098: 驱动服务键注册表保护运行时仅 2/4 键生效，AnXinSecurityService 与 AnXinNetFilter 键可被管理员删除
+
+- **严重等级**: High
+- **漏洞类型**: 防护失效 / 自保绕过（驱动注册表 + 应用服务键）
+- **影响模块**: `native/file_protect/src/minifilter.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: `RegProtectCallback` 改用 `CmCallbackGetKeyObjectIDEx` 稳定 ObjectID + 按路径名 `IsRegProtectedKeyPathName` 识别受保护键，不再依赖 boot 期 ObjectID 缓存是否成功，4 个服务键运行时 DACL / 拦截全生效；2026-08-13 重测 `reg delete` 4 键（含 AnXinSecurityService/AnXinNetFilter）+ `sc delete` 3 驱动键全部 DENIED。
+- **描述**: `RegProtectServiceKeysDacl`（minifilter.c:709-833）对 4 个服务键（ProcProtect/FileProtect/NetFilter/App）统一执行 ZwOpenKey → ObReferenceObjectByHandle → CmCallbackGetKeyObjectIDEx 缓存 ObjectID → ZwSetSecurityObject 设 DACL（SYSTEM=ALL / Everyone=KEY_READ）。实测运行期**只有 ProcProtect 与 FileProtect 两个键获得 DACL/ObjectID**，AnXinSecurityService 与 AnXinNetFilter 键无保护。部署的 AnXinFileProtect.sys（30976 字节，2026-08-08 构建）**确实内嵌 4 个键的 UTF-16LE 路径字符串**（字节级 grep 证实 SVC_KEY_APP_STR 与 SVC_KEY_NETFILTER_STR 均在二进制中），即 VUL-095 的修复已部署，但运行时对该 2 键未生效——VUL-095 声称的对 AnXinSecurityService 键的修复实际未落地。
+- **攻击向量**:
+  - 本地管理员 `reg delete HKLM\SYSTEM\CurrentControlSet\Services\AnXinSecurityService` 直接删除应用服务键（实测 REG-01del "操作成功完成"），服务自启动配置被清空，重启后自保服务不再拉起。
+  - `sc delete AnXinNetFilter`（驱动停止时）删除网络防火墙驱动服务键（实测 UNL-06 SVCKEY EXISTS=False），WFP 防火墙驱动无法再随系统启动。
+- **验证（2026-08-13 来宾实测）**: `Get-Acl` 确认 ProcProtect/FileProtect 键 DACL 为 minifilter 设置值（SYSTEM Full + Everyone ReadKey）；AnXinSecurityService/AnXinNetFilter 键无该 DACL 且可删。根因待抓 DbgPrint：`RegProtectServiceKeysDacl` 对该 2 键的 `ZwOpenKey(READ_CONTROL|WRITE_DAC)` 或 `ObReferenceObjectByHandle` 失败被 `continue` 跳过（该键在调用时状态异常，或启动期键尚未按最终形态就绪）。
+- **修复方向**: 抓 DbgPrint 确认 2 键跳过点；提高 DACL/回调对"键后建/重建"的健壮性（在 `RegNtPreCreateKeyEx` 中拦截对 4 个受保护键的重建，或对服务键变更作独立 ObjectID 重缓存）；修复后重测 4 键删除拦截。
+
+---
+
+### VUL-099: IOCTL_ANXIN_SET_DIAG 无调用方授权校验，任意管理员可关闭 Ob 进程/线程自保护
+
+- **严重等级**: Critical
+- **漏洞类型**: 授权缺失 / 自保绕过（直接关闭内核保护）
+- **影响模块**: `native/driver/src/driver.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: SET_DIAG 处理器增加 `IsCallerFamilyTry` 调用方授权校验（driver.c:1914），仅受信族系（完整路径 `\anxinsecurity\anxin-security.exe` 等）可置 DIAG 标志；非授权进程 `DeviceIoControl` 被拒。2026-08-13 重测：非授权（test）进程打开 `\\.\AnXinProcProtect` 设备被 DACL 拒绝，POST-DIAG 后 taskkill 受保护 app 仍 DENIED。
+- **描述**: `IOCTL_ANXIN_SET_DIAG(0x80A)` 处理器（driver.c:1914-1923）直接 `g_DiagFlags = *(PULONG)Irp->AssociatedIrp.SystemBuffer`，**无任何调用方授权校验**。`DIAG_DISABLE_AUTOPROTECT(0x1)` / `DIAG_DISABLE_LOADIMAGE(0x2)` / `DIAG_DISABLE_OBPROCESS(0x4)` / `DIAG_DISABLE_OBTHREAD(0x8)` 中，置位 0x4/0x8 即关闭 Ob 回调对进程/线程的保护。设备 DACL 仅限定管理员可打开（VUL-033 修复后），但本测试威胁模型就是"本地高权限管理员 R3"，故该 IOCTL 对管理员完全可用，等价于管理员可一键关闭全部进程/线程自保护。
+- **攻击向量**: 本地管理员 `DeviceIoControl(\\.\AnXinProcProtect, IOCTL_ANXIN_SET_DIAG, 0xF)` 关闭全部 Ob 保护后，`taskkill /f` 可终止任何受保护 PID（含 anxin-security 服务与 UI），再配合 sc stop/sc delete 完成卸载（详见 VUL-096/101 相关测试）。
+- **验证（2026-08-13 来宾实测）**: SET_DIAG=0xF 后 `taskkill /f /pid <受保护 spoof 进程 1316>` 从 DENIED 变为成功终止；SET_DIAG=0x0 恢复后再次 DENIED。DeviceIoControl 返回 ok=True（IOCTL 码 0x22A028 = FILE_WRITE_DATA 分支）。
+- **修复方向**: SET_DIAG 处理器增加与 ADD_PID 同级的调用方授权校验（VUL-043 修复模式：校验调用进程路径为 `anxin-security.exe` 且包含 `\anxinsecurity\` 组件），或移除 DIAG 功能对生产构建的暴露。
+
+---
+
+### VUL-100: Ob 进程授权仅按 14 字节 ANSI 文件名前缀匹配，名称伪装进程可终止受保护服务与 UI
+
+- **严重等级**: Critical
+- **漏洞类型**: 授权绕过 / 自保绕过（名称伪装）
+- **影响模块**: `native/driver/src/driver.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: Ob 回调对授权进程的判定改由 `IsCallerFamilyTry`（driver.c:1446）按**完整路径**族系校验，仅保留前缀匹配作为快速排除、不作为授权依据；名称伪装（复制 powershell 为 `anxin-security.exe`）的非可信进程不再获得内核授权。2026-08-13 重测 SPOOF-STOP（Temp 伪装名进程 Stop-Process 受保护 app）返回 DENIED。
+- **描述**: 进程保护 Ob 回调对"可信进程"的授权判定使用 EPROCESS.ImageFileName 的 **14 字节 ANSI 前缀匹配**（"anxin-security"），**无路径校验**。任何被命名为 `anxin-security.exe` 的进程（无论位于哪个目录、是否可信、是否由攻击者复制而来）都会被视为受信任，其 OpenProcess(PROCESS_TERMINATE) 等操作不会被 Ob 回调剥离权限。VUL-038（仅按可伪造进程文件名授予内核信任）标记 Fixed，但修复未覆盖本 Ob 授权路径——实测该按名授权仍在。
+- **攻击向量**: 本地攻击者把 `powershell.exe` 复制成 `C:\Windows\Temp\anxin-security.exe` 并运行，该进程即可打开受保护服务/UI 进程的 PROCESS_TERMINATE 句柄并成功终止（不经过 Ob 回调拦截）。无需物理机、无需提权到 SYSTEM。
+- **验证（2026-08-13 来宾实测）**: TER-05a/05b 用 spoofed `C:\Windows\Temp\anxin-security.exe`（实为 powershell）分别 `Stop-Process -Force` 终止了服务进程（PID 4680）与 UI 进程（PID 6140），两者均死亡；而普通进程（未伪装名）对受保护 PID 的 taskkill/TerminateProcess 全部被拒。
+- **修复方向**: Ob 回调授权改为按**完整路径**校验（对受保护进程的授权访问者必须是全路径 `*:\...\anxinsecurity\anxin-security.exe`），与 minifilter 的 `IsCallerAuthorized` 对齐；名称前缀只能作为快速排除，不能作为授权依据。
+
+---
+
+### VUL-101: 卸载程序重启一次后残留 3 个驱动 .sys 文件（重启删除登记被仍在加载的 minifilter 拦截）
+
+- **严重等级**: Medium
+- **漏洞类型**: 卸载不彻底 / 清理失效
+- **影响模块**: `build/nsis-hooks.nsh`、`src-tauri/src/services/driver_install_service.rs`、`native/file_protect/src/minifilter.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: 卸载时 `stop_and_delete_service` 改为用一次性 SYSTEM 计划任务（`schtasks /ru SYSTEM` 执行 `reg delete`）直接删 4 个服务注册表键。根因双层：① 驱动故意不注册 DriverUnload → sc stop 1052 → `sc delete` 对 RUNNING 服务只标记删除、键不落地；② 服务键被驱动设 DACL（SYSTEM 全控 / Everyone 只读），管理员 reg delete 被 DACL 拒绝（DACL 检查先于 CmCallback，授权窗口救不了）。SYSTEM 身份满足 DACL + 窗口内 CmCallback 放行 → 键删除必达；键删后重启 SCM 不再加载驱动，3 个 .sys 的 PFRO 重启删除成功。2026-08-13 重测"卸载 + 重启一次"全清：4 服务 gone、无 .sys、安装目录/卸载项 gone、无进程、PFRO 已消费。
+- **描述**: 卸载流程在驱动服务仍加载时尝试 `remove_driver_file`（`std::fs::remove_file` 失败后走 `schedule_delete_on_reboot`，MoveFileExW + MOVEFILE_DELAY_UNTIL_REBOOT）与 NSIS `Delete /REBOOTOK`。实测卸载结束后 `HKLM\...\Session Manager\PendingFileRenameOperations` 中**没有任何 .sys 条目**（只有 NSIS 自身临时文件），重启一次后 3 个驱动文件 `AnXinProcProtect.sys`/`AnXinFileProtect.sys`/`AnXinNetFilter.sys` **全部残留**于 `C:\Windows\System32\drivers\`。根因：卸载时 AnXinFileProtect minifilter 仍加载（服务被 sc stop 拒，1052），其 boot-time `.sys` 后缀自保护（`IsKernelDriverFile`）拦截了 MoveFileExW/NSIS 对受保护 .sys 文件的重启删除登记，导致"重启后删除"从未被安排。卸载器 POSTUNINSTALL 的 Safe Mode 兜底提示未自动执行。
+- **攻击向量**: 不适用（这是卸载器自身的清理缺陷）。但需与"只有卸载程序能彻底清除"需求对齐——若卸载后残留 .sys 被第三方（如另一 BYOVD 场景）利用或造成磁盘垃圾/合规问题。
+- **验证（2026-08-13 来宾实测）**: `uninstall.exe /S` 退出码 0；卸载后 4 服务全部 1060、安装目录与卸载项删除、无残留进程；但 3 个 .sys 文件重启后仍存在（34184/30976/56064 字节）。控制组：驱动卸载后 `del /f` 三个 .sys 全部成功（证明文件本身可删，非"无法删除"，而是卸载器未安排删除）。
+- **修复方向**: ① 在 FileProtect minifilter 卸载完成后（服务标记删除、驱动下次启动不再加载）再执行 .sys 重启删除——可改用 **RunOnce/ScheduledTask 在首次重启后以 SYSTEM 执行 `del`**，此时 minifilter 不再加载、文件可删；② 或让 minifilter 对"卸载者 anxin-security.exe --uninstall-drivers"放行 .sys 的 MoveFileEx 登记（授权路径校验后放行重启删除登记）；③ 修复后重测"卸载 + 重启一次"全清。
+
+---
+
+### VUL-102: FpmQueryPaths 诊断查询挂起（FilterSendMessage 无响应），`--query-protected-paths` 死锁
+
+- **严重等级**: Low
+- **漏洞类型**: 可用性 / 诊断失效（潜在 DoS）
+- **影响模块**: `native/file_protect/src/minifilter.c`、`src-tauri/src/utils/driver_client.rs`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: 驱动侧 FpmQueryPaths 回复改紧凑格式（ULONG PathCount + 每路径 NUL 结尾 WCHAR 串），体积远小于旧定长 130KB 槽位版本（后者超过滤通信端口回复上限导致 FilterSendMessage 永久挂起）；Rust 侧 `query_file_protection_paths` 在独立线程发送 + 8s 超时守卫（mpsc recv_timeout）。2026-08-13 重测 `--query-file-protect` 0.22s 返回（不再挂起）。
+- **描述**: `anxin-security.exe --query-protected-paths`（走 `query_file_protection_paths`，FpmQueryPaths=4）实测**挂起无响应**，`FilterSendMessage` 不返回。FpmQueryPaths 处理器（minifilter.c:1530-1553）在 `ExAcquireFastMutex(&g_PathListLock)` 下遍历并写输出缓冲，且不设置/返回正确的 `ReturnOutputBufferLength`；Rust 侧若输出缓冲过小或期望长度不一致，会导致 FilterSendMessage 阻塞或驱动侧不完成消息。
+- **攻击向量**: 调用方线程被永久阻塞（本地调用方 DoS）；更重要的是诊断接口不可用导致文件保护状态无法自证（VUL-097 的注册失效因此更难排查）。
+- **验证（2026-08-13 来宾实测）**: CLI 调用挂起超 120s，Invoke-Command 超时；需手动 kill 挂起进程。
+- **修复方向**: 修复 FpmQueryPaths 的缓冲大小协商与 `ReturnOutputBufferLength`；或 Rust 侧加超时/异步退出；修好后用 `--query-protected-paths` 复核 VUL-097 的注册状态。
+
+---
+
+### VUL-103: 受保护进程线程的 OpenThread(THREAD_GET/SET_CONTEXT) 句柄可打开
+
+- **严重等级**: Low
+- **漏洞类型**: 防护缺口（线程劫持面）
+- **影响模块**: `native/driver/src/driver.c`
+- **状态**: Fixed
+- **修复日期**: 2026-08-13
+- **修复方式**: 线程 Ob 回调对受保护 PID 线程的权限剥离集合补入 `THREAD_GET_CONTEXT` / `THREAD_SET_CONTEXT` / `THREAD_QUERY_INFORMATION`（driver.c:245-249，与 THREAD_SUSPEND_RESUME/TERMINATE 同级）；2026-08-13 重测 OPEN-THREAD ctx 对受保护 app 线程返回 DENIED。
+- **描述**: 进程/线程 Ob 回调对受保护线程的授权剥离不覆盖 THREAD_GET_CONTEXT/THREAD_SET_CONTEXT/THREAD_QUERY_INFORMATION。实测对受保护 UI 进程的线程，`OpenThread(THREAD_GET_CONTEXT|THREAD_SET_CONTEXT|THREAD_QUERY_INFORMATION)` **成功**。本地攻击者取得句柄后可 `SetThreadContext` 劫持受保护线程执行流（配合注入面），或读线程上下文窃取栈/寄存器状态。
+- **攻击向量**: 本地管理员对受保护 UI/服务进程的线程打开 GET/SET_CONTEXT 句柄，实施线程上下文劫持（虽 CreateRemoteThread/QueueUserAPC 已被 TER/INJ 测试证明失败，但 SetThreadContext 劫持独立于注入面）。
+- **验证（2026-08-13 来宾实测）**: SUS-03 OpenThread(GET/SET_CONTEXT|QUERY_INFORMATION) 返回成功；对照 TER-04/SUS-01/INJ-01 等对进程句柄的访问均被剥离。威胁等级 Low：劫持需配合可执行代码投放，而注入面已封闭，实际利用难度高。
+- **修复方向**: 线程 Ob 回调对受保护 PID 的线程追加剥离 THREAD_GET_CONTEXT/THREAD_SET_CONTEXT 权限（与 THREAD_SUSPEND_RESUME/THREAD_TERMINATE 一致）。
+
+### VUL-104: AnXinProcMon 构建缺 /INTEGRITYCHECK，进程/线程回调注册被 CI 拒绝（0xC0000022）
+
+- **严重等级**: High
+- **漏洞类型**: 功能缺陷（关键采集回调静默缺失）
+- **影响模块**: `native/proc_monitor/AnXinProcMon.vcxproj`（构建配置）
+- **状态**: Fixed
+- **修复日期**: 2026-08-14
+- **修复方式**: `AnXinProcMon.vcxproj` 的 Debug/Release Link 段补 `<AdditionalOptions>/INTEGRITYCHECK %(AdditionalOptions)</AdditionalOptions>`；重编译后 dumpbin 验证 DLL characteristics 从 `0x4160` 变为 `0x41E0`（与 AnXinProcProtect.sys 一致）；VM 重部署后 GET_HEALTH 诊断位显示进程/线程/映像三回调全部注册成功（procErr=0x0）。
+- **描述**: MSBuild WDK 构建的 AnXinProcMon.sys **缺少 IMAGE_DLLCHARACTERISTICS_INTEGRITY_CHECK（0x80）标志**。驱动本身能加载、minifilter/FltRegisterFilter/LoadImage 回调正常，但 `PsSetCreateProcessNotifyRoutineEx` 与 `PsSetCreateThreadNotifyRoutineEx` 返回 **0xC0000022（STATUS_ACCESS_DENIED）**——Windows 10 19044 的 CI（代码完整性）拒绝无完整性校验标志的驱动注册进程/线程通知回调（`PsSetLoadImageNotifyRoutine` 不受此限，故 IMAGE_LOAD 事件正常而 **CREATE/EXIT/REMOTE_THREAD 事件全部缺失**，EDR 溯源主干静默失效）。
+- **攻击向量**: 无直接安全利用，但该缺陷导致进程生命周期采集静默失效：攻击者若察觉回调未注册（无 CREATE 事件），进程监控形同虚设；且 BYOVD 主动探针因收不到回报会误报失明（运维误导）。
+- **验证（2026-08-14 来宾实测）**: 干净基线（8/13 检查点）部署后：GET_HEALTH DiagFlags=0x00040000（仅 image 注册）、进程/线程回调 err=0x22（截断诊断）/完整诊断 0x00000022（STATUS_ACCESS_DENIED）；`CreateDiag` 读事件流仅见 IMAGE_LOAD（evt=3）无 CREATE（evt=1）；补齐 /INTEGRITYCHECK 后 DiagFlags=0x07000000（三回调全部注册）、探针 4/4 CREATE 回报、延迟 0-94ms。
+- **根因与同类教训**: 与 net_filter 当年 MSBuild WDK PE 问题同源（continuous-running.md 第 15 条：映像基址/GsDriverEntry/CFG/INTEGRITYCHECK 四项内核不兼容）；ProcProtect 手工 cl/link 构建自带 /INTEGRITYCHECK，ProcMon 用 MSBuild WDK 时需显式补充。
+
+### VUL-105: 服务模式 IPC 唯一处理线程被批量扫描阻塞，状态刷新 broken-pipe、开关卡死、扫描无法取消
+
+- **严重等级**: Medium
+- **漏洞类型**: 本地可用性 / 线程管理缺陷（服务进程控制通道饥饿）
+- **影响模块**: `src-tauri/src/services/ipc_server.rs`
+- **状态**: Fixed
+- **修复日期**: 2026-08-18
+- **修复方式**: 把 `IpcServer::handle_client` 从「读循环线程上同步执行每个请求」改为「读循环只负责读入与分派，每个客户端连接创建**有界请求工作池**（`IPC_WORKERS_PER_CLIENT = 4`）并发执行请求」。请求在工作线程上执行，响应经线程安全的 `client.writer` 写回（客户端按 request id 匹配，天然支持乱序）。新增 `spawn_worker_queue`（按工厂为每个 worker 生成独立 handler，避免共享 handler 串行化）与 `execute_request`，并用 `catch_unwind` 兜住单个 handler panic。新增单测验证「长任务占住 worker 时短任务仍并发完成」。
+- **描述**: 服务模式下，`SCAN_FILE`/`SCAN_BATCH` 用 `runtime_handle.block_on(async move { … engine.scan_file(…).await … })` 在**唯一的读循环线程**上整段执行批量/单文件扫描。扫描期间该线程既读不了新请求也答不了旧请求：UI 的 `GET_STATUS`（状态轮询）、三个监控开关（`SET_BEHAVIOR/PROCESS/FILE_MONITORING`）、甚至 `CANCEL_SCAN` 全部排队无人消费 → 客户端管道写缓冲积压，`FlushFileBuffers` 返回 `ERROR_BROKEN_PIPE (0x8007006D, 管道已结束)` 或 5s 超时；而状态/开关命令是同步 `#[tauri::command]`，反复失败让前端依赖它的处理停滞（开关卡死）。
+- **攻击向量**: 本地可用性：用户进行大目录扫描时，服务端安全控制通道（状态查询、防护开关、取消扫描、防火墙裁决）在一段时间内不可用，无法取消扫描或实时调整防护；严重时 UI 反复 broken-pipe。非远程利用。
+- **验证**: `cargo check` 通过；新增单测 `services::ipc_server::tests::worker_queue_runs_long_and_short_jobs_concurrently` 通过（0.25s）。服务模式真实扫描场景的手动复现/回归待部署 VM 实测后再在 continuous-running.md 定档为「已验证」。
+
+---
+
+### VUL-106: IPC 客户端身份校验仅按镜像文件名白名单，无安装目录/签名比对
+
+- **严重等级**: Medium
+- **漏洞类型**: 身份校验不足（同名伪装）
+- **影响模块**: `src-tauri/crates/anxin-core/src/services/identity_verification_service.rs`
+- **状态**: Open
+- **发现日期**: 2026-08-23（三进程拆分安全复查）
+- **漏洞描述**: `verify_pipe_client` 的客户端校验链为「镜像文件名白名单 + 交互会话 + SID + 完整性 ≥ Medium」，其中路径校验仅做文件名比对与排除 target 目录，**不校验安装目录，也不做 WinVerifyTrust 签名校验**。同一交互式会话内的 medium-integrity 恶意进程将自身可执行文件命名为白名单内名称即可通过校验，进而调用 `handle_interception`（放行/阻止任意被挂起进程）、`shutdown_service`（停止整个防护服务）等决策通道。三进程拆分将白名单从 `anxin-security.exe` 扩至含 `anxin-tray.exe`（identity_verification_service.rs ANXIN_EXE_NAMES），同名伪装面随之增大。
+- **代码位置**: identity_verification_service.rs:77（ANXIN_EXE_NAMES）、is_valid_anxin_path、verify_pipe_client。
+- **攻击向量**: 本地已执行恶意程序（medium integrity，同用户会话）→ 命名为 anxin-tray.exe → 连接 `\\.\pipe\Global\AnXinSecurityIPC` → 通过身份校验 → 提交拦截放行决策或请求停服。
+- **修复方向**: 生产模式在文件名白名单之上增加强校验：① 客户端镜像父目录 == 服务自身安装目录；或 ② WinVerifyTrust 校验 AnXin 签名；两者任一失败即 fail-closed。开发模式维持现状（ANXIN_DEV_MODE=1）。
+- **备注**: 该弱点对原单 exe 白名单同样存在（非拆分引入的新类别），拆分仅扩大了可冒充名称集合，故按既有暴露面登记为 Medium 而非 High。

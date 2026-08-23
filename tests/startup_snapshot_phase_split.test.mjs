@@ -5,11 +5,11 @@ import test from 'node:test'
 
 const projectRoot = resolve(import.meta.dirname, '..')
 const snapshotServiceSource = readFileSync(
-  resolve(projectRoot, 'src-tauri/src/services/snapshot_service.rs'),
+  resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/snapshot_service.rs'),
   'utf8',
 )
 const snapshotCommandSource = readFileSync(
-  resolve(projectRoot, 'src-tauri/src/commands/snapshot.rs'),
+  resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/snapshot.rs'),
   'utf8',
 )
 const snapshotApiSource = readFileSync(resolve(projectRoot, 'src/api/snapshot.ts'), 'utf8')
@@ -31,9 +31,20 @@ test('startup snapshot emits baseline result before background module deep check
   assert.ok(moduleBatchIndex > spawnIndex, 'module signature batch should live in the background path')
 })
 
-test('startup snapshot wait before baseline is kept short', () => {
-  assert.match(tauriMainSource, /tokio::time::sleep\(tokio::time::Duration::from_millis\(250\)\)\.await;/)
-  assert.doesNotMatch(tauriMainSource, /Duration::from_millis\(1000\)/)
+test('startup snapshot ownership moved to the service process (split architecture)', () => {
+  // 拆分后 Main 不再执行启动快照；快照由服务进程以 SnapshotContext::Service 启动。
+  // 原「baseline 前等待 250ms」是 UI 进程为前端就绪留出的节奏，服务进程无前端可等，
+  // 该等待随职责一并移除。
+  //  After the split, Main no longer runs the startup snapshot; the service process
+  //  starts it with SnapshotContext::Service. The legacy 250ms wait existed so the
+  //  UI's frontend could become ready — the service has no frontend to wait for.
+  const windowsServiceSource = readFileSync(
+    resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/windows_service.rs'),
+    'utf8',
+  )
+  assert.doesNotMatch(tauriMainSource, /\.take_startup_snapshot\(/)
+  assert.match(windowsServiceSource, /SnapshotContext::Service/)
+  assert.match(windowsServiceSource, /\.take_startup_snapshot\(trust, engine, cache, &snapshot_ctx, snapshot_options\)/)
 })
 
 test('pending deep module checks remain unknown until background completion', () => {

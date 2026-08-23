@@ -34,6 +34,16 @@ Environment:
 // but is still exported from ntoskrnl.exe.
 extern PCHAR PsGetProcessImageFileName(PEPROCESS Process);
 
+/*
+ * 可信安装目录辅助函数（VUL-046 重构 / VUL-097 根因修复）。
+ * 定义在本文件后部，但 DriverEntry 与 IsCallerAuthorized 会先调用，故前向声明。
+ */
+static USHORT  AnxinCountSeparators(_In_ PCWSTR buf, _In_ USHORT len);
+static BOOLEAN AnxinIsValidVolumeRoot(_In_ PCWSTR buf, _In_ USHORT len);
+static BOOLEAN AnxinIsInTrustedInstallDir(_In_ PUNICODE_STRING fullPath, _In_ USHORT tailChars);
+static VOID    AnxinLoadTrustedInstallDir(VOID);
+
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -92,10 +102,10 @@ extern PCHAR PsGetProcessImageFileName(PEPROCESS Process);
 #define MAX_PROTECTED_KEYS      4
 #define REG_PROTECT_ALTITUDE    L"325803"
 
-/* 服务注册表键路径 */
-static const WCHAR SVC_KEY_PROCPROTECT_STR[] = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinProcProtect";
-static const WCHAR SVC_KEY_FILEPROTECT_STR[] = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinFileProtect";
-static const WCHAR SVC_KEY_NETFILTER_STR[]   = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinNetFilter";
+/* 服务注册表键路径（非 const：供 RTL_CONSTANT_STRING 静态初始化，避免 C4090） */
+static WCHAR SVC_KEY_PROCPROTECT_STR[] = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinProcProtect";
+static WCHAR SVC_KEY_FILEPROTECT_STR[] = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinFileProtect";
+static WCHAR SVC_KEY_NETFILTER_STR[]   = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinNetFilter";
 /*
  * 应用自身服务键。注册表保护从 AnXinProcProtect 整体迁移到本驱动时，Rust 侧
  * register_registry_protection() 曾用死的 REG_KEY IOCTL 保护这个键；迁移后若不放
@@ -107,7 +117,7 @@ static const WCHAR SVC_KEY_NETFILTER_STR[]   = L"\\Registry\\Machine\\System\\Cu
  * self-protection service. Protected alongside the three driver service keys: CmCallback blocks
  * unauthorized writes/deletes while SCM(services.exe)/SYSTEM/anxin-security.exe keep full access.
  */
-static const WCHAR SVC_KEY_APP_STR[] = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinSecurityService";
+static WCHAR SVC_KEY_APP_STR[] = L"\\Registry\\Machine\\System\\CurrentControlSet\\Services\\AnXinSecurityService";
 
 static PVOID         g_RegProtectedKeyObjects[MAX_PROTECTED_KEYS] = {0};
 static HANDLE        g_RegProtectedKeyHandles[MAX_PROTECTED_KEYS] = {0};
@@ -130,15 +140,30 @@ static LARGE_INTEGER g_RegCookie = {0};
 static BOOLEAN       g_RegCmRegistered = FALSE;
 static ULONGLONG     g_RegGracePeriodEnd = 0;
 
+/*
+ * VUL-098 / VUL-101 卸载授权窗口。
+ * 授权由完整路径验证的 anxin-security.exe（或 SYSTEM）经 FpmAuthorizeUninstall
+ * 消息授予，仅用于：让 SCM (services.exe) 在窗口内删除 4 个受保护服务键（卸载/升级），
+ * 并让卸载器对 3 个 .sys 做重启删除登记。窗口到期自动失效。
+ * Uninstall/upgrade authorization window. Granted only by a full-path-verified
+ * anxin-security.exe (or SYSTEM) via FpmAuthorizeUninstall; it lets SCM delete the
+ * four protected service keys (uninstall/upgrade) and lets the uninstaller register
+ * reboot-deletion of the three .sys files. Expires automatically.
+ */
+static BOOLEAN     g_UninstallAuthorized = FALSE;
+static ULONGLONG   g_UninstallGraceEnd = 0;
+#define UNINSTALL_GRACE_100NS (15ULL * 60ULL * 10000000ULL)  /* 15 分钟 / 15 minutes */
+
 // ---------------------------------------------------------------------------
 // Message definitions for communication port
 // ---------------------------------------------------------------------------
 
 typedef enum _FPM_MESSAGE_TYPE {
-    FpmAddPath    = 1,
-    FpmRemovePath = 2,
-    FpmClearAll   = 3,
-    FpmQueryPaths = 4,
+    FpmAddPath          = 1,
+    FpmRemovePath       = 2,
+    FpmClearAll         = 3,
+    FpmQueryPaths       = 4,
+    FpmAuthorizeUninstall = 5,
 } FPM_MESSAGE_TYPE;
 
 typedef struct _FPM_MESSAGE {
@@ -353,6 +378,11 @@ NTSTATUS DriverEntry(PDRIVER_OBJECT DriverObject, PUNICODE_STRING RegistryPath)
     // -----------------------------------------------------------------------
     // 2. Create communication port (verified caller only)
     // -----------------------------------------------------------------------
+    /* VUL-097 根因修复：先加载可信安装目录（从服务 ImagePath 读取，默认
+     * "\Program Files\AnXinSecurity"），PortConnect 的 IsCallerAuthorized
+     * 依赖它做全路径相等校验。 */
+    AnxinLoadTrustedInstallDir();
+
     UNICODE_STRING portName;
     RtlInitUnicodeString(&portName, PORT_NAME);
 
@@ -546,6 +576,7 @@ BOOLEAN IsCallerAuthorized(VOID)
     UNICODE_STRING  tail;
     NTSTATUS        status;
     BOOLEAN         valid = FALSE;
+    USHORT          tailChars = 0;
     ULONG           i;
 
     if (pid == NULL) return FALSE;
@@ -578,7 +609,7 @@ BOOLEAN IsCallerAuthorized(VOID)
 
     // Check that the full path ends with \anxin-security.exe (case-insensitive)
     if (fullPath->Length > target.Length) {
-        USHORT tailChars = (USHORT)((fullPath->Length - target.Length) / sizeof(WCHAR));
+        tailChars = (USHORT)((fullPath->Length - target.Length) / sizeof(WCHAR));
         WCHAR  separator = fullPath->Buffer[tailChars - 1];
 
         if (separator == L'\\' || separator == L'/') {
@@ -589,33 +620,209 @@ BOOLEAN IsCallerAuthorized(VOID)
         }
     }
 
-    /* VUL-038 / VUL-046: 文件名匹配后还须包含可信安装目录（完整路径组件匹配） */
+    /*
+     * VUL-038/VUL-046 可信目录校验（重新实现，修复 VUL-097 根因）。
+     *
+     * 旧实现（VUL-046 修复）在路径中搜索 "\anxinsecurity\" 组件并要求匹配位置
+     * 前一字符是分隔符。但 ANXIN_TRUSTED_DIR 本身以 '\' 开头，匹配起点已经在
+     * 组件边界上，检查 Buffer[pos-1] 相当于检查分隔符之前那个字符——对
+     * "...\Program Files\AnXinSecurity\..." 而言它是 's'（Files 的末尾），
+     * 永远不通过。因此自 VUL-046 起所有合法 anxin-security.exe（含服务进程）
+     * 都被拒绝，通信端口连接全部 0x80070005，安装目录文件保护从未生效。
+     *
+     * 新实现改为全路径相等（仅卷前缀可变）：
+     *   完整路径必须 == <卷根> + <可信安装目录> + "\anxin-security.exe"
+     *   其中可信安装目录从服务 ImagePath 注册表值得出（默认
+     *   "\Program Files\AnXinSecurity"），<卷根> 必须是白名单中的卷根形态
+     *   （\Device\... / \??\... / \Volume{...}）。
+     * 攻击者即使在任意处创建 "anxinsecurity" 子目录（VUL-046），其完整路径
+     * 在 <卷根> 之后会多出额外目录组件，无法与完整结构相等，被拒绝。
+     *
+     * Old VUL-046 guard required the char before the matched component to be a
+     * separator, but the pattern already begins with '\', so it broke every
+     * legitimate path. Replaced with full-path equality (volume prefix may
+     * vary), where the trusted install dir is derived from the service
+     * ImagePath registry value and the volume must be a whitelisted root form.
+     */
     if (valid) {
-        UNICODE_STRING trustedDir;
-        RtlInitUnicodeString(&trustedDir, ANXIN_TRUSTED_DIR);
-        valid = FALSE;
-        if (fullPath->Length >= trustedDir.Length) {
-            USHORT maxStart = (USHORT)((fullPath->Length - trustedDir.Length) / sizeof(WCHAR));
-            for (USHORT pos = 0; pos <= maxStart; pos++) {
-                /* VUL-046: 前置字符必须是分隔符或字符串边界 */
-                if (pos > 0) {
-                    WCHAR prev = fullPath->Buffer[pos - 1];
-                    if (prev != L'\\' && prev != L'/') continue;
-                }
-                UNICODE_STRING candidate;
-                candidate.Buffer        = &fullPath->Buffer[pos];
-                candidate.Length        = trustedDir.Length;
-                candidate.MaximumLength = trustedDir.Length;
-                if (RtlCompareUnicodeString(&candidate, &trustedDir, TRUE) == 0) {
-                    valid = TRUE;
-                    break;
-                }
-            }
-        }
+        valid = AnxinIsInTrustedInstallDir(fullPath, tailChars);
     }
 
     ExFreePool(fullPath);
     return valid;
+}
+
+// ---------------------------------------------------------------------------
+// Trusted install directory (VUL-046 rework / VUL-097 root-cause fix)
+// ---------------------------------------------------------------------------
+
+/*
+ * 可信安装目录（卷根之后的目录组件，以 '\' 开头），默认匹配 perMachine 安装：
+ * C:\Program Files\AnXinSecurity。DriverEntry 时尝试从服务 ImagePath 读取覆盖，
+ * 以支持自定义安装目录。ImagePath 受注册表自保（VUL-098）保护，攻击者无法改写。
+ *
+ * Trusted install directory (volume-relative components, leading '\'). Default
+ * matches the perMachine install C:\Program Files\AnXinSecurity. Overridden at
+ * DriverEntry from the service ImagePath registry value to support custom
+ * install dirs. The ImagePath is registry-protected (VUL-098).
+ */
+static WCHAR  g_TrustedInstallDir[128] = L"\\Program Files\\AnXinSecurity";
+static USHORT g_TrustedInstallDirLen   = 28; /* wcslen(L"\\Program Files\\AnXinSecurity") */
+
+/* Count path separators in buf[0..len). */
+static USHORT AnxinCountSeparators(_In_ PCWSTR buf, _In_ USHORT len)
+{
+    USHORT n = 0;
+    for (USHORT i = 0; i < len; i++) {
+        if (buf[i] == L'\\' || buf[i] == L'/') n++;
+    }
+    return n;
+}
+
+/*
+ * 卷根白名单：\Device\<单组件卷名>（如 HarddiskVolume3 / CdRom0）、
+ * \??\<盘符>:、\Volume{<GUID>}。其余形态视为无效，避免把攻击者构造的
+ * 多级目录冒充卷根（VUL-046 绕过：\Device\HarddiskVolume3\<攻击者目录> 若
+ * 允许内嵌分隔符，攻击者可在卷根下建目录把 "anxinsecurity" 藏进前缀）。
+ * 现代 Windows 挂载卷统一是 \Device\HarddiskVolumeN（0 内嵌分隔符），
+ * 0 分隔符规则即可覆盖系统卷安装。
+ *
+ * Whitelisted volume root forms; anything else is not a real volume root.
+ * \Device\<single-component name> only (HarddiskVolumeN etc.), so an
+ * attacker-created subdirectory cannot masquerade as part of the root.
+ */
+static BOOLEAN AnxinIsValidVolumeRoot(_In_ PCWSTR buf, _In_ USHORT len)
+{
+    if (len < 3 || buf[0] != L'\\') return FALSE;
+
+    /* \Device\... */
+    if (len >= 8 && RtlCompareMemory(buf, L"\\Device\\", 8 * sizeof(WCHAR)) == 8 * sizeof(WCHAR)) {
+        return AnxinCountSeparators(&buf[8], (USHORT)(len - 8)) == 0;
+    }
+    /* \??\... */
+    if (len >= 4 && RtlCompareMemory(buf, L"\\??\\", 4 * sizeof(WCHAR)) == 4 * sizeof(WCHAR)) {
+        return AnxinCountSeparators(&buf[4], (USHORT)(len - 4)) == 0;
+    }
+    /* \Volume{...} */
+    if (len >= 8 && RtlCompareMemory(buf, L"\\Volume{", 8 * sizeof(WCHAR)) == 8 * sizeof(WCHAR)) {
+        return AnxinCountSeparators(&buf[8], (USHORT)(len - 8)) == 0;
+    }
+    return FALSE;
+}
+
+/*
+ * 全路径相等校验（卷前缀可变）：
+ *   fullPath[0..tailChars) == <卷根> + g_TrustedInstallDir
+ * 其中 tailChars 指向 exe 文件名（"anxin-security.exe"）的起始位置，其前一个
+ * 字符是路径分隔符（由调用方已验证）。
+ *
+ * Full-path equality (volume prefix may vary): the path before the exe name
+ * must be exactly <volume root> + trusted install dir.
+ */
+static BOOLEAN AnxinIsInTrustedInstallDir(_In_ PUNICODE_STRING fullPath, _In_ USHORT tailChars)
+{
+    USHORT tdirLen = g_TrustedInstallDirLen;   /* 前导 '\' 的目录组件，不含结尾 '\' */
+    if (tdirLen == 0) return FALSE;
+
+    /*
+     * fullPath[0..tailChars) = <卷根><可信目录>\（exe 名前，调用方已验证
+     * fullPath[tailChars-1] == '\'）。可信目录以 '\' 开头，该字符同时也是
+     * 卷根后的分隔符，因此卷根长度为 tailChars - tdirLen - 1。
+     * e.g. \Device\HarddiskVolume3\Program Files\AnXinSecurity\anxin-security.exe
+     *      tailChars=51 tdirLen=28 volLen=22 -> \Device\HarddiskVolume3
+     *      尾比较 fullPath[22..50) == "\Program Files\AnXinSecurity"
+     */
+    if (tailChars < tdirLen + 3) return FALSE;   /* 卷根至少 2 字符 */
+    if (fullPath->Buffer[tailChars - 1] != L'\\') return FALSE;
+
+    USHORT volLen = (USHORT)(tailChars - tdirLen - 1);
+
+    UNICODE_STRING tail;
+    tail.Buffer        = &fullPath->Buffer[volLen];
+    tail.Length        = (USHORT)(tdirLen * sizeof(WCHAR));
+    tail.MaximumLength = tail.Length;
+
+    UNICODE_STRING tdir;
+    tdir.Buffer        = g_TrustedInstallDir;
+    tdir.Length        = (USHORT)(tdirLen * sizeof(WCHAR));
+    tdir.MaximumLength = (USHORT)sizeof(g_TrustedInstallDir);
+
+    if (RtlCompareUnicodeString(&tail, &tdir, TRUE) != 0) return FALSE;
+    return AnxinIsValidVolumeRoot(fullPath->Buffer, volLen);
+}
+
+/*
+ * DriverEntry 时读取服务 ImagePath，覆盖默认可信安装目录（支持自定义安装）。
+ * 解析：去掉引号（引号内空格允许）→ 取 exe 路径 token → 去掉 exe 文件名 → 去掉盘符根。
+ * 失败时保持默认值（fail-closed：目录为空则不授权）。
+ *
+ * Reads the service ImagePath at DriverEntry to override the default trusted
+ * install dir (custom install support). Keeps the default on failure.
+ */
+static VOID AnxinLoadTrustedInstallDir(VOID)
+{
+    UNICODE_STRING keyName;
+    RtlInitUnicodeString(&keyName, SVC_KEY_APP_STR);
+    OBJECT_ATTRIBUTES oa;
+    InitializeObjectAttributes(&oa, &keyName, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, NULL, NULL);
+
+    HANDLE hKey = NULL;
+    NTSTATUS status = ZwOpenKey(&hKey, KEY_QUERY_VALUE, &oa);
+    if (!NT_SUCCESS(status)) return;
+
+    UNICODE_STRING valName = RTL_CONSTANT_STRING(L"ImagePath");
+    WCHAR data[512];
+    ULONG retLen = 0;
+    status = ZwQueryValueKey(hKey, &valName, KeyValuePartialInformation,
+                             data, sizeof(data), &retLen);
+    ZwClose(hKey);
+    if (!NT_SUCCESS(status) || retLen <= sizeof(KEY_VALUE_PARTIAL_INFORMATION)) return;
+
+    PKEY_VALUE_PARTIAL_INFORMATION p = (PKEY_VALUE_PARTIAL_INFORMATION)data;
+    if (p->DataLength < sizeof(WCHAR) * 2) return;
+
+    ULONG chars = p->DataLength / sizeof(WCHAR);
+    if (chars >= 400) chars = 399;
+
+    WCHAR path[400];
+    RtlCopyMemory(path, p->Data, chars * sizeof(WCHAR));
+    path[chars] = 0;
+
+    /* 解析 ImagePath：允许带引号（"C:\Program Files\AnXinSecurity\anxin-security.exe"），
+       引号内的空格不能作为 token 终止符。 */
+    BOOLEAN quoted = (path[0] == L'"');
+    PWCHAR s = path + (quoted ? 1 : 0);
+    USHORT tokLen = 0;
+    while (s[tokLen] != 0 && s[tokLen] != (quoted ? L'"' : L' ')) tokLen++;
+
+    if (tokLen < 3 || !(s[0] >= L'A' && s[0] <= L'Z') || s[1] != L':') return;   /* 仅支持盘符形式 */
+
+    /* 去掉 exe 文件名：回退到最后一个 '\' */
+    USHORT dirLen = tokLen;
+    while (dirLen > 0 && s[dirLen - 1] != L'\\') dirLen--;      /* dirLen 现在含结尾 '\' */
+    if (dirLen < 3) return;
+
+    /* 去掉盘符根：从 ':' 之后开始 */
+    USHORT start = 2;    /* s[2] 是 ':' 之后的第一个字符（应为 '\'） */
+    if (s[start] != L'\\') return;
+
+    USHORT relLen = (USHORT)(dirLen - start);   /* 例如 "\Program Files\AnXinSecurity" 前含结尾 '\' */
+    /* 存储时去掉结尾 '\'，与默认常量格式一致 */
+    if (relLen >= 2 && s[start + relLen - 1] == L'\\') relLen--;
+
+    if (relLen == 0 || relLen >= 128) return;
+
+    RtlCopyMemory(g_TrustedInstallDir, &s[start], relLen * sizeof(WCHAR));
+    g_TrustedInstallDir[relLen] = 0;
+    g_TrustedInstallDirLen = relLen;
+
+    {
+        UNICODE_STRING dirUs;
+        dirUs.Buffer        = g_TrustedInstallDir;
+        dirUs.Length        = (USHORT)(relLen * sizeof(WCHAR));
+        dirUs.MaximumLength = (USHORT)sizeof(g_TrustedInstallDir);
+        DbgPrint("[AnXinFlt] Trusted install dir from ImagePath: %wZ\n", &dirUs);
+    }
 }
 
 // ===========================================================================
@@ -641,34 +848,104 @@ BOOLEAN IsCallerAuthorized(VOID)
  * NEVER requested. ObjectContext previously pointed to freed pool memory
  * and caused BugCheck 0x50 in AnXinProcProtect.
  */
+/*
+ * 卸载授权窗口是否生效（窗口到期自动失效）。
+ * IRQL: PASSIVE_LEVEL（CmCallback / PortMessage / 文件 PreOp 的 PASSIVE 路径保证）。
+ * Whether the uninstall authorization window is still active (auto-expires).
+ */
+static BOOLEAN IsUninstallAuthorized(VOID)
+{
+    if (!g_UninstallAuthorized) return FALSE;
+    if (KeQueryInterruptTime() >= g_UninstallGraceEnd) {
+        g_UninstallAuthorized = FALSE;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/*
+ * VUL-098 修复：按路径名识别受保护服务键，不依赖 boot 时 ObjectID 是否缓存成功。
+ * ObjectName（CmCallbackGetKeyObjectIDEx 返回）可能是完整路径
+ * （\REGISTRY\MACHINE\SYSTEM\CurrentControlSet\Services\AnXin...），也可能因
+ * 键经父句柄相对打开而只是最后一段（\Anxin...）。两种都覆盖：
+ *   1) 完整路径与 4 个 SVC_KEY_*_STR 不区分大小写精确匹配；
+ *   2) 名称最后一段等于某个受保护键名（ANXINPROCPROTECT / ANXINFILEPROTECT /
+ *      ANXINNETFILTER / ANXINSECURITYSERVICE）。
+ *
+ * VUL-098 fix: recognize protected service keys by path name, independent of
+ * whether the boot-time ObjectID cache succeeded. ObjectName may be a full path
+ * (\REGISTRY\MACHINE\SYSTEM\CurrentControlSet\Services\Anxin...) or, for keys
+ * opened relative to a parent handle, just the final component (\Anxin...). Both
+ * are covered: full-path exact match against the four SVC_KEY_*_STR, or a final
+ * component equal to one of the protected key names.
+ */
+static BOOLEAN IsRegProtectedKeyPathName(_In_ PCUNICODE_STRING KeyName)
+{
+    if (KeyName == NULL || KeyName->Buffer == NULL || KeyName->Length == 0)
+        return FALSE;
+
+    static const UNICODE_STRING kKeyPaths[] = {
+        RTL_CONSTANT_STRING(SVC_KEY_PROCPROTECT_STR),
+        RTL_CONSTANT_STRING(SVC_KEY_FILEPROTECT_STR),
+        RTL_CONSTANT_STRING(SVC_KEY_NETFILTER_STR),
+        RTL_CONSTANT_STRING(SVC_KEY_APP_STR),
+    };
+    static const UNICODE_STRING kKeyNames[] = {
+        RTL_CONSTANT_STRING(L"ANXINPROCPROTECT"),
+        RTL_CONSTANT_STRING(L"ANXINFILEPROTECT"),
+        RTL_CONSTANT_STRING(L"ANXINNETFILTER"),
+        RTL_CONSTANT_STRING(L"ANXINSECURITYSERVICE"),
+    };
+
+    /* 完整路径精确匹配（不区分大小写） */
+    for (ULONG i = 0; i < RTL_NUMBER_OF(kKeyPaths); i++)
+        if (RtlCompareUnicodeString(KeyName, &kKeyPaths[i], TRUE) == 0)
+            return TRUE;
+
+    /* 最后一段组件匹配（覆盖相对打开 / 带子键的 ObjectName） */
+    ULONG len = KeyName->Length / sizeof(WCHAR);
+    for (ULONG i = 0; i < RTL_NUMBER_OF(kKeyNames); i++) {
+        ULONG nlen = kKeyNames[i].Length / sizeof(WCHAR);
+        if (len < nlen) continue;
+        if (len > nlen) {
+            WCHAR sep = KeyName->Buffer[len - nlen - 1];
+            if (sep != L'\\' && sep != L'/') continue;
+        }
+        UNICODE_STRING tail;
+        tail.Buffer = &KeyName->Buffer[len - nlen];
+        tail.Length = (USHORT)(nlen * sizeof(WCHAR));
+        tail.MaximumLength = tail.Length;
+        if (RtlCompareUnicodeString(&tail, &kKeyNames[i], TRUE) == 0)
+            return TRUE;
+    }
+    return FALSE;
+}
+
+/*
+ * 判断注册表键对象是否为 4 个受保护服务键之一。
+ * 快路径：boot 时缓存的稳定 ObjectID 匹配（O(1) 且稳定）。
+ * 慢路径（VUL-098）：CmCallbackGetKeyObjectIDEx 取对象名做路径匹配，覆盖
+ * ObjectID 因键启动期状态异常而未缓存的键（实测 AnXinSecurityService 与
+ * AnXinNetFilter 无保护）。ObjectName 仅在请求非空时返回，用毕须调用
+ * CmCallbackReleaseKeyObjectIDEx 释放。
+ */
 static BOOLEAN IsRegProtectedKeyObject(PVOID Object)
 {
     if (Object == NULL) return FALSE;
     if (!g_RegCmRegistered || g_RegCookie.QuadPart == 0) return FALSE;
 
-    /*
-     * WDK 10.0.28000.0 签名：
-     *   CmCallbackGetKeyObjectIDEx(PLARGE_INTEGER, PVOID, PULONG_PTR,
-     *                             PCUNICODE_STRING*, ULONG)
-     * 只请求 ObjectID，不请求 ObjectName（第四参数 NULL），Flags=0。
-     * 因为不请求 ObjectName，无需调用 CmCallbackReleaseKeyObjectIDEx。
-     *
-     * WDK 10.0.28000.0 signature:
-     *   CmCallbackGetKeyObjectIDEx(PLARGE_INTEGER, PVOID, PULONG_PTR,
-     *                             PCUNICODE_STRING*, ULONG)
-     * Only ObjectID is requested; ObjectName (4th param) is NULL, Flags=0.
-     * No CmCallbackReleaseKeyObjectIDEx needed without ObjectName.
-     */
     ULONG_PTR objID = 0;
-    NTSTATUS status = CmCallbackGetKeyObjectIDEx(&g_RegCookie, Object, &objID, NULL, 0);
+    PUNICODE_STRING name = NULL;
+    NTSTATUS status = CmCallbackGetKeyObjectIDEx(&g_RegCookie, Object, &objID, &name, 0);
     if (!NT_SUCCESS(status)) return FALSE;
 
+    BOOLEAN hit = FALSE;
     for (ULONG i = 0; i < g_RegProtectedKeyCount; i++) {
-        if (g_RegProtectedKeyIDs[i] == objID) {
-            return TRUE;
-        }
+        if (g_RegProtectedKeyIDs[i] == objID) { hit = TRUE; break; }
     }
-    return FALSE;
+    if (!hit && name != NULL) hit = IsRegProtectedKeyPathName(name);
+    if (name != NULL) CmCallbackReleaseKeyObjectIDEx(name);
+    return hit;
 }
 
 /*
@@ -681,19 +958,24 @@ static BOOLEAN IsRegCallerAuthorized(VOID)
     HANDLE pid = PsGetCurrentProcessId();
     if (pid == (HANDLE)4) return TRUE;
 
-    /* 检查调用者是否为 SCM (services.exe) */
-    PEPROCESS proc = PsGetCurrentProcess();
-    PCHAR ansiName = PsGetProcessImageFileName(proc);
-    if (ansiName != NULL) {
-        static const CHAR svcs[] = "services.exe";
-        BOOLEAN match = TRUE;
-        for (ULONG i = 0; i < 12; i++) {
-            CHAR c = ansiName[i];
-            if (c >= 'A' && c <= 'Z') c = (CHAR)(c - 'A' + 'a');
-            if (c != svcs[i]) { match = FALSE; break; }
-        }
-        if (match) return TRUE;
-    }
+    /*
+     * VUL-098 修复：不再无条件信任 services.exe (SCM)。
+     * 旧实现把 SCM 列为授权调用方——services.exe 以 SYSTEM 运行，任何本地管理员
+     * 都能借 sc delete / sc config 让 services.exe 删除或改写 4 个受保护服务键，
+     * DACL 也因 SCM 是 SYSTEM 而放行，两条防线同时失效（实测 AnXinNetFilter /
+     * AnxinSecurityService 键可删）。
+     *
+     * 现在 SCM 操作在卸载授权窗口外一律被回调拦截；合法卸载/升级由
+     * anxin-security.exe 先发送 FpmAuthorizeUninstall 打开授权窗口（见
+     * PortMessage 与 uninstall_drivers()）。
+     *
+     * VUL-098 fix: stop trusting services.exe (SCM) unconditionally. The old code
+     * listed SCM as authorized — services.exe runs as SYSTEM, so any local admin
+     * could use sc delete / sc config to have services.exe delete or rewrite the
+     * four protected service keys, and the DACL let SYSTEM through too. Now SCM
+     * operations are blocked by the callback outside the uninstall window; the
+     * legitimate uninstall/upgrade flow opens that window via FpmAuthorizeUninstall.
+     */
 
     return IsCallerAuthorized();
 }
@@ -870,6 +1152,17 @@ static NTSTATUS RegProtectCallback(PVOID CallbackContext, PVOID Argument1, PVOID
         if (notifyClass != RegNtPreDeleteKey && notifyClass != RegNtPreDeleteValueKey)
             return STATUS_SUCCESS;
     }
+
+    /*
+     * VUL-098 / VUL-101：卸载授权窗口内放行全部注册表操作。
+     * 合法卸载/升级由 anxin-security.exe 先发送 FpmAuthorizeUninstall；窗口外
+     * SCM (services.exe) 不再被视为授权调用方（见 IsRegCallerAuthorized），
+     * sc delete / sc config 借道 services.exe 删改 4 个服务键的行为被拦截。
+     * Allow all registry operations during the uninstall window (granted via
+     * FpmAuthorizeUninstall); outside it, SCM operations on the protected keys
+     * are blocked (services.exe is no longer an authorized caller).
+     */
+    if (IsUninstallAuthorized()) return STATUS_SUCCESS;
 
     switch (notifyClass) {
     case RegNtPreDeleteKey: {
@@ -1059,8 +1352,30 @@ BOOLEAN IsFileProtectedByPath(PFLT_CALLBACK_DATA Data)
      */
     if (Data == NULL || Data->Iopb == NULL || Data->Iopb->TargetInstance == NULL)
         return FALSE;
-    NTSTATUS s = FltGetFileNameInformation(Data, FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT, &nameInfo);
+    /*
+     * VUL-097 修复：必须显式请求 OPENED 格式（设备路径 \Device\HarddiskVolumeN\...），
+     * 与用户态注册的路径格式一致——windows_service.rs 的 resolve_nt_path 用
+     * GetFinalPathNameByHandle(VOLUME_NAME_NT) 得到的正是设备路径。
+     *
+     * 旧代码用 FLT_FILE_NAME_NORMALIZED | FLT_FILE_NAME_QUERY_DEFAULT：
+     *   - NORMALIZED 返回 DOS 形式 \??\C:\...；
+     *   - QUERY_DEFAULT 可能返回最近缓存的其他格式（含 NORMALIZED）。
+     * 结果与注册的设备路径前缀永不匹配，安装目录文件保护运行期静默失效（VUL-097）。
+     *
+     * VUL-097 fix: explicitly request the OPENED format (device path
+     * \Device\HarddiskVolumeN\...), which matches what the Rust side registers via
+     * GetFinalPathNameByHandle(VOLUME_NAME_NT) in resolve_nt_path. The old
+     * NORMALIZED|QUERY_DEFAULT call could return DOS-form \??\C:\... names that
+     * never matched the registered device prefixes.
+     */
+    NTSTATUS s = FltGetFileNameInformation(Data, FLT_FILE_NAME_OPENED, &nameInfo);
     if (!NT_SUCCESS(s)) return FALSE;
+    if (nameInfo->Format != FLT_FILE_NAME_OPENED) {
+        /* 防御：显式请求 OPENED 时理论上必返回 OPENED，这里兜底一次 */
+        FltReleaseFileNameInformation(nameInfo);
+        s = FltGetFileNameInformation(Data, FLT_FILE_NAME_OPENED, &nameInfo);
+        if (!NT_SUCCESS(s)) return FALSE;
+    }
 
     BOOLEAN prot = IsPathProtected(&nameInfo->Name);
     if (!prot) {
@@ -1220,6 +1535,12 @@ FLT_PREOP_CALLBACK_STATUS MinifilterPreCreate(PFLT_CALLBACK_DATA Data, PCFLT_REL
 
     // Fast-path name check
     if (!IsFileProtectedByPath(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    /*
+     * VUL-101：卸载授权窗口内放行对受保护文件（含 3 个 .sys）的删除/改写登记，
+     * 否则卸载器（NSIS Delete /REBOOTOK 与 Rust MoveFileExW）被 IsKernelDriverFile
+     * 自保拦截，重启删除条目从未写入，卸载后 .sys 残留。
+     */
+    if (IsUninstallAuthorized())     return FLT_PREOP_SUCCESS_NO_CALLBACK;
     if (IsCallerAuthorized())        return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     // 1) Check DesiredAccess for dangerous rights
@@ -1314,6 +1635,8 @@ FLT_PREOP_CALLBACK_STATUS MinifilterPreWrite(PFLT_CALLBACK_DATA Data, PCFLT_RELA
     }
 
     if (!IsFileProtectedByPath(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    /* VUL-101：卸载授权窗口内放行对受保护文件的改写/删除（卸载器清理所需） */
+    if (IsUninstallAuthorized())     return FLT_PREOP_SUCCESS_NO_CALLBACK;
     if (IsCallerAuthorized())        return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     Data->IoStatus.Status = STATUS_ACCESS_DENIED;
@@ -1354,6 +1677,8 @@ FLT_PREOP_CALLBACK_STATUS MinifilterPreSetInformation(PFLT_CALLBACK_DATA Data, P
     }
 
     if (!IsFileProtectedByPath(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    /* VUL-101：卸载授权窗口内放行对受保护文件的改写/删除（卸载器清理所需） */
+    if (IsUninstallAuthorized())     return FLT_PREOP_SUCCESS_NO_CALLBACK;
     if (IsCallerAuthorized())        return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     Data->IoStatus.Status = STATUS_ACCESS_DENIED;
@@ -1385,6 +1710,8 @@ FLT_PREOP_CALLBACK_STATUS MinifilterPreFileSystemControl(PFLT_CALLBACK_DATA Data
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     if (!IsFileProtectedByPath(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    /* VUL-101：卸载授权窗口内放行对受保护文件的改写/删除（卸载器清理所需） */
+    if (IsUninstallAuthorized())     return FLT_PREOP_SUCCESS_NO_CALLBACK;
     if (IsCallerAuthorized())        return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     Data->IoStatus.Status = STATUS_ACCESS_DENIED;
@@ -1414,6 +1741,8 @@ FLT_PREOP_CALLBACK_STATUS MinifilterPreAcquireForSectionSync(PFLT_CALLBACK_DATA 
         return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     if (!IsFileProtectedByPath(Data)) return FLT_PREOP_SUCCESS_NO_CALLBACK;
+    /* VUL-101：卸载授权窗口内放行对受保护文件的改写/删除（卸载器清理所需） */
+    if (IsUninstallAuthorized())     return FLT_PREOP_SUCCESS_NO_CALLBACK;
     if (IsCallerAuthorized())        return FLT_PREOP_SUCCESS_NO_CALLBACK;
 
     Data->IoStatus.Status = STATUS_ACCESS_DENIED;
@@ -1530,30 +1859,78 @@ NTSTATUS PortMessage(PVOID PortCookie, PVOID InputBuffer, ULONG InputBufferLengt
     case FpmQueryPaths: {
         /*
          * 返回当前受保护路径列表，用于诊断。
-         * 输出格式：ULONG Count + WCHAR Path[MAX_PROTECTED_PATHS][MAX_PATH_LENGTH]
+         *
+         * VUL-102 修复：改用紧凑回复（ULONG PathCount + 每路径一个 NUL 结尾的
+         * WCHAR 串，长度可变），并先算所需字节数再协商缓冲。旧实现按
+         * ULONG + 128*520 WCHAR 的定长槽位回复，Rust 侧申请 ~130KB 输出缓冲，
+         * 超出过滤通信端口回复上限，FilterSendMessage 一直不返回（挂起）。
+         * 现在：OutputBuffer 不足时置 ReturnOutputBufferLength 为所需值并返回
+         * STATUS_BUFFER_TOO_SMALL，绝不越界写；回复体积远小于定长版本。
+         *
+         * VUL-102 fix: compact reply (ULONG PathCount + variable-length NUL-
+         * terminated WCHAR strings), with required-size negotiation up front. The
+         * old fixed-slot reply needed a ~130KB output buffer, exceeding the filter
+         * port reply limit and hanging FilterSendMessage. If the buffer is too
+         * small, ReturnOutputBufferLength is set to the required size and
+         * STATUS_BUFFER_TOO_SMALL is returned without writing out of bounds.
          */
-        if (OutputBuffer == NULL || OutputBufferLength < sizeof(ULONG))
-            return STATUS_BUFFER_TOO_SMALL;
+        if (OutputBuffer == NULL || ReturnOutputBufferLength == NULL)
+            return STATUS_INVALID_PARAMETER;
 
         ExAcquireFastMutex(&g_PathListLock);
 
         ULONG count = g_ProtectedPaths.Count;
-        PFPM_QUERY_RESPONSE resp = (PFPM_QUERY_RESPONSE)OutputBuffer;
-        resp->PathCount = count;
+        if (count > MAX_PROTECTED_PATHS) count = MAX_PROTECTED_PATHS;
 
-        for (ULONG i = 0; i < count && i < MAX_PROTECTED_PATHS; i++) {
+        /* 先在锁内计算所需字节数，再做长度协商 */
+        ULONG required = sizeof(ULONG);
+        for (ULONG i = 0; i < count; i++) {
+            ULONG chars = g_ProtectedPaths.Entries[i].Path.Length / sizeof(WCHAR);
+            if (chars >= MAX_PATH_LENGTH) chars = MAX_PATH_LENGTH - 1;
+            required += (chars + 1) * (ULONG)sizeof(WCHAR);
+        }
+
+        if (OutputBufferLength < required) {
+            *ReturnOutputBufferLength = required;
+            ExReleaseFastMutex(&g_PathListLock);
+            return STATUS_BUFFER_TOO_SMALL;
+        }
+
+        *((PULONG)OutputBuffer) = count;
+        ULONG offset = sizeof(ULONG);
+
+        for (ULONG i = 0; i < count; i++) {
             PUNICODE_STRING pp = &g_ProtectedPaths.Entries[i].Path;
             ULONG chars = pp->Length / sizeof(WCHAR);
             if (chars >= MAX_PATH_LENGTH) chars = MAX_PATH_LENGTH - 1;
-            RtlCopyMemory(resp->Paths[i], pp->Buffer, chars * sizeof(WCHAR));
-            resp->Paths[i][chars] = L'\0';
+            PWCHAR dst = (PWCHAR)((PUCHAR)OutputBuffer + offset);
+            RtlCopyMemory(dst, pp->Buffer, chars * sizeof(WCHAR));
+            dst[chars] = L'\0';
+            offset += (chars + 1) * (ULONG)sizeof(WCHAR);
             DbgPrint("[AnXinFlt] Query path %lu: %wZ\n", i, pp);
         }
 
         ExReleaseFastMutex(&g_PathListLock);
 
-        if (ReturnOutputBufferLength)
-            *ReturnOutputBufferLength = (ULONG)(sizeof(ULONG) + count * MAX_PATH_LENGTH * sizeof(WCHAR));
+        *ReturnOutputBufferLength = offset;
+        return STATUS_SUCCESS;
+    }
+    case FpmAuthorizeUninstall: {
+        /*
+         * VUL-098 / VUL-101：授权卸载/升级窗口。
+         * 只接受完整路径验证的 anxin-security.exe（或 SYSTEM，见 IsCallerAuthorized）
+         * 发起；窗口内注册表回调与文件自保放行 SCM 对 4 个服务键的删改、卸载器对
+         * 3 个 .sys 的重启删除登记。窗口到期自动失效（IsUninstallAuthorized）。
+         */
+        if (!IsCallerAuthorized()) {
+            DbgPrint("[AnXinFlt] DENY FpmAuthorizeUninstall from PID %lu\n",
+                     (ULONG)(ULONG_PTR)PsGetCurrentProcessId());
+            return STATUS_ACCESS_DENIED;
+        }
+        g_UninstallAuthorized = TRUE;
+        g_UninstallGraceEnd = KeQueryInterruptTime() + UNINSTALL_GRACE_100NS;
+        DbgPrint("[AnXinFlt] Uninstall authorization granted (grace end=%llu)\n",
+                 g_UninstallGraceEnd);
         return STATUS_SUCCESS;
     }
     default:

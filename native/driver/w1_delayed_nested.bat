@@ -1,0 +1,17 @@
+@echo off
+setlocal enabledelayedexpansion
+set MSBUILD=
+for %%p in (
+    "C:\Program Files\Microsoft Visual Studio\18\"
+    "C:\Program Files\Microsoft Visual Studio\18\Insiders"
+    "C:\Program Files (x86)\Microsoft Visual Studio\2022\Enterprise"
+) do (
+    if exist "%%~p\MSBuild\Current\Bin\MSBuild.exe" (
+        set MSBUILD="%%~p\MSBuild\Current\Bin\MSBuild.exe"
+        set VS_INSTALL_DIR=%%~p
+        goto :found_msbuild
+    )
+)
+:found_msbuild
+if "%MSBUILD%"=="" (echo NOTFOUND) else (echo FOUND %MSBUILD%)
+echo DONE

@@ -1,0 +1,13 @@
+[package]
+name = "anxin-service"
+version = "1.0.0"
+description = "AnXin Security - backend protection service (Windows service / foreground)"
+authors = ["AnXin Security Team"]
+edition = "2021"
+
+[[bin]]
+name = "AnXinService"
+path = "src/main.rs"
+
+[dependencies]
+anxin-core = { path = "../anxin-core" }

@@ -1,0 +1,116 @@
+;
+; AnXinProcMon.inf
+; AnXin Security 进程生命周期 + 行为采集驱动安装文件
+; Installation file for the AnXin Security Process Lifecycle Monitor driver
+;
+; 说明 / Note:
+;   采集驱动不是 PnP 设备驱动，沿用与 AnXinProcProtect / AnXinNetFilter 一致的
+;   Root 枚举方式，便于用同一套流程做 INF 安装与签名验证。
+;   生产环境同样可以用 sc.exe 创建内核服务，见 build_proc_monitor.bat 末尾。
+;   This collect-only driver is not a PnP device driver. It uses the same
+;   Root-enumerated form as AnXinProcProtect / AnXinNetFilter so installation
+;   and signature verification follow one process. Production may equally use
+;   sc.exe — see the end of build_proc_monitor.bat.
+;
+; 卸载策略 / Unload policy:
+;   StartType = 3 (SERVICE_DEMAND_START)，普通 DriverUnload（不自保）。
+;   由应用进程在启动时按需加载/握手，应用退出后驱动继续采集（无消费者时
+;   fail-safe 丢弃）。
+;   注意：内核驱动（含本驱动与 Windows 内置驱动）不能通过 sc stop 停止——
+;   SCM 对 KERNEL_DRIVER 服务返回 1052/1051（2026-08-14 VM 实测）。卸载走
+;   项目统一方案：SYSTEM 计划任务删服务键 + 重启后 PFRO 清理 .sys（VUL-101），
+;   或由 DriverUnload 支持 NtUnloadDriver（需 SYSTEM 特权）。
+;   StartType = 3 with a plain DriverUnload (no self-protection). The app
+;   loads/handshakes on demand; the driver keeps collecting after the app
+;   exits (fail-safe drop without a consumer).
+;   Note: kernel drivers (this one and Windows built-ins) cannot be stopped via
+;   sc stop - SCM returns 1052/1051 for KERNEL_DRIVER services (verified in VM
+;   2026-08-14). Unload follows the project-wide scheme: a SYSTEM scheduled task
+;   deletes the service key and the .sys is cleaned by PFRO after reboot
+;   (VUL-101), or NtUnloadDriver with SYSTEM privileges. DriverUnload is
+;   registered and works; it is simply unreachable through the SCM STOP control.
+;
+
+[Version]
+Signature   = "$WINDOWS NT$"
+Class       = System
+ClassGuid   = {4D36E97D-E325-11CE-BFC1-08002BE10318}
+Provider    = %ProviderString%
+DriverVer   = 08/14/2026,1.0.0.0
+CatalogFile = AnXinProcMon.cat
+PnpLockdown = 1
+
+[DestinationDirs]
+DefaultDestDir = 13
+
+; ---------------------------------------------------------------------------
+; Manufacturer / Models
+; ---------------------------------------------------------------------------
+
+[Manufacturer]
+%ManufacturerName% = AnXinSecurity, NTamd64.10.0...16299
+
+[AnXinSecurity.NTamd64.10.0...16299]
+%DeviceDescription% = AnXinProcMon_Install, Root\AnXinProcMon
+
+; ---------------------------------------------------------------------------
+; DDInstall
+; ---------------------------------------------------------------------------
+
+[AnXinProcMon_Install.NT]
+CopyFiles = AnXinProcMon_CopyFiles
+
+[AnXinProcMon_Install.NT.Services]
+AddService = AnXinProcMon, 0x00000002, AnXinProcMon_Service_Install
+
+; ---------------------------------------------------------------------------
+; Service
+; ---------------------------------------------------------------------------
+
+[AnXinProcMon_Service_Install]
+DisplayName    = %ServiceDisplayName%
+Description    = %ServiceDescription%
+ServiceType    = 1                  ; SERVICE_KERNEL_DRIVER
+StartType      = 3                  ; SERVICE_DEMAND_START
+ErrorControl   = 1                  ; SERVICE_ERROR_NORMAL
+ServiceBinary  = %13%\AnXinProcMon.sys
+Dependencies   = FltMgr             ; minifilter 必须在 FltMgr 之后加载 / must load after FltMgr
+AddReg         = AnXinProcMon_Altitude_AddReg
+
+; ---------------------------------------------------------------------------
+; Minifilter altitude (must match native/proc_monitor/src/file.c)
+; ---------------------------------------------------------------------------
+; altitude 380000 > AnXinFileProtect(328800)：采集驱动必须在写阻断驱动之前
+; 感知 Pre-Op（数值越大越靠近应用层栈顶），否则被阻断的恶意写不会落到
+; ProcMon，EDR 会漏掉溯源日志。
+; 380000 > AnXinFileProtect(328800): the collector must see Pre-Ops before
+; the write-blocker, or blocked writes never reach ProcMon.
+[AnXinProcMon_Altitude_AddReg]
+HKR, "Parameters\Instances",                         "DefaultInstance",            0x00000000, "AnXinProcMon Instance"
+HKR, "Parameters\Instances\AnXinProcMon Instance",   "Altitude",                   0x00000000, "380000"
+HKR, "Parameters\Instances\AnXinProcMon Instance",   "Flags",                      0x00010001, 0x00000000
+
+; ---------------------------------------------------------------------------
+; Files
+; ---------------------------------------------------------------------------
+
+[AnXinProcMon_CopyFiles]
+AnXinProcMon.sys
+
+[SourceDisksNames]
+1 = %DiskName%,,,
+
+[SourceDisksFiles]
+AnXinProcMon.sys = 1,,
+
+; ---------------------------------------------------------------------------
+; Strings
+; ---------------------------------------------------------------------------
+
+[Strings]
+ProviderString     = "AnXin Security"
+ManufacturerName   = "AnXin Security"
+DeviceDescription  = "AnXin Security Process Lifecycle Monitor Driver"
+ServiceDisplayName = "AnXin Security Process Monitor Driver"
+ServiceDescription = "Collects process lifecycle (create/exit/image load/remote thread) and runtime behavior (file/registry/network/IPC) events via kernel callbacks, minifilter, Cm and WFP; collect-only, never blocks protected processes or security boundaries."
+DiskName           = "AnXin Security Installation Disk"

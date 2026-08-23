@@ -1,4 +1,4 @@
-; NSIS 安装/卸载钩子
+﻿; NSIS 安装/卸载钩子
 ;  NSIS install/uninstall hooks
 ;
 ; Tauri 2.0 的 NSIS 模板使用的宏名与执行时机（已从模板反编译确认）：
@@ -234,7 +234,7 @@ Var KernelProtect
   ;  binPath uses the main executable plus --service to run headless. sc.exe requires quotes inside
   ;  binPath to be escaped as \"; in NSIS $\" is a quote, so \$\" produces \".
   DetailPrint "Registering AnXin Security protection service..."
-  nsExec::ExecToStack 'sc.exe create "AnXinSecurityService" binPath= "\$\"$INSTDIR\anxin-security.exe\$\" --service" start= auto DisplayName= "AnXin Security Protection Service"'
+  nsExec::ExecToStack 'sc.exe create "AnXinSecurityService" binPath= "\$\"$INSTDIR\AnXinService.exe\$\" --service" start= auto DisplayName= "AnXin Security Protection Service"'
   Pop $0
   Pop $1
   DetailPrint "sc create exit code: $0"

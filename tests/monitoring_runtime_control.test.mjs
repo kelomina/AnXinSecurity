@@ -11,9 +11,9 @@ const configStoreSource = readFileSync(resolve(projectRoot, 'src/stores/configSt
 const settingsPageSource = readFileSync(resolve(projectRoot, 'src/components/SettingsPage.tsx'), 'utf8')
 const overviewPageSource = readFileSync(resolve(projectRoot, 'src/components/OverviewPage.tsx'), 'utf8')
 const behaviorPageSource = readFileSync(resolve(projectRoot, 'src/components/BehaviorPage.tsx'), 'utf8')
-const etwServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/etw_service.rs'), 'utf8')
-const logsCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/logs.rs'), 'utf8')
-const configCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/config.rs'), 'utf8')
+const etwServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/etw_service.rs'), 'utf8')
+const logsCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/logs.rs'), 'utf8')
+const configCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/config.rs'), 'utf8')
 
 test('process API exposes typed process watcher control commands', () => {
   assert.match(processApiSource, /export interface ProcessWatcherStartOptions/)

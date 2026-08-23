@@ -107,14 +107,17 @@ const TitleBar: React.FC = () => {
   }
 
   /**
-   * 关闭窗口（最小化到托盘） / Close window (minimize to tray)
+   * 关闭窗口 = 退出 Main 进程（拆分架构）
+   * Close window = exit the Main process (split architecture)
+   *
+   * 后台防护由独立服务进程承担，托盘进程继续驻留；关闭主界面不影响防护。
+   * Background protection is owned by the dedicated service process and the tray
+   * process stays resident; closing the main window does not affect protection.
    */
   const handleClose = async () => {
-    // 点击关闭时最小化到托盘，而不是直接关闭
-    // Minimize to tray on close, not actual exit
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      await invoke('minimize_to_tray')
+      await invoke('close_main_window')
     } catch {
       await appWindow.hide()
     }

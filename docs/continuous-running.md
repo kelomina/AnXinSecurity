@@ -16,7 +16,274 @@
 
 ## 当前状态快照
 
-更新时间：2026-08-07
+更新时间：2026-08-23
+
+### 2026-08-23 三进程拆分实施完成（Main / Tray / Service）——代码层收口，待 VM 实测
+
+**目标**：单 exe 双角色架构拆为 `AnXinSecurity.exe`（仅主界面，关闭即退出）、`AnXinTray.exe`（托盘+拦截弹窗+退出确认+IPC bridge）、`AnXinService.exe`（完整后端，SCM/--foreground）。方案与落地差异全文见 `docs/three-process-split.md`（权威）。
+
+**已验证状态（本机实际运行）**
+
+- Workspace 重构：src-tauri = workspace 根 + Main 包；共享逻辑下沉 `crates/anxin-core`（lib 名 anxin_security 不变）；新增 `crates/anxin-tray`、`crates/anxin-service` 薄壳。`cargo check --workspace` / `cargo build --workspace` 通过。
+- Rust 测试：`cargo test -p anxin-core` 20 个测试目标全部 ok（lib 388/388 + 集成 ~311，0 failed；含为 shutdown_service 新增的单测 shutdown_request_sets_registered_stop_flag）。
+- 前端：`npm run typecheck`、`npm run lint` 通过；`npm run test` 150/150（5 个断言旧 standalone 实现位置的测试已适配新归属：启动快照/钩子管道/APIHook watcher 归属 windows_service.rs，interception capability 归 Tray crate 等）。
+- 打包链路端到端：`powershell -File build/tools/build-installer.ps1` 成功产出 `bundle/nsis/AnXinSecurity_1.0.0_x64-setup.exe`（38,828,542B），内含三 exe；sc binPath 已切至 `$INSTDIR\AnXinService.exe --service`。
+- 关键实现点：
+  - IPC method `shutdown_service`（协议新增）：服务端先广播 `service-exiting`（FORWARDABLE_EVENTS/FORWARDED_EVENTS 已加）再置停止标志（SERVICE_STOP_SIGNAL 全局注册点）；
+  - IPC 客户端白名单扩至 anxinsecurity/anxintray/anxin-security/anxin-tray（小写比对），握手通过即自动 `register_ui_process_pid` 注册内核保护；
+  - Main 瘦身：托盘创建、拦截窗口预建、standalone 防护组件启动分支全部移除；提权 + 无服务时自动引导 `AnXinService.exe --foreground`；非提权保持降级；
+  - Main 标题栏关闭 → 新命令 `close_main_window` = 退出 Main 进程（防护不受影响）；托盘退出 → exit-confirm 小窗口（新前端 label 分支 ExitConfirmWindowApp）→ execute_exit → IPC 停服 → 全 GUI 退出；
+  - 托盘菜单文案接入 i18n（Rust 侧 lookup_rust_side_text，键 tray_show_main/tray_exit）。
+
+**本轮事故与修复（必须知晓）**
+
+- `build/nsis-hooks.nsh` 曾被本会话 GBK 编码往返部分损坏（用户有 +211/-93 未提交改动，无恢复源），经用户确认以 HEAD 基线 + binPath 切换 + UTF-8 BOM 重建。教训固化在 DEPLOYMENT.md §2.5「编码红线」：该文件必须 UTF-8 with BOM；PowerShell 批处理项目文件一律显式 UTF-8。
+- makensis 对无 BOM UTF-8 报 Bad text encoding；bundler 生成的 installer.nsi 按 ANSI 解析、注入内容必须 ASCII-only——均已写入 DEPLOYMENT.md。
+
+**计划/假设**
+
+- [待实测] VM 端到端清单见 three-process-split.md §6（安装→服务拉起 Tray→拦截闭环→退出停服→卸载重装全清）。
+- [假设] 双 GUI 进程（Main/Tray 各自 identifier）并存行为符合预期，待 VM 观察 WebView2 双浏览器进程内存表现。
+
+**风险/待办**
+
+- VUL-106（Medium, Open）已登记：IPC 白名单仅按文件名、无目录/签名校验；拆分扩大伪装面。修复方向：生产模式加安装目录比对或 WinVerifyTrust。
+- Main 仍保留本地 SQLite 连接（降级路径读写共用服务端库），并发写竞争面待评估；后续可考虑降级路径只读化。
+- vm-automation 历史 antagonist/diag 脚本仍引用旧单 exe 名；下次 VM 部署前按 three-process-split.md §6 映射表适配所需脚本即可，不批量改写。
+- 旧版升级安装路径未实测：旧服务注册指向 anxin-security.exe --service，新版 NSIS 重装会重建服务键 ✓，但需确认 CheckIfAppIsRunning 对改名主程序的兼容（nsi 模板自带 OldMainBinaryName 迁移逻辑，理论覆盖）。
+
+---
+
+### 2026-08-18 阶段4b：漏网样本重测（case 1/2/3/4）与 v2 ETW 规则验证（进行中）
+
+**目标**：验证 v2 ETW 规则（9 条中 6 条 antagonist_* 强拦截规则）能否拦截第一批对抗测试的 4 个漏网样本。
+
+**已验证状态**
+
+- 4 个漏网样本首轮重测结果（VM 内运行，同步 Invoke-Command 逐样本执行）：
+  - case 1 (mimikatz)：GONE_T15（15s 内消失），diag+8、DB+127KB，仅命中 `trusted_process_unsigned_image_load`（弱规则），且命中 pid=17208 非样本 pid=7492
+  - case 2 (80e.exe)：GONE_T0（5s 内消失），diag+0、DB+12KB，0 命中
+  - case 3 (heium_kill)：GONE_T5，diag+0、DB+4KB，0 命中
+  - case 4 (123.exe)：样本文件缺失，未执行
+- **关键问题**：6 条 antagonist_* 强拦截规则命中数为 0，进程却都在数秒内退出。需区分「规则引擎未匹配」与「进程自行退出」。
+- **受控测试（notepad 复制到 C:\Samples）**：notepad.exe (pid=17032) 启动后 diagDelta=0，行为库 DB 增长。诊断文件无任何新事件 → 用户态 ETW 诊断管道实际处于 REDUCED 降噪状态。
+- **根因一（配置冲突）**：app.json 同时存在**扁平属性** `"procMonitor.etwReduced": false`（由旧 --set-config 错误创建的顶级字段）和**嵌套属性** `procMonitor.etwReduced: true`（快照默认）。加载器读取嵌套 true → ETW 进入 REDUCED 模式，用户态诊断事件被驱动接管后降噪，导致规则匹配事件不进诊断文件。
+- **根因二（CLI 限制）**：`--set-config` 仅支持扁平键，不支持点分隔嵌套路径，无法通过授权通道修改 `procMonitor.etwReduced`。
+- **已修复**：`src-tauri/src/models/config.rs::set_cli_value` 新增点分隔嵌套路径支持（自动创建中间对象容器，如 `procMonitor.etwReduced`、`behaviorAnalyzer.sqlite.mode`），已重新构建 release exe（8253952B）。
+- **部署受阻**：VM 内 exe 仍是旧版（8497152B，无新 CLI 能力）；`sc stop AnXinFileProtect` 返回成功但驱动仍 RUNNING（`fltmc instances` 仍挂载）；旧 exe 的 --set-config / --query-file-protect 在 VM 内挂起（卡在 Tauri 初始化，未走到 CLI 分支）。
+- **解决方案（进行中）**：改用 NSIS 安装包完整卸载→重装。已用最新 exe 构建 `vm-automation/output/AnXinSecurity-Setup-v3.exe`（37,195,635B，installer.nsi 的 MAINBINARYSRCPATH 指向最新 release exe）。
+
+**计划/假设**
+
+- 部署 NSIS v3 到 VM（卸载旧版→安装新版）→ 用新版 CLI 设置 `procMonitor.etwReduced=false` + `etwSessionMode=FULL` + 部署 v2 规则 → 重跑 4 样本验证 antagonist_* 拦截。
+- [假设] 安装包卸载流程会正确停止并卸载 AnXinFileProtect / AnXinProcMon 驱动，解锁 Program Files 写入。
+
+**风险/待办**
+
+- FileProtect 驱动 anti-unload/anti-tamper 可能阻断卸载流程本身；若安装失败需回退快照恢复策略（AntagonistReady_20260818 快照）。
+- case 4 样本缺失需重新抽取补齐。
+- 即使 etwReduced=false，若规则匹配逻辑本身有问题（targetField 为空、patterns 大小写/前缀匹配语义不符），仍可能 0 命中 → 需受控命中测试验证。
+
+**本轮产物清单**
+
+- 最新 release exe：`src-tauri/target/x86_64-pc-windows-msvc/release/anxin-security.exe`（8,253,952B，2026-08-18 13:37，含嵌套路径 set_cli_value 修复）
+- v2 规则：`vm-automation/output/anxin_etw_rules_v2.json`（4,364B，9 条规则，6 条 antagonist_* 强拦截）
+- 安装包：`vm-automation/output/AnXinSecurity-Setup-v3.exe`（37,195,635B，2026-08-18 14:00）
+- 漏网样本清单：`vm-automation/output/sample-retest-leaks.csv`（4 条）
+- 重测脚本：`vm-automation/antagonist-retest-leaks4.ps1`（同步 Invoke-Command 逐样本执行）
+- VM 快照：`AntagonistReady_20260818`（Defender 权限宽松的对抗测试基线）
+
+---
+
+### 2026-08-18 修复服务模式 IPC 请求执行阻塞：状态刷新 broken-pipe / 开关卡死
+
+**已验证状态**
+
+- **根因（代码层核对）**：`src-tauri/src/services/ipc_server.rs::handle_client` 原先在**唯一的读循环线程**上同步执行每个请求；`SCAN_FILE`/`SCAN_BATCH` 用 `runtime_handle.block_on(async move { … engine.scan_file(…).await … })` 把批量/单文件扫描 `block_on` 在这条线程上。scan 期间该线程既读不了新请求也答不了旧请求，UI 的 `GET_STATUS`、监控开关、甚至 `CANCEL_SCAN` 全部排队无人消费 → 客户端管道写缓冲积压，`FlushFileBuffers` 返回 `ERROR_BROKEN_PIPE (0x8007006D, 管道已结束)` 或 5s 超时；状态/开关命令是同步 `#[tauri::command]`，反复失败导致前端开关卡死（已登记 buglist VUL-105）。
+- **修复**：读循环只负责读入与分派，每个客户端连接创建**有界请求工作池**（`IPC_WORKERS_PER_CLIENT = 4`）并发执行请求。请求在 worker 线程执行，响应经线程安全的 `client.writer` 写回（客户端按 request id 匹配，天然支持乱序）。新增 `spawn_worker_queue`（按工厂为每个 worker 生成独立 handler，避免共享 handler 串行化）与 `execute_request`，`catch_unwind` 兜住单个 handler panic。
+- **验证**：`cargo check` 通过；新增单测 `services::ipc_server::tests::worker_queue_runs_long_and_short_jobs_concurrently` 通过（长任务占住 worker 时短任务仍并发完成，0.25s）。未改 IPC 协议、前端、客户端超时。
+
+**计划/假设**
+
+- 服务模式真实扫描场景（大目录 `SCAN_BATCH` 进行中刷新状态/点开关/取消扫描）的**手工复现与回归待部署后实测**；先在 VM 复现「修复前 broken-pipe/卡死」，再验证「修复后扫描期间状态正常返回、开关即时响应、`CANCEL_SCAN` 能中断扫描」。
+
+**风险/待办**
+
+- 并发执行后，多个方法若同时持同一服务内部锁（如 ETW `session.lock`、引擎）会有锁等待 → 表现为轻微排队而非 broken-pipe/卡死，属可接受；后续可观察是否需 per-service 隔离。
+- worker 线程是 detached 的：客户端断开时读循环退出、队列发送端丢弃，正在执行的长扫描 worker 会排完当前作业后自然退出；此时 `CloseHandle(pipe_handle)` 与 worker 的写回存在良性竞争（写错误会被日志捕获，不崩溃）。
+
+---
+
+### 2026-08-14 AnXinProcMon 进程监控采集驱动：P1-P6 全部完成（VM 实测通过）
+
+**已验证状态**
+
+- `native/proc_monitor/` 驱动全部代码完成并编译通过（Debug 53760B / Release 49408B，
+  MSBuild + `/p:SignMode=None /p:SkipPackageVerification=true`），契约文档
+  `docs/proc_monitor_design.md` v6。
+- **P6 VM 端到端实测全部通过**（Hyper-V `病毒测试`，从 8/13 干净基线
+  `CleanBaseline-PreDriverInstall_20260813_0150` 恢复后部署）：
+  1. **驱动加载 + minifilter 注册**：`sc start AnXinProcMon` → RUNNING；
+     `fltmc filters` 显示 AnXinProcMon @ altitude 380000（实例挂载 C:/Mup）；
+     System 日志 id=6 "已成功加载并注册到筛选器管理器"。
+  2. **设备 + 契约握手**：`\\.\AnXinProcMon` 打开成功；GET_VERSION 返回
+     proto=1、v1.0.0、caps=0x7F（全部 7 项能力）、maxRules=512、maxCmd=2047。
+  3. **GET_HEALTH 活性**：lastTick 持续跳动（回调活性心跳正常）、attached=1、
+     lcQ/bhQ 随事件入队增长、lcD/bhD=0（零丢弃）。
+  4. **主动探针回报（§13.7 核心验收）**：4 枚探针（cmd.exe /c exit）CREATE 事件
+     **4/4 全部回报**，驱动在进程创建同步路径触发回调，到达延迟 0-94ms
+     （<100ms 契约达标）。
+  5. **行为事件采集**：minifilter 文件事件（FILE_CREATE=198/FILE_WRITE=2），
+     UTF-16 路径 payload 正确解码（如 `\Windows\Temp\probev4.log`）。
+  6. **WFP callout**：`netsh wfp show state` 确认 provider
+     `C6A3E5F0-...9F01` callout 已注册。
+  7. **三驱动共存回归**：AnXinProcProtect + AnXinFileProtect（328800）+
+     AnXinNetFilter 全部 RUNNING 与 ProcMon 共存，探针仍 4/4 回报，
+     无蓝屏/无错误事件（System 日志无 41/1001）。
+- **P6 发现并修复驱动 bug（已登记 buglist）**：
+  - **MSBuild WDK 构建缺 /INTEGRITYCHECK**：驱动加载成功但
+    `PsSetCreateProcessNotifyRoutineEx` / `PsSetCreateThreadNotifyRoutineEx` 返回
+    **0xC0000022（STATUS_ACCESS_DENIED）**——CI 拒绝无完整性校验标志的驱动注册
+    进程/线程通知回调（LoadImage 不受限所以只有 CREATE/EXIT/REMOTE_THREAD 缺失）。
+    修复：`AnXinProcMon.vcxproj` Link 段加 `/INTEGRITYCHECK`（DLL characteristics
+    `0x4160 → 0x41E0`，与 ProcProtect 一致），重编译部署后三回调全部注册成功
+    （GET_HEALTH 诊断位 proc/thread/image=True）。教训与 net_filter 的 PE 问题同源：
+    MSBuild WDK 生成的 PE 需显式 /INTEGRITYCHECK。
+  - **部署要点**：minifilter 必须写 `Parameters\Instances` **和** root `Instances`
+    两个位置（FltMgr 查找路径），只写一个会导致 FltRegisterFilter 0xC0000034；
+    驱动加载失败后残留对象会导致下次 start 183（STATUS_OBJECT_NAME_COLLISION），
+    需重启 guest 清内存。
+- P4 三项 Rust 侧待办与 P5 前端 + 配置 + i18n 全部完成（详见下方条目），
+  `cargo check` / 全量测试 370/370、前端 typecheck/lint/150 测试全通过。
+- 顺手修正 `anx_proc_ioctl.h` 的 IOCTL 注释值（`0x0022A800` 等 → 宏展开值
+  `0x00226800` 等）；Rust 客户端用宏展开值，测试锁定。
+
+**计划/假设**
+
+- 行为事件解析入库 + 汇入规则管线（§4.3 EDR 整合、§4.7 `process_lifecycle` 表）
+  与 ETW 降噪联动（§4.5，驱动在线时收敛 ETW 类别）尚未实现——属后续收口。
+- WFP 顺序验证函数 `verify_anxin_filter_order` 尚未在双驱动（ProcMon+NetFilter）
+  同时加载的机器上真跑（本轮共存回归验证了功能不冲突，但未单独执行该函数）。
+- `process-monitor-tampered` 告警触发快照纠偏的**实际路径**（探针连续 5 轮失败）
+  未在 VM 上触发过——本轮验证的是正常回报路径；失明告警路径需人为卸载驱动
+  或模拟回调失效才能实测（后续可补）。
+
+**风险/待办**
+
+- 驱动生产的 EV 签名 + attestation 未做（开发用测试签名）。
+- 探针统计的 `last_reconcile_count` 只反映最近一次纠偏；纠偏补项无父进程信息
+  （parent_pid=0），进程树中呈现为虚拟根下的孤立节点。
+
+### 2026-08-15 行为库保留策略：3 天窗口 + 1GiB 容量上限（VM 实测通过）
+
+**已验证状态（安装包 VM 实测 + 386/386 单测）**
+
+- **配置**：`behaviorAnalyzer.retentionDays = 3`（默认 3 天，此前 7 天）、
+  `behaviorAnalyzer.maxDbBytes = 1073741824`（1GiB 硬上限）。
+- **定时清理**（UI 进程 background_init + 服务进程各 spawn 每小时任务）：
+  1. **容量优先**：`db_size_bytes()`（PRAGMA page_count×page_size）超 1GiB →
+     `prune_by_size_limit`：循环推进时间边界删除最老 25% 跨度数据（≤8 轮，
+     保留期内数据也删——容量是硬约束），最后 **VACUUM 回收文件空洞**
+     （DELETE 不自动缩小文件）；
+  2. **保留期**：`prune_older_than(now - 3d)` 删除 events/process_lifecycle
+     超窗行。
+- **索引**：`idx_events_timestamp`、`idx_process_lifecycle_create_time`、
+  `idx_process_lifecycle_pid`（幂等创建）——清理 DELETE 走索引，大表秒级。
+- **VM 实测**：配置随安装包生效（retentionDays=3、maxDbBytes=1GiB）；
+  VACUUM 执行成功、文件可回收；单测覆盖 db_size_bytes 与
+  prune_by_size_limit（含 1 字节上限强制清空场景）。
+- 全量 386/386 通过。
+
+**计划/假设 / 风险**
+
+- 清理任务每小时一次；1GiB 上限触发时最多删到 90% 水位（9/10 阈值）。
+- VACUUM 在写入高峰可能锁冲突失败（下次轮次重试）；:memory: 测试库同样适用。
+
+**已验证状态（干净基线安装 AnXinSecurity_1.0.0_x64-setup.exe）**
+
+- **NSIS 安装器集成 ProcMon**（build/nsis-hooks.nsh）：
+  - PREINSTALL 释放 AnXinProcMon.sys 到 System32\drivers（与三驱动同流程）
+  - POSTINSTALL 注册服务：DEMAND_START + FltMgr 依赖 + FSFilter Anti-Virus Group
+    + Instances **双位置**（Parameters\Instances + 根 Instances，Altitude 380000）
+  - PREUNINSTALL/POSTUNINSTALL 清理 AnXinProcMon（sc delete + .sys /REBOOTOK + 残留核查）
+- **app.json 打包修复**：bundle.resources 数组形式不包含 `../config/app.json`
+  （实测），改由 NSIS PREINSTALL 显式释放到 `$INSTDIR\_up_\config\app.json`；
+  `AppConfig::load` 增加 exe-relative fallback（`_up_/config/app.json`、
+  `resources/config/app.json`、`config/app.json`）——服务进程 CWD 是 System32，
+  之前读不到配置导致 procMonitor 开关失效。
+- **驱动自动加载修复**：ProcessLifecycleService::start 增加 `sc start AnXinProcMon`
+  （DEMAND_START 驱动安装后 STOPPED，之前直接 connect 设备不存在导致降级）。
+- **VM 实测（干净基线安装）**：
+  - 四驱动全部就位：ProcProtect RUNNING、FileProtect RUNNING、NetFilter 注册
+    （SYSTEM_START 重启后加载）、**ProcMon RUNNING（应用自动加载）**
+  - fltmc：AnXinProcMon 380000 + AnXinFileProtect 328800 共存
+  - 设备打开 caps=0x7F；探针事件流正常（服务进程实时消费 + 测试客户端
+    并发下仍拿到 CREATE，双消费者竞争致 2/4，单消费者 4/4）
+- 全量测试 377/377。
+
+**计划/假设 / 风险**
+
+- NetFilter 为 SYSTEM_START，安装后需重启才加载（设计行为）。
+- 服务进程与 UI 进程双消费者共享驱动事件流：谁先挂 IRP 谁拿事件，
+  探针回报统计在双消费者下可能分散（单消费者下 4/4 已验证）。
+
+### 2026-08-14 安装包集成：ProcMon 纳入安装器 + app.json 打包（VM 实测通过）
+
+### 2026-08-14 遗留项收口：行为入库 + ETW 降噪 + DROP_MARKER 纠偏 + TAMPERED 实测
+
+**已验证状态（cargo 全量 377/377、前端 typecheck/lint 通过）**
+
+- **§4.7 生命周期入库**：行为库新增 `process_lifecycle` 表（BehaviorService::
+  `initialize_lifecycle_table`，双路径建表——main.rs background_init 与
+  windows_service.rs 建库流程同步）；`ingest_lifecycle`（CREATE 插入 / EXIT 更新
+  exit_time/duration/exit_status）+ `list_lifecycle` 查询；ProcessLifecycleService
+  的 lifecycle 泵在 CREATE/EXIT 时经 `Mutex<BehaviorService>` 异步入库。
+- **§4.3 行为事件汇入**：behavior 泵把驱动事件 normalize 成 app_event
+  （`behavior_event_to_app_event`：FILE_* → "File:Create/Write/Delete/Rename"、
+  REG_* → "Registry:..."、NET_CONNECT → "Network:Connect"（40B NET_TUPLE 展开
+  ip:port，IPv4/IPv6 格式化含零压缩）、IPC_CONNECT → "IPC:Connect"），
+  timestamp 用 RFC3339，写入 SQLite `events` 表（前端 BehaviorPage 可查）。
+- **§4.4 DROP_MARKER 纠偏**：consume_lifecycle_event 新增 DROP_MARKER 分支——
+  解析 payload 前 4 字节丢弃计数并触发 `reconcile_process_table`（复用 30s 冷却）。
+- **§4.5 ETW 降噪与回退**：
+  - session.rs `build_private_trace_properties_buffer` 参数化 enable_flags；
+    新增 `ETW_FLAGS_FULL`（五类全开）与 `ETW_FLAGS_REDUCED`（0，驱动接管后关闭
+    重复类别）；EtwSession::new 接收 flags。
+  - EtwService 新增 `enable_flags` 字段 + `restart_with_flags(ctx, flags)`（幂等、
+    失败回滚旧 flags）+ `current_flags` 诊断。
+  - ProcessLifecycleService：start 驱动接管成功后切换 `ETW_FLAGS_REDUCED`；
+    **TAMPERED 告警（驱动失联）时恢复 `ETW_FLAGS_FULL`**（§4.5 回退路径）；
+    均失败仅日志（降级不阻断）。
+  - UI 进程 `build_etw_service_context` 补充注册 EtwService（从 Tauri state 桥接），
+    独立模式降噪同样生效。
+- **TAMPERED 失明路径 VM 实测**（probe-tamper-test.cs）：attach 驱动 → 2 轮探针 →
+  驱动失效（sc stop 后事件泵挂起）→ 探针连续 5 轮 miss → **TAMPERED-DETECTED
+  （EXIT-CODE=0）**。验证了"驱动失效 → 探针失明检测"端到端语义。
+  补充：干净重启 + 零 SET_FILTER 操作下探针 **4/4 回报**（延迟 <110ms）——驱动
+  正常运行不失效；此前一次 0/4 是测试残留的 DROP cmd.exe 过滤规则污染（SET_FILTER
+  整表残留），清空后恢复。
+- **sc stop 1052 澄清**：内核驱动（含 AnXinProcMon 与 Windows 内置 fltmgr/tcpip）
+  不能通过 sc stop 停止（SCM 对 KERNEL_DRIVER 返回 1052/1051）——Windows 标准
+  行为，非 ProcMon 缺陷（DriverUnload 已注册且有效，dumpbin 确认；卸载走
+  VUL-101 的 SYSTEM 计划任务 + PFRO 方案）。INF 与 driver_install_service.rs
+  的错误注释（"卸载经 sc stop"）已修正。
+- **WFP filter 顺序真机验证**（netsh wfp show state 双驱动环境分析）：
+  ALE_AUTH_CONNECT_V4/V6 层，ProcMon 采集 filter（name "AnXinProcNetV4/V6 Filter"，
+  **effectiveWeight=0x0000FFFFFFFFFFFF**，CALLOUT_INSPECTION）**先于** NetFilter
+  拦截 filter（"AnXin ALE Connect v4/v6 Filter"，effectiveWeight=0，
+  CALLOUT_TERMINATING）——§3.7/§13.6 顺序保证成立。
+- 全量测试 377/377（新增 DROP_MARKER 触发纠偏、行为事件 normalize、
+  filetime→RFC3339、IPv4/IPv6 格式化等 7 个单测）。
+
+**计划/假设 / 风险**
+
+- 规则引擎适配（驱动事件 → EtwRuleEngine 的 provider/opcode 映射 + 拦截/风险分析
+  汇入）未做——当前行为事件只入 events 表（前端可见），规则命中/拦截走既有 ETW
+  链路。契约 §4.3 标注"规则可能需微调（P4 验证项）"，属后续收口。
+- sc stop 1052 为 testsigning 环境所有 AnXin 驱动统一行为（与 VUL-101 卸载走
+  重启删键一致），非 ProcMon 缺陷。
+- ETW 降噪的实际事件量对比（驱动在线 vs 全量）未做量化测量（需 VM 双模式采样）。
+
 
 > ⚠️ **2026-08-07 状态变更**：AnXinHypervisor 开发已**暂缓（冻结）**，原因是
 > **没有可以验证的物理机**。下文 2026-07-30 区块描述的能力为**代码层面完成、硬件
@@ -416,17 +683,22 @@
   `--install-driver file` 创建文件系统驱动服务和 minifilter 实例。保护服务连接
   `\AnXinFileProtectPort`，向驱动登记安装目录等 NT 路径。
 - `AnXinNetFilter.sys` 的用户态连接、握手、规则下发、配置下发、倒置调用事件泵与裁决链
-  已存在；断连或未启用时驱动恢复全放行。但它尚未进入 Tauri resources、`DriverKind`
-  或 NSIS 安装/卸载链，当前产品安装包不会部署该驱动，只能手工安装。
+  已存在；断连或未启用时驱动恢复全放行。~~但它尚未进入 Tauri resources、`DriverKind`
+  或 NSIS 安装/卸载链，当前产品安装包不会部署该驱动，只能手工安装。~~
+  **2026-08-14/15 更新**：AnXinNetFilter.sys 已纳入 `tauri.conf.json` bundle resources、
+  `DriverKind::NetworkFilter` 与 NSIS 安装/卸载链，生产安装包会部署它（见上方已集成章节）。
 
 **未验证与发布阻断项**
 
 - 三个 `.sys` 的 Authenticode 状态均为 `NotSigned`。当前终端非管理员，本轮没有安装、
   加载或操作驱动，也没有运行进程句柄、文件拦截、WFP callout、DNS/SNI 或限速真机测试；
   编译成功不能外推为驱动可加载或安全功能可用。
-- `config/firewall_rules.json` 未进入 bundle resources，生产包可能静默回落为空规则表。
-- 防火墙首次启用顺序、进程驱动失败连带跳过文件路径登记、以及两个驱动仅按同名可执行文件
-  授权的问题仍为 Open，分别见 VUL-040、VUL-041（VUL-038 已于 2026-07-28 修复）。
+- ~~`config/firewall_rules.json` 未进入 bundle resources，生产包可能静默回落为空规则表。~~
+  **2026-08 更新**：`config/firewall_rules.json` 已进入 `tauri.conf.json` bundle resources。
+- ~~防火墙首次启用顺序、进程驱动失败连带跳过文件路径登记、以及两个驱动仅按同名可执行文件
+  授权的问题仍为 Open，分别见 VUL-040、VUL-041（VUL-038 已于 2026-07-28 修复）。~~
+  **2026-08 更新**：VUL-040（防火墙首次启用死锁/状态漂移）已 Fixed；VUL-038 已 Fixed。
+  VUL-041（进程驱动失败连带跳过文件路径登记）仍 Open。
 
 **本轮验证命令**
 
@@ -656,8 +928,9 @@ std 的 Mutex 不可重入，若回归会直接挂死而非断言失败。因此
    签发 CA 为 Thawte Code Signing CA - G2，证书有效期 2014 年且无 RFC3161 时间戳。
    这是普通代码签名证书，既非 EV 也无微软 attestation，**Win10 1607+ 上必然加载失败**。
    该证书来路需要先查清（第三方公司 + 已过期，存在合规风险）。
-2. **安装链仍不完整**：进程与文件驱动已进入 resources 和 NSIS 安装/卸载流程；
-   `AnXinNetFilter.sys` 仍未进入 resources、`DriverKind` 或 NSIS，生产安装包不会部署它。
+2. ~~安装链仍不完整：进程与文件驱动已进入 resources 和 NSIS 安装/卸载流程；
+   `AnXinNetFilter.sys` 仍未进入 resources、`DriverKind` 或 NSIS，生产安装包不会部署它。~~
+   **2026-08-14/15 更新**：AnXinNetFilter.sys 已完成 NSIS 集成（`build/nsis-hooks.nsh` 释放 + `sc create` 注册 + 卸载清理），`DriverKind::NetworkFilter` 已加入 `driver_install_service.rs`，生产安装包会部署它。AnXinProcMon.sys 同步完成 NSIS 集成。四驱动均已纳入安装包。
 3. **系统级 WDK 仍未安装**：2026-07-27 已用官方 WDK NuGet 内容完成三个驱动重建，
    但所有产物仍未签名、安装或真机加载；`/INTEGRITYCHECK` 仅完成 PE 标志验证。
 4. 驱动相关目录（`native/driver/`、`native/file_protect/`）与 `utils/driver_client.rs` 在 git 中均未跟踪。
@@ -816,12 +1089,18 @@ std 的 Mutex 不可重入，若回归会直接挂死而非断言失败。因此
 - `Unknown` 不应进入可信基线，这仍是启动快照可信环境的核心语义。
 
 ## 当前待办与风险
+- 【2026-08-14 已收口】AnXinProcMon 的 P4/P5/P6 与遗留项（§4.3 行为事件入库、
+  §4.4 DROP_MARKER 纠偏、§4.5 ETW 降噪与回退、§4.7 生命周期入库、TAMPERED 失明
+  路径实测、WFP filter 顺序真机验证）已全部完成。见上方 2026-08-14 状态快照。
+  下一步：规则引擎适配（驱动事件 → EtwRuleEngine 映射）与 ETW 降噪量化测量。
 - APIHook 源头链路当前只对已经加载 `file_hook_detours.dll` 的源头进程有前置阻断效果；如果攻击/测试注入器生命周期短到 APIHook watcher 还没来得及注入，仍可能绕过这条用户态 Hook 防线。下一步优先补 Microsoft-Windows-Threat-Intelligence 的 `ALLOCVM_REMOTE / WRITEVM_REMOTE / QUEUEUSERAPC_REMOTE / SETTHREADCONTEXT_REMOTE` 等源头事件采集，或评估更低层的内核回调/驱动方案；不要把本轮 APIHook 改动误写成”所有任意注入器都可前置拦截”。
 - 【2026-07-29 已修复】驱动自保 sc delete 绕过问题（VUL-044, High, Fixed）：原对象指针比较无法识别 SCM 打开的同一注册表键，导致 `sc delete` 后重启时服务键被 SCM 删除。已改用 `CmCallbackGetKeyObjectIDEx` 获取稳定 `ULONG_PTR ObjectID` 比较，同一键无论通过什么 handle 打开 ObjectID 都相同。三个驱动已设为 boot-start（`Start=0`），在 SCM 初始化前加载。VM 验证：sc delete 后重启，三个服务键全部存活，驱动正常加载。
 - 【2026-07-28 已修复】`IOCTL_ANXIN_ADD_PID` 缺少调用方授权检查（VUL-043, High, Fixed）：已在 `IOCTL_ANXIN_ADD_PID` 分支入口补充 `IsCallerAuthorizedForWinsta()` 校验，与 REMOVE_PID / CLEAR_PIDS 一致；校验失败返回 `STATUS_ACCESS_DENIED`。
 - 【2026-07-28 已修复】CmCallback `DeleteKey` fail-closed 导致 BSOD：此前注册表回调对无法确认归属的 `DeleteKey` 操作一律拒绝，误阻系统关键注册表操作引发蓝屏。修复为精确匹配目标服务键路径，非目标键一律放行；注册表保护不再对非目标操作 fail-closed。
 
 优先级按”安全收益高、改动边界清楚、误报成本可控”排序。
+
+- **【2026-08-13 新增，最高优先】驱动自保专项测试暴露 8 个 Open 漏洞（VUL-096~VUL-103）**：webview 进程可被整体终止（VUL-096，根因 isChildOfProtected 漏查 pending 队列）；安装目录文件运行期未受文件保护，exe 未运行时可删除/覆盖（VUL-097）；服务键注册表保护仅 2/4 键生效，AnXinSecurityService/AnXinNetFilter 键可删（VUL-098）；`IOCTL_ANXIN_SET_DIAG` 无授权校验可一键关闭 Ob 自保护（VUL-099，Critical）；进程名伪装即可获内核授权终止受保护进程（VUL-100，Critical）；卸载器重启一次后残留 3 个 .sys（VUL-101）；FpmQueryPaths 诊断挂起（VUL-102）；受保护线程上下文句柄可开（VUL-103）。修复顺序建议：VUL-099/VUL-100（内核授权）→ VUL-096（webview 子进程保护传播）→ VUL-097/VUL-098（文件与注册表运行期保护）→ VUL-101（卸载 .sys 清理）→ VUL-102/VUL-103。
 
 1. 关键进程伪装规则当前硬编码，扩展性有限。短期先维护内置默认列表；未来如果允许用户编辑，必须放入 APPDATA 并复用 DPAPI 运行时存储，不能写回仓库配置。
 2. 2026-06-15 热启动 `npm run dev` 采样中，`ctfmon.exe`、`sihost.exe` 等系统进程未再出现 medium 入队；仍观察到 `facewinunlock-tauri.exe`、`EnergyStarX.exe` 两个第三方进程 medium 入队。它们不再属于“系统进程大量误报”，后续如需继续收敛，应结合新增的拦截日志 `threat/path` 和 payload `signatureStatus` 判断是真未签名还是第三方签名兼容问题。
@@ -871,6 +1150,24 @@ std 的 Mutex 不可重入，若回归会直接挂死而非断言失败。因此
     `STATUS_NOT_SUPPORTED`。
     验证：同一 VM（7b66415c，Win10 IoT LTSC 19044）上重新签名部署后
     `sc start AnXinProcProtect` → STATE: 4 (RUNNING)，无蓝屏。
+20. 【2026-08-13 已验证】`AnXinProcProtect.sys` BSOD 0x139（KERNEL_SECURITY_CHECK_FAILURE /
+    FAST_FAIL_RANGE_CHECK_FAILURE）已定位并修复。根因：`Trace()` 日志辅助函数的数组
+    越界——当 `g_TracePos` 到达 16383（16384 字节的 `g_Trace` 已满）时，原 while 循环
+    虽不再写入，但循环后的 `g_Trace[pos++] = '\n'; g_Trace[pos] = '\0';` 仍执行，
+    `'\0'` 写入索引 16384 越界；/sdl 范围检查触发 `__report_rangecheckfailure` →
+    int 29h → 0x139（崩溃寄存器 rdx=0x4000=16384、rax=0x3fff=16383 印证）。修复内容
+    （`native/driver/src/driver.c`）：`Trace()` 入口增加 `if (pos >= sizeof(g_Trace) - 2)
+    return;` 保护，保证所有写入（含末尾 `'\n'` 与 `'\0'`）都在 16381 以内。dumpbin
+    反汇编验证：入口保护 `cmp edx,3FFEh / jae ret` 位于 RVA 0x2671，/sdl 范围检查
+    `cmp edx,4000h / jae __report_rangecheckfailure` 位于 RVA 0x26B4，已不可达。
+    验证：回滚到 2026-07-30 干净基线，离线清理旧驱动（vm-automation/offline-clean.ps1
+    v9：SYSTEM 任务删除三个服务键并趁挂载 unload，重载 RX_SYSTEM7 确认 PERSISTENCE-OK，
+    磁盘 SYSTEM 已无 AnXin 服务键），创建全新干净基线检查点
+    `CleanBaseline-PreDriverInstall_20260813_0150`，在干净客户机上全新安装嵌入修复驱动
+    的安装器（AnXinSecurity_1.0.0_x64-setup.exe，AnXinProcProtect.sys 34184B /
+    08-12 22:53 签名，SHA256 da3136d9…）：安装完成，AnXinProcProtect / AnXinFileProtect /
+    AnXinSecurityService 均 RUNNING，System 日志无 BugCheck(1001) / Kernel-Power(41) /
+    意外关机(6008) 事件，驱动持续运行 6+ 分钟无蓝屏。
 
 ## 建议验证命令
 
@@ -1522,3 +1819,60 @@ npm run test
 - `--disable-gpu` 使 WebView2 回退软件渲染（SwiftShader）。对 Fluent UI 控制台可用，但低端机器上滚屏/动画的 CPU 占用可能略升；这是“内存换渲染”的明确取舍。未验证真实硬件上的视觉差异。
 - WebView2 的剩余 ~210-280MB 是 Chromium 固有下限，浏览器进程 + renderer 无法通过合法参数进一步压缩（`--single-process` 会破坏进程隔离，对安全产品不可接受）。
 - **standalone 引擎的 139MB 模型内存未被本轮处理**：该内存是 `kvd_create` 加载全部 ONNX 模型的代价，启动快照、文件监控、ETW 风险分析都依赖它。延迟加载会留下“启动后防护未生效”的空窗，故未做。服务模式下 UI 进程本就不加载引擎（引擎在服务进程内），所以部署形态的前端栈已基本只含 WebView2。
+
+### 2026-08-13 驱动自保专项测试：R3 攻击面与卸载链路（Hyper-V 来宾实测）
+
+**测试目标（对应安全需求）**：在 Hyper-V 来宾 `病毒测试` 内，从本地高权限管理员 R3（非物理机）角度验证——除软件自身卸载程序外，任何 R3 手段均不得：终止/卸载驱动、删改驱动文件、删改驱动注册表、删改软件本体/引擎/配置文件、注入/挂起/终止软件进程与 webview 进程；最终只有卸载程序能在重启一次后彻底清除驱动与软件。
+
+**测试基线**：快照 `Post-Install-Pre-SelfProtectTest_20260813_0215`（2026-08-13 04:05，全新安装后）。服务 AnXinSecurityService=Running、AnXinProcProtect/AnXinFileProtect=Running、AnXinNetFilter=Stopped；受保护 PID 3 个（服务 4680 / UI 6140 / spoof helper 1316）。
+
+**攻击向量实测结果（已验证）**
+
+| 分类 | 向量 | 结果 |
+|---|---|---|
+| 驱动终止/卸载 | `sc stop` / NtUnloadDriver（运行中驱动） | 拦截 ✅（1052 无 STOP 控件，WDM 驱动不接受停止） |
+| 驱动卸载 | `sc delete`（运行中驱动） | 拦截 ✅（minifilter CmCallback 拒非授权调用方；仅 1072 标记删除挂起） |
+| 驱动文件 | 删/改/覆盖 `AnXin*.sys`（运行中） | 拦截 ✅（boot-time IsKernelDriverFile 后缀保护） |
+| 驱动注册表 | 改/删 ProcProtect / FileProtect 服务键 | 拦截 ✅（DACL + ObjectID CmCallback） |
+| 软件进程 | taskkill/TerminateProcess/NtSuspendProcess/NtSuspendThread/DebugActiveProcess | 拦截 ✅ |
+| 注入 | CreateRemoteThread / QueueUserAPC / VirtualAllocEx+WriteProcessMemory | 拦截 ✅（句柄被剥离，均失败） |
+| minifilter 端口 | 非 anxin-security.exe 调用者 FilterConnectCommunicationPort | 拦截 ✅ |
+
+**已确认缺陷（违反需求，已记入 buglist.md VUL-096~VUL-103，现已全部 Fixed，修复后重测见下节）**
+
+| 缺陷 | 实测证据 | 漏洞号 |
+|---|---|---|
+| webview 进程未受保护 | `taskkill /f /im msedgewebview2.exe` 一次性终止全部 7 个 webview 进程（根因：isChildOfProtected 只查已提升列表不查 pending 队列，2s 提升窗口内子进程永不受保护） | VUL-096 (High) |
+| 安装目录文件保护运行期未生效 | exe 未运行时 `del` 直接成功、echo 覆盖成功（minifilter 仅保护 .sys，运行时 FpmAddPath 注册静默失败） | VUL-097 (High) |
+| 服务键注册表保护仅 2/4 键生效 | AnXinSecurityService 键 `reg delete` 成功；AnXinNetFilter 键停止时 `sc delete` 成功（部署 .sys 内嵌 4 键字符串但运行时只保护 2 键） | VUL-098 (High) |
+| SET_DIAG 无授权校验 | `IOCTL_ANXIN_SET_DIAG=0xF` 后 taskkill 成功终止受保护 PID，置 0 恢复 | VUL-099 (Critical) |
+| 进程名伪装获内核授权 | 复制 powershell 命名为 anxin-security.exe（C:\Windows\Temp），成功终止服务 4680 + UI 6140 | VUL-100 (Critical) |
+| 卸载残留 .sys | `uninstall.exe /S` 退出 0；重启一次后 4 服务全 1060、安装目录/卸载项清除，但 3 个 .sys 残留（重启删除登记被仍加载的 minifilter 拦截，PendingFileRenameOperations 无条目） | VUL-101 (Medium) |
+| FpmQueryPaths 挂起 | `--query-protected-paths` 无响应，调用方永久阻塞 | VUL-102 (Low) |
+| 线程上下文句柄可开 | 受保护线程 OpenThread(GET/SET_CONTEXT) 成功 | VUL-103 (Low) |
+
+**卸载链路（唯一成功入口，已验证）**：`uninstall.exe /S` → NSIS PREUNINSTALL → `anxin-security.exe --uninstall-drivers`（清 PID 保护列表 → 按序停止/删除 4 服务 → 删 .sys 或安排重启删除）→ sc stop/delete AnXinSecurityService → 删除安装目录与卸载入口 → 重启。实测卸载器成功删除软件 + 4 服务，但 **3 个 .sys 文件残留**（VUL-101）。
+
+**来宾当前状态**：软件已卸载（处于"彻底卸载后"态，4 服务 1060、无驱动加载、3 个 .sys 残留可手动 del）。如需恢复安装态，可回滚快照 `Post-Install-Pre-SelfProtectTest_20260813_0215`。
+
+**待办 / 风险**：VUL-096~VUL-103 修复（webview 子进程保护传播、安装目录 boot-time 硬编码保护、服务键 DACL 4 键全覆盖、SET_DIAG/Ob 授权路径校验、卸载 .sys 重启删除改 RunOnce/ScheduledTask、FpmQueryPaths 修复、线程上下文权限剥离）；修复后需重跑本测试并补测"卸载 + 重启一次全清"。
+
+**2026-08-13 修复后重测（VUL-096~VUL-103 全部 Fixed + T10 卸载收口验证通过）**
+
+修复内容（详细记录见 buglist.md 对应条目）：
+- **VUL-096**：`isChildOfProtected`（driver.c:1637）覆盖 pending 待提升队列，父进程提升窗口内产生的子进程同样登记保护。
+- **VUL-097**：Rust `register_file_protection_paths` 改为独立线程 + 有效回复缓冲（4 + MAX_PROTECTED_PATHS*520*2）+ 8s 超时发送 `FpmAddPath`（原主线程 NULL 缓冲调用在 FLTLIB.DLL 内 AV 崩溃），安装目录运行期注册生效。
+- **VUL-098**：`RegProtectCallback` 改用稳定 ObjectID + 按路径名 `IsRegProtectedKeyPathName` 识别，不依赖 boot 期 ObjectID 缓存，4 服务键运行时全生效。
+- **VUL-099 / VUL-100**：SET_DIAG 与 Ob 授权均改为 `IsCallerFamilyTry`（driver.c:1446/1914）完整路径族系校验，伪装名进程不再获得内核授权。
+- **VUL-101**（本轮重点）：卸载 `stop_and_delete_service` 改用一次性 SYSTEM 计划任务（`schtasks /ru SYSTEM` 执行 `reg delete`）删 4 个服务注册表键。根因双层：① 驱动不注册 DriverUnload → `sc stop` 1052 → `sc delete` 对 RUNNING 服务只标记删除、键不落地，重启后 SCM 读键重载驱动锁 .sys；② 服务键被驱动设 DACL（SYSTEM 全控 / Everyone 只读），管理员 reg delete 被 DACL 拒绝（DACL 检查先于 CmCallback，授权窗口救不了）。SYSTEM 身份满足 DACL + 窗口内 CmCallback 放行 → 删键必达；键删后重启 SCM 不再加载驱动，3 个 .sys 的 PFRO 重启删除成功。
+- **VUL-102**：FpmQueryPaths 驱动侧改紧凑回复格式 + Rust 侧独立线程 + 8s 超时守卫。
+- **VUL-103**：线程 Ob 回调权限剥离集合补入 `THREAD_GET_CONTEXT` / `THREAD_SET_CONTEXT` / `THREAD_QUERY_INFORMATION`（driver.c:245-249）。
+
+**重测自保矩阵（2026-08-13，安装态来宾，新 release 构建后重装）**：
+REG-del 4/4 DENIED、SCM delete 3/3 DENIED、DRV DEL 3/3 DENIED、安装目录 DEL/OVERWRITE/RENAME 全 DENIED、`taskkill` app DENIED、SPOOF-STOP（伪装名进程终止）DENIED、OPEN-THREAD ctx DENIED、POST-DIAG taskkill DENIED；`--query-file-protect` 0.22s 返回（不再挂起）。SET_DIAG：非授权（test）进程连驱动设备都被 DACL 拒绝（设备访问本身即被拦，IOCTL 无法发出）。webview 因 PS Direct Session 0 限制无法在本轮初始化，VUL-096 由前轮验证通过。
+
+**T10 卸载 + 重启一次全清（收口验证，2026-08-13 通过）**：`uninstall.exe /S` → 卸载完成（安装目录、卸载项、AnXinSecurityService 清除）；PFRO 登记 6 条 AnXin*.sys 重启删除；3 驱动服务键被 schtasks SYSTEM 任务删除（卸载后检查为 STOP_PENDING）；重启一次后 `post-reboot-clean.ps1` 全绿：4 服务 gone、无 AnXin*.sys、安装目录 gone、卸载注册表 gone、无进程、PFRO 已消费。**"只有卸载程序能在重启一次后彻底清除驱动与软件"达成。**
+
+**来宾当前状态**：软件已卸载且彻底干净（4 服务 gone、无 .sys、无安装目录）。恢复安装态可回滚快照 `Post-Install-Pre-SelfProtectTest_20260813_0215` 或重新安装。
+
+**待办 / 风险**：VUL-101 的 schtasks 卸载依赖卸载器以管理员运行（`schtasks /ru SYSTEM` 需提权）；`--query-file-protect` 输出走 stderr 导致 PS Direct 会话捕获为空（低优先，建议改 stdout 便于脚本断言）；其余 Open 漏洞见 buglist.md（VUL-004 隔离擦除、VUL-005 路径遍历、VUL-006 capability 过宽等）。

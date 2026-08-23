@@ -6,7 +6,9 @@
       "directory": "data/behavior",
       "fileName": "anxin_etw_behavior.db",
       "mode": "file"
-    }
+    },
+    "retentionDays": 3,
+    "maxDbBytes": 1073741824
   },
   "behaviorMonitoring": {
     "enabled": true
@@ -71,5 +73,13 @@
       "minHeight": 600,
       "minWidth": 800
     }
+  },
+  "procMonitor": {
+    "enabled": true,
+    "file": true,
+    "registry": true,
+    "network": true,
+    "ipc": true,
+    "etwReduced": true
   }
 }

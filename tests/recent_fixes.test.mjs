@@ -8,7 +8,7 @@ const titleBarSource = readFileSync(resolve(projectRoot, 'src/components/TitleBa
 const settingsPageSource = readFileSync(resolve(projectRoot, 'src/components/SettingsPage.tsx'), 'utf8')
 const configStoreSource = readFileSync(resolve(projectRoot, 'src/stores/configStore.ts'), 'utf8')
 const scanPageSource = readFileSync(resolve(projectRoot, 'src/components/ScanPage.tsx'), 'utf8')
-const trayCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/tray.rs'), 'utf8')
+const trayCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/tray.rs'), 'utf8')
 
 test('TitleBar has proper error handling on window controls', () => {
   // 验证是否使用了 try/catch 包裹窗口操作
@@ -17,9 +17,10 @@ test('TitleBar has proper error handling on window controls', () => {
   assert.match(titleBarSource, /useEffect\(\(\) => \{[\s\S]*appWindow\.isMaximized\(\)\.then\(setIsMaximized\)\.catch\(\(e\) => console\.error\(\'\[TitleBar\] isMaximized failed:\', e\)\)/)
 })
 
-test('TitleBar handles close button properly (minimize to tray)', () => {
-  // 验证关闭按钮的处理逻辑
-  assert.match(titleBarSource, /const handleClose = async \(\) => \{[\s\S]*try \{[\s\S]*const \{ invoke \} = await import\('@tauri-apps\/api\/core'\)[\s\S]*await invoke\('minimize_to_tray'\)[\s\S]*\} catch \{[\s\S]*await appWindow\.hide\(\)[\s\S]*\}/)
+test('TitleBar handles close button properly (exit Main process, split architecture)', () => {
+  // 验证关闭按钮的处理逻辑：三进程拆分后，关闭主窗口 = 退出 Main 进程
+  //  Verify close button logic: after the three-process split, closing the main window exits Main
+  assert.match(titleBarSource, /const handleClose = async \(\) => \{[\s\S]*try \{[\s\S]*const \{ invoke \} = await import\('@tauri-apps\/api\/core'\)[\s\S]*await invoke\('close_main_window'\)[\s\S]*\} catch \{[\s\S]*await appWindow\.hide\(\)[\s\S]*\}/)
 })
 
 test('App lazily loads non-splash pages to reduce startup bundle pressure', () => {
@@ -111,10 +112,12 @@ test('ScanPage has error handling on file/directory selection', () => {
   assert.match(scanPageSource, /const handleSelectFiles = async \(\) => \{[\s\S]*try \{[\s\S]*const selected = await open\([\s\S]*\} catch \(e\) \{[\s\S]*console\.error\(\'\[ScanPage\] Select files failed:\', e\)[\s\S]*\}/)
 })
 
-test('Tauri capabilities file exists with proper permissions', () => {
-  // 验证 Tauri 权限配置文件存在
+test('Tauri capabilities files exist with proper permissions', () => {
+  // 验证 Tauri 权限配置文件存在；拆分后 interception capability 归 Tray crate
+  //  Verify Tauri capability files exist; after the split the interception
+  //  capability lives in the Tray crate
   const capabilitiesPath = resolve(projectRoot, 'src-tauri/capabilities/default.json')
-  const interceptionCapabilitiesPath = resolve(projectRoot, 'src-tauri/capabilities/interception.json')
+  const interceptionCapabilitiesPath = resolve(projectRoot, 'src-tauri/crates/anxin-tray/capabilities/interception.json')
   const capabilitiesSource = readFileSync(capabilitiesPath, 'utf8')
   const interceptionCapabilitiesSource = readFileSync(interceptionCapabilitiesPath, 'utf8')
   const capabilities = JSON.parse(capabilitiesSource)

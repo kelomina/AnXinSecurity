@@ -1,0 +1,19 @@
+[package]
+name = "anxin-tray"
+version = "1.0.0"
+description = "AnXin Security - tray process (tray icon, interception window, exit prompt)"
+authors = ["AnXin Security Team"]
+edition = "2021"
+
+[[bin]]
+name = "AnXinTray"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2.0", features = [] }
+
+[dependencies]
+anxin-core = { path = "../anxin-core" }
+tauri = { version = "2.0", features = ["tray-icon", "image-ico"] }
+tauri-plugin-single-instance = "2.0"
+serde_json = "1.0"

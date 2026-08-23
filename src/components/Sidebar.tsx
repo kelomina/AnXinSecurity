@@ -88,6 +88,7 @@ const Sidebar: React.FC = () => {
     { id: 'scan', labelKey: 'nav_scan', icon: Search },
     { id: 'quarantine', labelKey: 'nav_quarantine', icon: ShieldAlert },
     { id: 'behavior', labelKey: 'nav_behavior', icon: Activity },
+    { id: 'process-lifecycle', labelKey: 'nav_process_lifecycle', icon: Activity },
     { id: 'firewall', labelKey: 'nav_firewall', icon: Firewall },
     { id: 'settings', labelKey: 'nav_settings', icon: Settings },
   ]

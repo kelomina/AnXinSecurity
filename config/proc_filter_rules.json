@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "AnXinProcMon 默认过滤表（§6 契约）。命中 DROP 的事件不入队列，用于收敛高频低价值噪音、防止行为队列积压。安全关键路径不在此列表（防 Phantom DLL 等由驱动内置防呆与用户态 TrustService 处理）。",
+  "rules": [
+    {
+      "type": "file_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\Windows\\WinSxS\\"
+    },
+    {
+      "type": "file_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\Windows\\servicing\\"
+    },
+    {
+      "type": "file_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\Windows\\Temp\\"
+    },
+    {
+      "type": "file_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\Windows\\Prefetch\\"
+    },
+    {
+      "type": "file_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\ProgramData\\Microsoft\\Windows\\"
+    },
+    {
+      "type": "reg_key_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\"
+    },
+    {
+      "type": "reg_key_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\"
+    },
+    {
+      "type": "proc_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\Windows\\System32\\svchost.exe"
+    },
+    {
+      "type": "proc_path_prefix",
+      "action": "drop",
+      "flags": "case_insensitive",
+      "name": "C:\\Windows\\System32\\conhost.exe"
+    }
+  ]
+}

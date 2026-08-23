@@ -295,3 +295,6 @@ public/
 .lock
 .cursorignore
 .cursorindexingignore
+
+# Tauri generated schemas (build artifacts)
+src-tauri/crates/anxin-tray/gen/

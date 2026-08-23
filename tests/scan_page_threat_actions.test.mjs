@@ -11,20 +11,20 @@ const configApiSource = readFileSync(resolve(projectRoot, 'src/api/config.ts'), 
 const configStoreSource = readFileSync(resolve(projectRoot, 'src/stores/configStore.ts'), 'utf8')
 const scannerStoreSource = readFileSync(resolve(projectRoot, 'src/stores/scannerStore.ts'), 'utf8')
 const quarantineApiSource = readFileSync(resolve(projectRoot, 'src/api/quarantine.ts'), 'utf8')
-const configModelSource = readFileSync(resolve(projectRoot, 'src-tauri/src/models/config.rs'), 'utf8')
-const allowlistCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/allowlist.rs'), 'utf8')
-const exclusionsCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/exclusions.rs'), 'utf8')
-const runtimeListStoreSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/runtime_list_store.rs'), 'utf8')
-const pathPolicyServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/path_policy_service.rs'), 'utf8')
-const scannerCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/scanner.rs'), 'utf8')
-const snapshotCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/snapshot.rs'), 'utf8')
-const processScannerServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/process_scanner_service.rs'), 'utf8')
-const fileMonitorServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/file_monitor_service.rs'), 'utf8')
-const processMonitorServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/process_monitor_service.rs'), 'utf8')
-const snapshotServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/snapshot_service.rs'), 'utf8')
+const configModelSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/models/config.rs'), 'utf8')
+const allowlistCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/allowlist.rs'), 'utf8')
+const exclusionsCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/exclusions.rs'), 'utf8')
+const runtimeListStoreSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/runtime_list_store.rs'), 'utf8')
+const pathPolicyServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/path_policy_service.rs'), 'utf8')
+const scannerCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/scanner.rs'), 'utf8')
+const snapshotCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/snapshot.rs'), 'utf8')
+const processScannerServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/process_scanner_service.rs'), 'utf8')
+const fileMonitorServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/file_monitor_service.rs'), 'utf8')
+const processMonitorServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/process_monitor_service.rs'), 'utf8')
+const snapshotServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/snapshot_service.rs'), 'utf8')
 const appSource = readFileSync(resolve(projectRoot, 'src/App.tsx'), 'utf8')
 const interceptionModalSource = readFileSync(resolve(projectRoot, 'src/components/InterceptionModal.tsx'), 'utf8')
-const scanResultCacheServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/scan_result_cache_service.rs'), 'utf8')
+const scanResultCacheServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/scan_result_cache_service.rs'), 'utf8')
 const readmeSource = readFileSync(resolve(projectRoot, 'README.md'), 'utf8')
 const zhI18nSource = readFileSync(resolve(projectRoot, 'config/i18n/zh-CN.json'), 'utf8')
 const enI18nSource = readFileSync(resolve(projectRoot, 'config/i18n/en-US.json'), 'utf8')
@@ -37,10 +37,12 @@ const globalCssSource = readFileSync(resolve(projectRoot, 'src/styles/global.css
 const quarantinePageSource = readFileSync(resolve(projectRoot, 'src/components/QuarantinePage.tsx'), 'utf8')
 const mainTsxSource = readFileSync(resolve(projectRoot, 'src/main.tsx'), 'utf8')
 const interceptionWindowAppSource = readFileSync(resolve(projectRoot, 'src/components/InterceptionWindowApp.tsx'), 'utf8')
-const interceptionWindowServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/interception_window_service.rs'), 'utf8')
-const interceptionServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/src/services/interception_service.rs'), 'utf8')
+const interceptionWindowServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/interception_window_service.rs'), 'utf8')
+const interceptionServiceSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/interception_service.rs'), 'utf8')
 const defaultCapabilitySource = readFileSync(resolve(projectRoot, 'src-tauri/capabilities/default.json'), 'utf8')
-const interceptionCapabilitySource = readFileSync(resolve(projectRoot, 'src-tauri/capabilities/interception.json'), 'utf8')
+// 拆分后 interception capability 随拦截窗口归属迁移到 Tray crate
+//  After the split the interception capability moved with the window into the Tray crate
+const interceptionCapabilitySource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-tray/capabilities/interception.json'), 'utf8')
 const interceptionPayloadSource = readFileSync(resolve(projectRoot, 'src/utils/interceptionPayload.ts'), 'utf8')
 
 test('ScanPage only renders clear and trust actions inside the threat-result branch', () => {
@@ -323,12 +325,20 @@ test('Process and startup scans use cached engine results for process modules', 
   assert.match(snapshotServiceSource, /ordered_results\.sort_by_key/)
   assert.match(snapshotServiceSource, /Slow scan warning/)
   assert.match(snapshotServiceSource, /SnapshotScanOptions/)
-  assert.match(tauriMainSource, /startup_snapshot_slow_warn_ms/)
-  assert.match(tauriMainSource, /module_enumeration_access_denied/)
-  assert.match(tauriMainSource, /target_scan_timeout_ms: config\.scanner\.timeout_ms/)
-  assert.match(tauriMainSource, /startup_signature_verify_timeout_ms/)
-  assert.match(tauriMainSource, /startup_signature_verify_concurrency/)
-  assert.match(tauriMainSource, /startup_module_enumeration_timeout_ms/)
+  // 拆分后：启动快照的配置接线与执行归属服务进程（windows_service.rs），
+  // Main 仅保留 UI 与 IPC 桥接。
+  //  After the split: startup-snapshot config wiring and execution belong to the
+  //  service process (windows_service.rs); Main keeps only UI and the IPC bridge.
+  const windowsServiceSource = readFileSync(
+    resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/windows_service.rs'),
+    'utf8',
+  )
+  assert.match(windowsServiceSource, /startup_snapshot_slow_warn_ms/)
+  assert.match(snapshotServiceSource, /module_enumeration_access_denied/)
+  assert.match(windowsServiceSource, /target_scan_timeout_ms: config\.scanner\.timeout_ms/)
+  assert.match(windowsServiceSource, /startup_signature_verify_timeout_ms/)
+  assert.match(windowsServiceSource, /startup_signature_verify_concurrency/)
+  assert.match(windowsServiceSource, /startup_module_enumeration_timeout_ms/)
   assert.match(configModelSource, /startup_snapshot_slow_warn_ms: u64/)
   assert.match(configModelSource, /startup_module_enumeration_timeout_ms: u64/)
   assert.match(configModelSource, /startup_signature_verify_timeout_ms: u64/)
@@ -390,8 +400,10 @@ test('Process and startup scans use cached engine results for process modules', 
   assert.match(snapshotServiceSource, /if module_signature_untrusted && !module_scan_was_malicious \{[\s\S]*?Unsigned module observed without malware verdict/)
   assert.doesNotMatch(snapshotServiceSource, /enqueue_startup_signature_interception\([\s\S]*?"module",[\s\S]*?&module_path/)
   assert.match(processScannerServiceSource, /pub\(crate\) fn query_process_image_path/)
-  assert.match(tauriMainSource, /startup_revocation_check_timeout_ms/)
-  assert.match(tauriMainSource, /startup_revocation_check_concurrency/)
+  // 拆分后：快照吊销检查接线归属服务进程
+  //  After the split: snapshot revocation-check wiring belongs to the service process
+  assert.match(windowsServiceSource, /startup_revocation_check_timeout_ms/)
+  assert.match(windowsServiceSource, /startup_revocation_check_concurrency/)
   assert.match(configModelSource, /startup_revocation_check_timeout_ms: u64/)
   assert.match(configModelSource, /startup_revocation_check_concurrency: usize/)
 
@@ -442,10 +454,12 @@ test('Interception modal overlay enables pointer events while visible', () => {
 
 test('Interception alerts render in an independent focused window', () => {
   assert.match(mainTsxSource, /getCurrentWindow\(\)/)
-  // 分派拆成 isInterceptionWindow + RootComponent 两行，仍然锁「按窗口 label 选根组件」
-  //  Split into isInterceptionWindow + RootComponent; still locks label-driven root selection
-  assert.match(mainTsxSource, /const isInterceptionWindow = currentWindow\.label === 'interception'/)
-  assert.match(mainTsxSource, /const RootComponent = isInterceptionWindow \? InterceptionWindowApp : App/)
+  // 按窗口 label 选择根组件：主界面 App、拦截弹窗、退出确认（Tray 进程窗口）
+  //  Label-driven root selection: main app, interception window, exit-confirm (Tray process)
+  assert.match(mainTsxSource, /const isInterceptionWindow = windowLabel === 'interception'/)
+  assert.match(mainTsxSource, /const isExitConfirmWindow = windowLabel === 'exit-confirm'/)
+  assert.match(mainTsxSource, /RootComponent = InterceptionWindowApp/)
+  assert.match(mainTsxSource, /RootComponent = ExitConfirmWindowApp/)
   assert.match(interceptionWindowAppSource, /listen<Record<string, unknown>>\('process-intercepted'/)
   assert.match(interceptionWindowAppSource, /cleanupEventListener/)
   assert.match(interceptionWindowAppSource, /Event listener registration failed/)
@@ -479,9 +493,15 @@ test('Interception alerts render in an independent focused window', () => {
   assert.match(interceptionServiceSource, /fn show_interception_window\(&self\) -> Result<\(\), String> \{[\s\S]*show_interception_window\(self\)/)
   assert.match(interceptionServiceSource, /\.emit_to\("interception", "process-intercepted"/)
   assert.doesNotMatch(interceptionServiceSource, /app_handle\.emit\("process-intercepted"/)
-  // 重构后 setup 里持有的是 app_handle 而非 app，函数本身与语义不变
-  //  After the refactor setup holds app_handle rather than app; the call and its meaning are the same
-  assert.match(tauriMainSource, /prepare_interception_window\(&app_handle\)/)
+  // 拆分后：拦截窗口的预建职责归 Tray 进程（crates/anxin-tray/src/main.rs），
+  // capability 文件也随窗口归属迁移到 Tray crate 的 capabilities 目录。
+  //  After the split: preparing the interception window belongs to the Tray process;
+  //  the capability file moved with it into the Tray crate's capabilities directory.
+  const trayMainSource = readFileSync(
+    resolve(projectRoot, 'src-tauri/crates/anxin-tray/src/main.rs'),
+    'utf8',
+  )
+  assert.match(trayMainSource, /prepare_interception_window\(&app_handle\)/)
   assert.match(defaultCapabilitySource, /"windows": \["main"\]/)
   assert.match(interceptionCapabilitySource, /"identifier": "interception"/)
   assert.match(interceptionCapabilitySource, /"windows": \["interception"\]/)
@@ -522,7 +542,7 @@ test('Interception alerts render in an independent focused window', () => {
 })
 
 test('Interception commands use the managed Arc service so queue rotation can continue', () => {
-  const interceptionCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/src/commands/interception.rs'), 'utf8')
+  const interceptionCommandSource = readFileSync(resolve(projectRoot, 'src-tauri/crates/anxin-core/src/commands/interception.rs'), 'utf8')
 
   assert.match(tauriMainSource, /let interception_service = Arc::new\(InterceptionService::new\(\)\)/)
   assert.match(tauriMainSource, /app\.manage\(interception_service\.clone\(\)\)/)
@@ -590,44 +610,34 @@ test('Behavior SQLite database uses app data instead of repository runtime paths
   assert.doesNotMatch(tauriMainSource, /let mut db_root = std::env::current_dir/)
 })
 
-test('File hook pipe receiver starts during app setup before active watchers', () => {
-  assert.match(tauriMainSource, /let hook_service = HookService::new\(\)/)
-  // HookService 已解耦 AppHandle，改为接收 ServiceContext
-  //  HookService is decoupled from AppHandle and now takes a ServiceContext
-  assert.match(tauriMainSource, /\.start\("anxin_security_filehook", hook_ctx\)/)
-  assert.match(tauriMainSource, /Failed to start file hook pipe service/)
-  assert.match(tauriMainSource, /hook_pipe_service_started/)
-  // 管道启动失败必须留下可追查记录（诊断条目 + 带错误码的 stderr），
-  // 不能只是一行没人看的控制台输出。原断言写死了 pipeError=2 这个具体错误码，
-  // 锁的应该是"失败被记录"而不是"失败恰好是 2 号错误"。
-  //  A pipe start failure must leave a traceable record (diagnostic entry plus stderr carrying the
-  //  error), not just an unseen console line. The old assertion hardcoded error code 2; what
-  //  matters is that failures are recorded, not that the failure happens to be error 2.
-  assert.match(tauriMainSource, /"hook_pipe_service_failed"/)
-  assert.match(tauriMainSource, /"pipeError": e\.to_string\(\)/)
-  assert.match(tauriMainSource, /Failed to start file hook pipe service: pipeError=\{\}/)
-  // 同上：setup 里持有的是 app_handle，托管动作与语义不变
-  //  As above: setup holds app_handle; the managed state and its meaning are unchanged
-  assert.match(tauriMainSource, /app_handle\.manage\(Arc::new\(hook_service\)\)/)
+test('File hook pipe receiver starts in the service process (split architecture)', () => {
+  // 拆分后：文件钩子管道服务端由服务进程启动（原 Main setup 职责迁移），
+  // HookService 在 build_service_context 中构造并注册进 ServiceContext。
+  //  After the split: the file-hook pipe server is started by the service process
+  //  (migrated from Main's setup); HookService is constructed and registered into
+  //  ServiceContext by build_service_context.
+  const windowsServiceSource = readFileSync(
+    resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/windows_service.rs'),
+    'utf8',
+  )
+  assert.match(windowsServiceSource, /hook_service\.start\(FILE_HOOK_PIPE_NAME, ctx\.clone\(\)\)/)
+  assert.match(windowsServiceSource, /Failed to start file hook service/)
+  assert.match(windowsServiceSource, /File hook pipe service started/)
 })
 
-test('New-process scanner starts before the full startup snapshot while APIHook remains after it', () => {
-  const processScannerManageIndex = tauriMainSource.indexOf('let process_scanner = ProcessScannerService::new()')
-  const scannerStartCallIndex = tauriMainSource.indexOf('start_runtime_process_scanner_before_snapshot(', processScannerManageIndex)
-  // 快照任务的 AppHandle 变量已随 background_init 重构消失，
-  // 改用 take_startup_snapshot 本身作为锚点——真正要锁的是三者的先后顺序。
-  //  The snapshot task's AppHandle variable disappeared in the background_init refactor; anchor on
-  //  take_startup_snapshot itself, since the ordering is what actually matters.
-  const takeSnapshotIndex = tauriMainSource.indexOf('.take_startup_snapshot(', scannerStartCallIndex)
-  const apiHookStartCallIndex = tauriMainSource.indexOf('start_apihook_process_watcher_after_snapshot(', takeSnapshotIndex)
-
-  assert.notEqual(processScannerManageIndex, -1)
-  assert.ok(scannerStartCallIndex > processScannerManageIndex)
-  assert.ok(takeSnapshotIndex > scannerStartCallIndex)
-  assert.ok(apiHookStartCallIndex > takeSnapshotIndex)
-  assert.match(tauriMainSource, /Process scanner started before startup snapshot/)
-  assert.match(tauriMainSource, /APIHook process watcher started after startup snapshot/)
-  assert.doesNotMatch(tauriMainSource, /Process scanner started after startup snapshot/)
+test('New-process scanning and APIHook watcher are owned by the protection runtime, not Main', () => {
+  // 拆分后：Main 不再启动新进程扫描器与 APIHook watcher；
+  // 服务进程负责 APIHook 注入监视（无 GUI 弹窗通道，故不运行新进程恶意扫描器）。
+  //  After the split: Main no longer starts the new-process scanner or the APIHook
+  //  watcher; the service process owns APIHook injection watching (it does not run
+  //  the new-process malware scanner, which needs a GUI prompt channel).
+  assert.doesNotMatch(tauriMainSource, /start_runtime_process_scanner_before_snapshot\(/)
+  assert.doesNotMatch(tauriMainSource, /start_apihook_process_watcher_after_snapshot\(/)
+  const windowsServiceSource = readFileSync(
+    resolve(projectRoot, 'src-tauri/crates/anxin-core/src/services/windows_service.rs'),
+    'utf8',
+  )
+  assert.match(windowsServiceSource, /Process monitor \(APIHook\) started/)
 })
 
 test('Quarantine table keeps status and action controls readable', () => {

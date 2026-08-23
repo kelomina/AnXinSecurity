@@ -5,15 +5,24 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import ErrorBoundary from './components/ErrorBoundary'
 import App from './App'
 import InterceptionWindowApp from './components/InterceptionWindowApp'
+import ExitConfirmWindowApp from './components/ExitConfirmWindowApp'
 import { customLightTheme, customDarkTheme } from './theme/customTheme'
 import './styles/global.css'
 
 const currentWindow = getCurrentWindow()
-const isInterceptionWindow = currentWindow.label === 'interception'
-const RootComponent = isInterceptionWindow ? InterceptionWindowApp : App
+const windowLabel = currentWindow.label
+const isInterceptionWindow = windowLabel === 'interception'
+const isExitConfirmWindow = windowLabel === 'exit-confirm'
+
+let RootComponent: React.FC = App
+if (isInterceptionWindow) {
+  RootComponent = InterceptionWindowApp
+} else if (isExitConfirmWindow) {
+  RootComponent = ExitConfirmWindowApp
+}
 
 // 拦截窗口标记：用于全局 CSS 覆盖 Fluent Dialog 默认 padding/backdrop
-if (isInterceptionWindow) {
+if (isInterceptionWindow || isExitConfirmWindow) {
   document.body.classList.add('interception-window')
 }
 

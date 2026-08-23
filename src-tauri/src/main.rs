@@ -2,34 +2,24 @@
 //  禁止在 Windows release 构建中弹出控制台窗口，请勿删除！！
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod commands;
-mod models;
-mod services;
-mod utils;
+use anxin_security::commands;
 
-use crate::models::config::AppConfig;
-use crate::services::app_lifecycle_service::AppLifecycleService;
-use crate::services::behavior_service::BehaviorService;
-use crate::services::engine_service::EngineService;
-use crate::services::etw_service::EtwService;
-use crate::services::file_monitor_service::FileMonitorService;
-use crate::services::hook_service::HookService;
-use crate::services::interception_diagnostics_service::append_interception_diagnostic;
-use crate::services::interception_recovery_service::recover_suspended_processes_from_ledger;
-use crate::services::interception_service::InterceptionService;
-use crate::services::interception_window_service::prepare_interception_window;
-use crate::services::ipc_bridge_service::IpcBridgeService;
-use crate::services::privilege_service::PrivilegeService;
-use crate::services::process_monitor_service::ProcessMonitorService;
-use crate::services::process_scanner_service::ProcessScannerService;
-use crate::services::quarantine_service::QuarantineService;
-use crate::services::remote_session_service::RemoteSessionService;
-use crate::services::risk_service::RiskService;
-use crate::services::scan_result_cache_service::ScanResultCacheService;
-use crate::services::snapshot_service::{SnapshotContext, SnapshotScanOptions, SnapshotService};
-use crate::services::tray_service::TrayService;
-use crate::services::trust_service::TrustService;
-use crate::services::windows_service;
+use anxin_security::models::config::AppConfig;
+use anxin_security::services::app_lifecycle_service::AppLifecycleService;
+use anxin_security::services::behavior_service::BehaviorService;
+use anxin_security::services::etw_service::EtwService;
+use anxin_security::services::file_monitor_service::FileMonitorService;
+use anxin_security::services::interception_service::InterceptionService;
+use anxin_security::services::ipc_bridge_service::IpcBridgeService;
+use anxin_security::services::privilege_service::PrivilegeService;
+use anxin_security::services::process_monitor_service::ProcessMonitorService;
+use anxin_security::services::process_scanner_service::ProcessScannerService;
+use anxin_security::services::quarantine_service::QuarantineService;
+use anxin_security::services::remote_session_service::RemoteSessionService;
+use anxin_security::services::risk_service::RiskService;
+use anxin_security::services::scan_result_cache_service::ScanResultCacheService;
+use anxin_security::services::snapshot_service::SnapshotService;
+use anxin_security::services::trust_service::TrustService;
 use sqlx::SqlitePool;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -91,6 +81,14 @@ fn resolve_behavior_database_path(config: &AppConfig) -> Result<PathBuf, String>
     }
 
     Ok(database_path)
+}
+
+/// 行为库保留期边界：`now - retention_days` 的 RFC3339 字符串（清理 DELETE 用）。
+///  Behavior-DB retention boundary: RFC3339 string of `now - retention_days`.
+fn behavior_retention_boundary(retention_days: u64) -> String {
+    let now = chrono::Utc::now();
+    let before = now - chrono::Duration::days(retention_days as i64);
+    before.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// 函数名称：migrate_legacy_behavior_database
@@ -155,172 +153,6 @@ fn migrate_legacy_behavior_database(
     Ok(())
 }
 
-/// 函数名称：start_runtime_process_scanner_before_snapshot
-/// 函数作用：在完整启动快照完成前启动新进程恶意扫描器，让新增进程尽早进入实时防护。
-/// Function name: start_runtime_process_scanner_before_snapshot
-/// Purpose: Starts the new-process malware scanner before the full startup snapshot completes so newly created processes are protected early.
-/// 调用方：main setup 初始化完进程扫描服务后。
-/// Called by: main setup after managing ProcessScannerService.
-/// 被调用方：ProcessScannerService::start。
-/// Calls: ProcessScannerService::start.
-/// 参数说明：app_handle 用于读取 Tauri managed state；process_monitoring_enabled 来自启动时配置快照。
-/// Parameters: app_handle reads Tauri managed state; process_monitoring_enabled comes from the startup config snapshot.
-/// 错误处理：缺失 managed state 或启动失败只记录日志，不阻断应用启动。
-/// Error handling: Missing managed state or startup failures are logged and do not abort app startup.
-/// 中文关键词：启动顺序，启动快照，进程扫描，实时防护，防护就绪
-/// English keywords: startup order, startup snapshot, process scanner, realtime protection, protection ready
-fn start_runtime_process_scanner_before_snapshot(
-    app_handle: &tauri::AppHandle,
-    process_monitoring_enabled: bool,
-) {
-    if !process_monitoring_enabled {
-        eprintln!("[main] Process scanner disabled by config");
-        return;
-    }
-
-    match (
-        app_handle.try_state::<ProcessScannerService>(),
-        app_handle.try_state::<Arc<EngineService>>(),
-        app_handle.try_state::<Arc<ScanResultCacheService>>(),
-        app_handle.try_state::<Arc<InterceptionService>>(),
-    ) {
-        (Some(process_scanner), Some(engine), Some(cache), Some(interception)) => {
-            process_scanner.start(
-                engine.inner().clone(),
-                cache.inner().clone(),
-                interception.inner().clone(),
-                app_handle.clone(),
-                2000,
-            );
-            eprintln!("[main] Process scanner started before startup snapshot");
-        }
-        _ => eprintln!("[main] Failed to start Process scanner: required service not managed"),
-    }
-}
-
-/// 函数名称：start_apihook_process_watcher_after_snapshot
-/// 函数作用：启动快照完成后再启动 APIHook watcher，避免启动快照扫描到本次启动期间由自身注入的 Hook DLL。
-/// Function name: start_apihook_process_watcher_after_snapshot
-/// Purpose: Starts the APIHook watcher after the startup snapshot so the snapshot is not polluted by hook DLLs injected by this app during startup.
-/// 调用方：main setup 的启动快照后台任务。
-/// Called by: startup snapshot background task in main setup.
-/// 被调用方：ProcessMonitorService::start_with_resource_dir。
-/// Calls: ProcessMonitorService::start_with_resource_dir.
-/// 参数说明：app_handle 用于读取 Tauri managed state；process_monitoring_enabled 来自启动时配置快照。
-/// Parameters: app_handle reads Tauri managed state; process_monitoring_enabled comes from the startup config snapshot.
-/// 错误处理：缺失 managed state 或启动失败只记录日志，不阻断应用启动。
-/// Error handling: Missing managed state or startup failures are logged and do not abort app startup.
-/// 中文关键词：启动顺序，启动快照，APIHook，自身注入，误报控制
-/// English keywords: startup order, startup snapshot, APIHook, self injection, false-positive control
-/// 函数名称：start_network_firewall
-/// 函数作用：按配置启动网络防火墙；未启用或驱动缺失时静默跳过。
-/// Function name: start_network_firewall
-/// Purpose: Starts the network firewall per config; skips silently when it is
-///          disabled or the driver is absent.
-/// 调用方：background_init 的独立模式初始化路径。
-/// Called by: the standalone-mode path of background_init.
-/// 被调用方：FirewallService::start。
-/// Calls: FirewallService::start.
-/// 参数说明：app_handle 用于读取 Tauri managed state；config 提供 networkFirewall 段。
-/// Parameters: app_handle reads Tauri managed state; config supplies the networkFirewall section.
-/// 错误处理：驱动未安装是预期情况而非故障 —— 整套防护的其余部分必须照常运行，
-///          因此这里只记录日志，绝不阻断启动。
-/// Error handling: an uninstalled driver is expected, not a fault. The rest of the
-///          protection suite must keep running, so failures are logged only and
-///          never abort startup.
-/// 中文关键词：防火墙启动，可选模块，降级运行，驱动缺失
-/// English keywords: firewall startup, optional module, graceful degradation, missing driver
-fn start_network_firewall(app_handle: &tauri::AppHandle, config: &AppConfig) {
-    if !config.network_firewall.enabled {
-        eprintln!("[main] Network firewall disabled by config");
-        return;
-    }
-
-    let Some(firewall) =
-        app_handle.try_state::<Arc<crate::services::firewall_service::FirewallService>>()
-    else {
-        eprintln!("[main] FirewallService not managed, skipping firewall startup");
-        return;
-    };
-
-    let ctx = crate::services::service_context::build_etw_service_context(app_handle);
-    match firewall.start(ctx, &config.network_firewall) {
-        Ok(()) => eprintln!(
-            "[main] Network firewall started (mode={})",
-            config.network_firewall.mode
-        ),
-        Err(e) => eprintln!(
-            "[main] Network firewall unavailable (non-fatal): {}. \
-             Install and start the AnXinNetFilter driver to enable traffic control.",
-            e
-        ),
-    }
-}
-
-/// 启动元核防护（仅当配置显式启用时）。
-///  Starts hypervisor protection (only when the config explicitly enables it).
-///
-/// 元核防护会改变系统虚拟化姿态，必须由 app.json 的 hypervisorProtection.enabled
-/// 显式打开后才拉起。驱动缺失、服务启动失败、设备连接失败都不是致命错误，
-/// 只打印日志，不影响其他模块启动。
-///  Hypervisor protection alters the system's virtualization posture, so it is
-///  only brought up once hypervisorProtection.enabled is set in app.json. A
-///  missing driver, a service start failure or a device connection failure are
-///  all non-fatal: they are logged and do not block other modules.
-fn start_hypervisor_if_enabled(app_handle: &tauri::AppHandle, config: &AppConfig) {
-    if !config.hypervisor_protection.enabled {
-        eprintln!("[main] Hypervisor protection disabled by config");
-        return;
-    }
-
-    let Some(hypervisor) =
-        app_handle.try_state::<Arc<crate::services::hypervisor_service::HypervisorService>>()
-    else {
-        eprintln!("[main] HypervisorService not managed, skipping hypervisor startup");
-        return;
-    };
-
-    match hypervisor.start() {
-        Ok(status) => eprintln!(
-            "[main] Hypervisor protection started (mode={}, vendor={}, cpus={})",
-            status.modeName, status.cpuVendor, status.cpuCount
-        ),
-        Err(e) => eprintln!(
-            "[main] Hypervisor protection unavailable (non-fatal): {}. \
-             Install AnXinHypervisor driver to enable hypervisor protection.",
-            e
-        ),
-    }
-}
-
-fn start_apihook_process_watcher_after_snapshot(
-    app_handle: &tauri::AppHandle,
-    process_monitoring_enabled: bool,
-) {
-    if !process_monitoring_enabled {
-        eprintln!("[main] APIHook process watcher disabled by config");
-        return;
-    }
-
-    match app_handle.try_state::<ProcessMonitorService>() {
-        Some(process_monitor_service) => {
-            let resource_dir = app_handle.path().resource_dir().ok();
-            match process_monitor_service.start_with_resource_dir(
-                "",
-                "",
-                "",
-                "",
-                2000,
-                resource_dir.as_deref(),
-            ) {
-                Ok(_) => eprintln!("[main] APIHook process watcher started after startup snapshot"),
-                Err(e) => eprintln!("[main] Failed to start APIHook process watcher: {}", e),
-            }
-        }
-        None => eprintln!("[main] Failed to start APIHook process watcher: service not managed"),
-    }
-}
-
 /// 处理安装/卸载程序调用的驱动相关子命令。
 ///  Handles the driver subcommands invoked by the installer and uninstaller.
 ///
@@ -339,7 +171,7 @@ fn start_apihook_process_watcher_after_snapshot(
 /// 中文关键词：命令行，驱动安装，安装程序，卸载，退出码
 /// English keywords: CLI, driver install, installer, uninstall, exit code
 fn handle_driver_cli() -> Option<i32> {
-    use crate::services::driver_install_service::{self, DriverKind};
+    use anxin_security::services::driver_install_service::{self, DriverKind};
 
     let args: Vec<String> = std::env::args().collect();
     let value_after = |flag: &str| -> Option<String> {
@@ -396,7 +228,7 @@ fn handle_driver_cli() -> Option<i32> {
 
     if args.iter().any(|arg| arg == "--query-file-protect") {
         eprintln!("[DriverCLI] Querying file protection driver...");
-        let paths = crate::utils::driver_client::query_file_protection_paths();
+        let paths = anxin_security::utils::driver_client::query_file_protection_paths();
         if paths.is_empty() {
             eprintln!("[DriverCLI] No protected paths found (driver may not be running or path registration failed)");
         } else {
@@ -411,11 +243,77 @@ fn handle_driver_cli() -> Option<i32> {
         return Some(0);
     }
 
+    if args.iter().any(|arg| arg == "--authorize-uninstall") {
+        // 卸载/升级授权：打开 AnXinFileProtect minifilter 的授权窗口（VUL-098/101），
+        // 供 NSIS 在 sc create/Delete /REBOOTOK 前调用。窗口约 15 分钟自动失效。
+        //  Open the minifilter's uninstall/upgrade window (VUL-098/101), invoked by
+        //  NSIS before sc create / Delete /REBOOTOK. Expires after ~15 minutes.
+        match anxin_security::utils::driver_client::authorize_uninstall() {
+            Ok(()) => eprintln!("[DriverCLI] Uninstall window authorized"),
+            Err(err) => eprintln!("[DriverCLI] Could not authorize uninstall window: {err}"),
+        }
+        return Some(0);
+    }
+
     if args.iter().any(|arg| arg == "--uninstall-drivers") {
         // 用户主动卸载：把每一步的结果都打出来，方便卸载日志追查残留
         //  User-initiated uninstall: report every step so leftovers are traceable in the log
         for line in driver_install_service::uninstall_drivers() {
             eprintln!("[DriverCLI] {}", line);
+        }
+        return Some(0);
+    }
+
+    if let Some(kv_arg) = value_after("--set-config") {
+        // 对抗测试：以应用自身进程身份（通过 FileProtect IsCallerAuthorized）写入
+        // 安装目录内的 app.json 配置字段（如 headlessAutoTerminate=true）。
+        //  Antagonist test: write a config field into the in-dir app.json as the app
+        //  process itself (passes FileProtect's IsCallerAuthorized check).
+        //
+        // 提权门禁：写入安装目录内的配置等同改动防护行为，非提权进程不得使用。
+        //  Elevation gate: rewriting in-dir config alters protection behavior, so only
+        //  an elevated process may use this subcommand.
+        if !PrivilegeService::is_elevated() {
+            eprintln!("[DriverCLI] --set-config requires elevation");
+            return Some(1);
+        }
+        let Some((key, value)) = kv_arg.split_once('=') else {
+            eprintln!("[DriverCLI] --set-config expects KEY=VALUE, got: {}", kv_arg);
+            return Some(1);
+        };
+        match AppConfig::set_cli_value(key, value) {
+            Ok(path) => eprintln!(
+                "[DriverCLI] Config {}={} written to {}",
+                key,
+                value,
+                path.display()
+            ),
+            Err(err) => eprintln!("[DriverCLI] Failed to set config {}: {}", kv_arg, err),
+        }
+        return Some(0);
+    }
+
+    if let Some(src_arg) = value_after("--write-etw-rules") {
+        // 对抗测试：以应用自身进程身份（通过 FileProtect IsCallerAuthorized）写入 ETW 规则。
+        // 目标路径通过 AppConfig::resolve_etw_rules_path() 与加载器使用相同候选顺序，
+        // 确保写入与 app.json 同目录（优先 _up_/config），修复写入位置不匹配导致规则不加载的问题。
+        //
+        // 提权门禁：写入安装目录内的规则文件等同改动防护行为，非提权进程不得使用。
+        if !PrivilegeService::is_elevated() {
+            eprintln!("[DriverCLI] --write-etw-rules requires elevation");
+            return Some(1);
+        }
+        let src = std::path::PathBuf::from(&src_arg);
+        if !src.exists() {
+            eprintln!("[DriverCLI] Source not found: {}", src.display());
+            return Some(1);
+        }
+        match anxin_security::models::config::AppConfig::write_etw_rules(&src) {
+            Ok(path) => {
+                let n = std::fs::metadata(&src).map(|m| m.len()).unwrap_or(0);
+                eprintln!("[DriverCLI] ETW rules written: {} -> {} ({} bytes)", src.display(), path.display(), n);
+            }
+            Err(e) => eprintln!("[DriverCLI] Failed to write ETW rules: {}", e),
         }
         return Some(0);
     }
@@ -432,22 +330,13 @@ fn main() {
         std::process::exit(code);
     }
 
-    // 检查是否以服务模式启动（--service 参数）
-    //  Check if launched in service mode (--service argument)
-    if windows_service::is_service_mode() {
-        // 通过 service dispatcher 启动 — SCM 通过 dispatcher 调用 ServiceMain
-        //  Start via service dispatcher - SCM calls ServiceMain via dispatcher
-        if let Err(e) = windows_service::dispatch() {
-            eprintln!("[Service] Fatal error: {}", e);
-            std::process::exit(1);
-        }
-        return;
-    }
-
-    // UI 进程以普通用户权限运行，防护由服务进程（SYSTEM）提供
-    //  UI process runs with normal user privileges; protection is provided by service process (SYSTEM)
-    // 如果服务进程未运行，UI 进程会尝试独立运行（功能受限模式）
-    //  If service process is not running, UI process will try standalone mode (limited functionality)
+    // UI 进程以普通用户权限运行；防护由独立服务进程（AnXinService.exe，SYSTEM）提供。
+    // 服务未运行且本进程提权时，由 background_init 引导拉起前台服务
+    // （见 bootstrap_protection_service_foreground）。
+    //  The UI process runs with normal user privileges; protection is provided by the
+    //  dedicated service process (AnXinService.exe, SYSTEM). When the service is not
+    //  running and this process is elevated, background_init bootstraps the foreground
+    //  service (see bootstrap_protection_service_foreground).
     let is_elevated = PrivilegeService::is_elevated();
     if is_elevated {
         eprintln!("[Main] UI process running with administrator privileges (standalone mode)");
@@ -471,13 +360,6 @@ fn main() {
         .setup(|app| {
             // 注册应用生命周期状态。退出时先设置这个状态，隐藏的拦截窗口就不会再阻止关闭。
             app.manage(AppLifecycleService::new());
-
-            // 初始化托盘（轻量级，可保留在主线程）
-            TrayService::create_tray(app.handle())
-                .map_err(|e| {
-                    eprintln!("Failed to create tray: {}", e);
-                })
-                .ok();
 
             // 初始化配置（轻量级 JSON 读取）
             let config = AppConfig::load().unwrap_or_default();
@@ -541,7 +423,7 @@ fn main() {
             //  app.json. Merely upgrading to a build containing this module must
             //  never start blocking traffic on its own.
             let firewall_service =
-                Arc::new(crate::services::firewall_service::FirewallService::new());
+                Arc::new(anxin_security::services::firewall_service::FirewallService::new());
             app.manage(firewall_service);
 
             // 元核防护服务 — 只注册，不自动启动。
@@ -555,8 +437,20 @@ fn main() {
             //  to a build containing this module must never start virtualizing
             //  on its own.
             let hypervisor_service =
-                Arc::new(crate::services::hypervisor_service::HypervisorService::new());
+                Arc::new(anxin_security::services::hypervisor_service::HypervisorService::new());
             app.manage(hypervisor_service);
+
+            // 进程监控采集服务 — 只注册，不自动启动。
+            //  Process monitor collector - registered only, never auto-started.
+            // 由 background_init 按 app.json 的 procMonitor.enabled 决定是否拉起；
+            // 驱动未安装/加载失败按功能降级处理，不影响其他模块。
+            //  Brought up by background_init when procMonitor.enabled is set in
+            //  app.json; a missing/failed driver degrades the feature without
+            //  affecting the rest of the suite.
+            let process_lifecycle_service = Arc::new(
+                anxin_security::services::process_lifecycle_service::ProcessLifecycleService::new(),
+            );
+            app.manage(process_lifecycle_service);
 
             // 将所有重量级初始化移到后台异步任务，让窗口立即创建显示加载页面
             // Move all heavyweight initialization to background async task so window shows immediately
@@ -607,10 +501,11 @@ fn main() {
             commands::allowlist::add_to_allowlist,
             commands::allowlist::remove_from_allowlist,
             commands::allowlist::add_to_allowlist_batch,
-            // 托盘 (3)
+            // 托盘 (4) — close_main_window 供标题栏关闭按钮退出 Main 进程
             commands::tray::request_exit_confirmation,
             commands::tray::execute_exit,
             commands::tray::minimize_to_tray,
+            commands::tray::close_main_window,
             // 进程控制 (8)
             commands::process::suspend_process,
             commands::process::resume_process,
@@ -656,6 +551,10 @@ fn main() {
             commands::hypervisor::start_hypervisor,
             commands::hypervisor::stop_hypervisor,
             commands::hypervisor::set_hypervisor_enabled,
+            // 进程生命周期监控 (3) — 新增
+            commands::process_lifecycle::get_proc_monitor_health,
+            commands::process_lifecycle::get_process_tree,
+            commands::process_lifecycle::list_lifecycle_events,
             // 风险分析 (1) — 新增
             commands::risk::get_risk_status,
             // 进程快照 (2) — 新增
@@ -692,8 +591,8 @@ fn main() {
             commands::privilege::get_privilege_status,
             commands::privilege::is_protection_available,
             // IPC 桥接 (2) — 前后端分离
-            crate::services::ipc_bridge_service::commands::is_ipc_connected,
-            crate::services::ipc_bridge_service::commands::get_protection_status,
+            anxin_security::services::ipc_bridge_service::commands::is_ipc_connected,
+            anxin_security::services::ipc_bridge_service::commands::get_protection_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -713,20 +612,6 @@ fn main() {
             }
             _ => {}
         });
-}
-
-async fn start_etw_monitoring(app_handle: tauri::AppHandle) -> Result<(), String> {
-    use crate::services::etw_service::EtwService;
-
-    let etw_state = app_handle
-        .try_state::<Arc<Mutex<EtwService>>>()
-        .ok_or("EtwService not managed")?;
-
-    let ctx = crate::services::service_context::build_etw_service_context(&app_handle);
-    let etw_service = etw_state.lock().map_err(|e| e.to_string())?;
-    etw_service.start(ctx)?;
-
-    Ok(())
 }
 
 /// 函数名称：background_init
@@ -785,6 +670,12 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
         return;
     }
 
+    // 运行迁移 - process_lifecycle 表（§4.7，与 windows_service.rs 建库路径一致）
+    if let Err(e) = BehaviorService::initialize_lifecycle_table(&pool).await {
+        eprintln!("[main] Failed to create process_lifecycle table: {}", e);
+        return;
+    }
+
     // 运行迁移 - quarantine_items 表
     let quarantine_service = QuarantineService::new();
     if let Err(e) = quarantine_service.initialize_database(&pool).await {
@@ -797,6 +688,49 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
     app_handle.manage(Arc::new(Mutex::new(behavior_service)));
     app_handle.manage(pool);
     eprintln!("[main] SQLite initialized");
+
+    // 定时清理行为库（保留期外事件删除，防 DB 无限占盘）。
+    //  Spawn the periodic behavior-DB retention prune (deletes rows past the
+    //  retention window so the DB cannot grow without bound).
+    let behavior_prune_svc = {
+        let state = app_handle.state::<Arc<Mutex<BehaviorService>>>();
+        state.inner().clone()
+    };
+    let retention_days = config.behavior_analyzer.retention_days;
+    let max_db_bytes = config.behavior_analyzer.max_db_bytes;
+    tauri::async_runtime::spawn(async move {
+        use tokio::time::{interval, Duration};
+        // 启动后先清一次，之后每小时检查
+        let mut ticker = interval(Duration::from_secs(3600));
+        loop {
+            ticker.tick().await;
+            let svc = behavior_prune_svc
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            // 容量上限优先（1GiB 硬约束）：超限先删最老数据并 VACUUM
+            //  Size cap first (hard bound): when over, delete the oldest rows and VACUUM.
+            match svc.db_size_bytes().await {
+                Ok(size) if size > max_db_bytes => {
+                    if let Err(err) = svc.prune_by_size_limit(max_db_bytes).await {
+                        eprintln!("[main] behavior size-limit prune failed: {}", err);
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => eprintln!("[main] behavior db size check failed: {}", err),
+            }
+            // 保留期清理（retentionDays 窗口外数据删除）
+            let before = behavior_retention_boundary(retention_days);
+            match svc.prune_older_than(&before).await {
+                Ok((e, l)) => {
+                    if e > 0 || l > 0 {
+                        eprintln!("[main] behavior retention prune: {} events, {} lifecycle", e, l);
+                    }
+                }
+                Err(err) => eprintln!("[main] behavior retention prune failed: {}", err),
+            }
+        }
+    });
 
     // 启动 IPC 桥接服务 — 尝试连接服务进程
     //  Start IPC bridge service - try to connect to service process
@@ -827,26 +761,14 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
         }
     };
 
-    // 拦截恢复
-    match recover_suspended_processes_from_ledger() {
-        Ok(summary) => {
-            if summary.loaded_records > 0 {
-                eprintln!(
-                    "[main] Interception recovery summary: loaded={}, recovered={}, stale_or_exited={}, failed={}",
-                    summary.loaded_records,
-                    summary.recovered,
-                    summary.stale_or_exited,
-                    summary.failed
-                );
-            }
-        }
-        Err(err) => eprintln!("[main] Failed to recover stale interceptions: {}", err),
-    }
-
-    // 准备拦截窗口
-    if let Ok(window) = prepare_interception_window(&app_handle) {
-        let _ = window.hide();
-    }
+    // 拆分架构：Main 不再承担拦截队列所有权，也不再预建拦截窗口（归 Tray 进程）。
+    // 旧 Main 本地的挂起进程台账恢复已随所有权一并移除——由服务进程的
+    // InterceptionService 负责「无客户端可询问即回滚恢复」的安全路径。
+    //  Split architecture: Main no longer owns the interception queue nor pre-creates
+    //  the interception window (owned by the Tray process). The legacy local
+    //  suspended-process ledger recovery is removed together with that ownership —
+    //  the service process's InterceptionService handles the safe
+    //  "no client to ask → roll back and resume" path.
 
     // 如果 IPC 已连接服务进程，跳过本地防护组件启动（由服务进程提供防护）
     //  If IPC connected to service process, skip local protection startup (provided by service process)
@@ -862,240 +784,61 @@ async fn background_init(app_handle: tauri::AppHandle, config: AppConfig) {
         return;
     }
 
-    // 独立模式：UI 进程需要自己加载引擎（IPC 未连接服务进程）
-    //  Standalone mode: UI process needs to load engine itself (IPC not connected to service process)
-    eprintln!("[main] Standalone mode - loading engine locally");
-    let (engine_dll_path, engine_root_path) = match resolve_engine_dll_path(&app_handle) {
-        Ok(paths) => paths,
-        Err(e) => {
-            eprintln!("[main] Failed to resolve engine DLL path: {}", e);
-            return;
-        }
-    };
-    let engine_service = match EngineService::new(
-        engine_dll_path.to_string_lossy().to_string(),
-        engine_root_path.to_string_lossy().to_string(),
-    ) {
-        Ok(svc) => Arc::new(svc),
-        Err(e) => {
-            eprintln!("[main] Failed to initialize native engine: {}", e);
-            return;
-        }
-    };
-    engine_service.spawn_background_load();
-    app_handle.manage(engine_service);
-
-    // 启动文件钩子命名管道服务端
-    let hook_service = HookService::new();
-    let hook_ctx = crate::services::service_context::build_etw_service_context(&app_handle);
-    if let Err(e) = hook_service.start("anxin_security_filehook", hook_ctx) {
-        // 管道起不来意味着 APIHook 上报链路整条失效，必须留下可追查的记录，
-        // 而不是只打一行 stderr —— 生产环境没人看得到控制台。
-        //  A dead pipe means the whole APIHook reporting path is down; it must leave a traceable
-        //  record rather than a single stderr line nobody sees in production.
-        append_interception_diagnostic(
-            "hook_pipe_service_failed",
-            serde_json::json!({
-                "pipeName": r"\\.\pipe\anxin_security_filehook",
-                "pipeError": e.to_string(),
-            }),
-        );
-        eprintln!(
-            "[main] Failed to start file hook pipe service: pipeError={}",
-            e
-        );
+    // 拆分架构：UI 进程不再内嵌任何防护组件。服务未运行时的引导策略：
+    // - 提权运行的 Main → 自动拉起同目录 AnXinService.exe --foreground（子进程继承提权），
+    //   bridge 的重连监控会在服务 IPC 就绪后自动接上。
+    // - 非提权运行 → 保持降级（get_protection_status 呈现 standalone），不擅自触发 UAC。
+    //  Split architecture: the UI process embeds no protection components anymore.
+    //  Bootstrap policy when the service is not running:
+    //  - Elevated Main → spawn the sibling AnXinService.exe --foreground automatically
+    //    (the child inherits elevation); the bridge reconnect monitor picks it up.
+    //  - Non-elevated → stay degraded (get_protection_status reports standalone); never
+    //    trigger a UAC prompt on our own.
+    if PrivilegeService::is_elevated() {
+        bootstrap_protection_service_foreground();
     } else {
-        append_interception_diagnostic(
-            "hook_pipe_service_started",
-            serde_json::json!({
-                "pipeName": r"\\.\pipe\anxin_security_filehook",
-                "processMonitoringEnabled": config.process_monitoring.enabled,
-                "fileMonitoringEnabled": config.file_monitoring.enabled,
-            }),
-        );
-        eprintln!("[main] File hook pipe service started: \\\\.\\pipe\\anxin_security_filehook");
-        app_handle.manage(Arc::new(hook_service));
+        eprintln!("[main] Service not running and process is not elevated - staying degraded");
     }
-
-    // 启动进程扫描器
-    start_runtime_process_scanner_before_snapshot(&app_handle, config.process_monitoring.enabled);
-
-    // 启动网络防火墙（仅当配置显式启用时）
-    //  Start the network firewall, only when the config explicitly enables it
-    start_network_firewall(&app_handle, &config);
-
-    // 启动元核防护（仅当配置显式启用时）
-    //  Start hypervisor protection, only when the config explicitly enables it
-    start_hypervisor_if_enabled(&app_handle, &config);
-
-    // 启动文件监控服务
-    if config.file_monitoring.enabled {
-        if let Some(etw_state) = app_handle.try_state::<Arc<std::sync::Mutex<EtwService>>>() {
-            if let Ok(etw) = etw_state.lock() {
-                if let (Some(engine), Some(cache), Some(interception)) = (
-                    app_handle.try_state::<Arc<EngineService>>(),
-                    app_handle.try_state::<Arc<ScanResultCacheService>>(),
-                    app_handle.try_state::<Arc<InterceptionService>>(),
-                ) {
-                    let etw_rx = etw.subscribe();
-                    if let Some(file_monitor) = app_handle.try_state::<FileMonitorService>() {
-                        let file_monitor_ctx =
-                            crate::services::service_context::build_etw_service_context(
-                                &app_handle,
-                            );
-                        file_monitor.start(
-                            engine.inner().clone(),
-                            cache.inner().clone(),
-                            interception.inner().clone(),
-                            file_monitor_ctx,
-                            etw_rx,
-                        );
-                        eprintln!("[main] File monitor started");
-                    }
-                }
-            }
-        }
-    } else {
-        eprintln!("[main] File monitor disabled by config");
-    }
-
-    // 启动 ETW 监控
-    if config.behavior_monitoring.enabled {
-        let app_handle_etw = app_handle.clone();
-        if let Err(e) = start_etw_monitoring(app_handle_etw).await {
-            eprintln!("[main] Failed to start ETW monitoring: {}", e);
-        }
-    } else {
-        eprintln!("[main] ETW monitoring disabled by config");
-    }
-
-    // 启动启动快照扫描
-    let snapshot_scan_options = SnapshotScanOptions {
-        slow_warn_ms: config.scanner.startup_snapshot_slow_warn_ms,
-        target_scan_timeout_ms: config.scanner.timeout_ms,
-        module_enumeration_timeout_ms: config.scanner.startup_module_enumeration_timeout_ms,
-        signature_verify_timeout_ms: config.scanner.startup_signature_verify_timeout_ms,
-        signature_verify_concurrency: config.scanner.startup_signature_verify_concurrency,
-        revocation_check_timeout_ms: config.scanner.startup_revocation_check_timeout_ms,
-        revocation_check_concurrency: config.scanner.startup_revocation_check_concurrency,
-    };
-    let process_monitoring_enabled_after_snapshot = config.process_monitoring.enabled;
-
-    // 等待引擎和前端就绪。
-    // 这段等待直接计入用户可见的启动可信基线时间，必须保持短：
-    // 后续的启动快照本身还要跑十几秒，前端在此期间显示分阶段进度，
-    // 不需要在开始前先空等一秒。
-    //  This wait counts directly against the user-visible startup baseline time and must stay
-    //  short: the startup snapshot itself still takes tens of seconds while the frontend shows
-    //  staged progress, so there is no reason to idle for a full second beforehand.
-    tokio::time::sleep(tokio::time::Duration::from_millis(250)).await;
-
-    if let (Some(trust), Some(snapshot), Some(engine), Some(cache)) = (
-        app_handle.try_state::<Arc<TrustService>>(),
-        app_handle.try_state::<SnapshotService>(),
-        app_handle.try_state::<Arc<EngineService>>(),
-        app_handle.try_state::<Arc<ScanResultCacheService>>(),
-    ) {
-        match snapshot
-            .take_startup_snapshot(
-                trust.inner().clone(),
-                engine.inner().clone(),
-                cache.inner().clone(),
-                &SnapshotContext::Tauri(app_handle.clone()),
-                snapshot_scan_options,
-            )
-            .await
-        {
-            Ok(result) => {
-                eprintln!(
-                    "[StartupSnapshot] Baseline done: {} processes, {} signed, {} unsigned, {} paused, {} modules, {} pending deep module checks, {} malicious processes, {} malicious modules, {} image integrity alerts, {} unknown processes, {} unknown modules, {} module enumeration failures ({} access denied), {} cache hits ({}ms)",
-                    result.total_processes, result.signed_processes,
-                    result.unsigned_processes, result.paused_processes,
-                    result.scanned_modules, result.deep_scan_pending_modules,
-                    result.malicious_processes,
-                    result.malicious_modules, result.image_integrity_alerts,
-                    result.unknown_processes, result.unknown_modules,
-                    result.module_enumeration_failures,
-                    result.module_enumeration_access_denied,
-                    result.cache_hits,
-                    result.duration_ms
-                );
-            }
-            Err(e) => eprintln!("[StartupSnapshot] Failed: {}", e),
-        }
-    }
-
-    start_apihook_process_watcher_after_snapshot(
-        &app_handle,
-        process_monitoring_enabled_after_snapshot,
-    );
 
     eprintln!("[main] Background initialization completed");
 }
 
-/// 函数名称：resolve_engine_dll_path
-/// 函数作用：按优先级尝试多个路径寻找 axon_engine.dll，返回 (dll_abs_path, engine_root_abs_path)。
-/// Purpose: Tries multiple paths to find axon_engine.dll by priority,
-///          returns (dll_abs_path, engine_root_abs_path).
-///
-/// 尝试顺序：
-///   1. resource_dir / Engine/Axon/axon_engine.dll（生产部署）
-///   2. CWD / Engine/Axon/axon_engine.dll（npm run tauri dev）
-///   3. CWD/../Engine/Axon/axon_engine.dll（cargo run from src-tauri）
-///
-/// 中文关键词：引擎路径，路径解析，DLL查找，部署部署
-/// English keywords: engine path, path resolution, DLL lookup, production deployment
-fn resolve_engine_dll_path(app_handle: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
-    let mut candidates: Vec<PathBuf> = Vec::new();
+/// 函数名称：bootstrap_protection_service_foreground
+/// 函数作用：拉起同目录的后端服务程序（AnXinService.exe / anxin-service.exe）以前台模式
+///           运行防护后端；找不到拆分后的服务程序时记录降级原因后返回。
+/// Function name: bootstrap_protection_service_foreground
+/// Purpose: Spawns the sibling backend service executable (AnXinService.exe /
+///          anxin-service.exe) to run the protection backend in foreground mode; logs and
+///          returns when the split service binary cannot be found.
+fn bootstrap_protection_service_foreground() {
+    let Ok(self_exe) = std::env::current_exe() else {
+        eprintln!("[main] Cannot resolve current exe, skipping service bootstrap");
+        return;
+    };
+    let Some(dir) = self_exe.parent() else {
+        eprintln!("[main] Cannot resolve exe directory, skipping service bootstrap");
+        return;
+    };
 
-    // 策略 1: resource_dir（生产部署时有效）
-    // Tauri resources 配置 "../Engine/**/*" 会在安装目录下产生 "_up_/Engine/Axon/" 布局
-    // 同时也检查直接的 "Engine/Axon/" 布局（兼容未来配置调整）
-    if let Ok(resource_dir) = app_handle.path().resource_dir() {
-        candidates.push(resource_dir.join("_up_/Engine/Axon/axon_engine.dll"));
-        candidates.push(resource_dir.join("Engine/Axon/axon_engine.dll"));
-    }
-
-    // 策略 2: CWD 相对路径（npm run tauri dev / npx tauri dev）
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd.join("Engine/Axon/axon_engine.dll"));
-    }
-
-    // 策略 3: CWD 上级目录（cargo run / cargo check from src-tauri/）
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(parent) = cwd.parent() {
-            candidates.push(parent.join("Engine/Axon/axon_engine.dll"));
+    for name in ["AnXinService.exe", "anxin-service.exe"] {
+        let candidate = dir.join(name);
+        if !candidate.exists() {
+            continue;
         }
-    }
-
-    // 去重后逐个检查存在性
-    let mut tried_paths = Vec::new();
-    for candidate in &candidates {
-        let normalized = if candidate.is_absolute() {
-            candidate.clone()
-        } else {
-            std::env::current_dir().unwrap_or_default().join(candidate)
-        };
-        tried_paths.push(normalized.to_string_lossy().to_string());
-
-        if normalized.exists() {
-            // 不使用 canonicalize（会添加 \\?\ 前缀导致 LoadLibraryExW 依赖解析失败）
-            // Don't use canonicalize (adds \\?\ prefix which breaks dependency resolution)
-            let abs_str = normalized.to_string_lossy().to_string();
-            let clean_path = abs_str.strip_prefix(r"\\?\").unwrap_or(&abs_str);
-            let dll_path = PathBuf::from(clean_path);
-            let engine_root = dll_path
-                .parent()
-                .ok_or_else(|| format!("Cannot get parent of {:?}", clean_path))?
-                .to_path_buf();
-            eprintln!("[main] Engine DLL resolved: {:?}", dll_path);
-            eprintln!("[main] Engine root: {:?}", engine_root);
-            return Ok((dll_path, engine_root));
+        match std::process::Command::new(&candidate).arg("--foreground").spawn() {
+            Ok(child) => eprintln!(
+                "[main] Bootstrapped protection service {} (pid {})",
+                candidate.display(),
+                child.id()
+            ),
+            Err(e) => eprintln!(
+                "[main] Failed to spawn protection service {}: {}",
+                candidate.display(),
+                e
+            ),
         }
+        return;
     }
 
-    Err(format!(
-        "Cannot find Engine/Axon/axon_engine.dll. Tried:\n  {}",
-        tried_paths.join("\n  ")
-    ))
+    eprintln!("[main] Protection service binary not found next to Main; staying degraded");
 }

@@ -96,7 +96,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "anxin-security"
+name = "anxin-core"
 version = "1.0.0"
 dependencies = [
  "aes-gcm",
@@ -110,16 +110,46 @@ dependencies = [
  "sha2",
  "sqlx",
  "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-shell",
- "tauri-plugin-single-instance",
  "thiserror 1.0.69",
  "tokio",
  "uuid",
  "windows 0.58.0",
  "windows-service",
+]
+
+[[package]]
+name = "anxin-security"
+version = "1.0.0"
+dependencies = [
+ "anxin-core",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-shell",
+ "tauri-plugin-single-instance",
+ "tokio",
+]
+
+[[package]]
+name = "anxin-service"
+version = "1.0.0"
+dependencies = [
+ "anxin-core",
+]
+
+[[package]]
+name = "anxin-tray"
+version = "1.0.0"
+dependencies = [
+ "anxin-core",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-single-instance",
 ]
 
 [[package]]

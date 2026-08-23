@@ -1,0 +1,386 @@
+
+> anxin-security@1.0.0 tauri
+> tauri build
+
+        Info Looking up installed tauri packages to check mismatched versions...
+     Running beforeBuildCommand `npm run build:frontend`
+
+> anxin-security@1.0.0 build:frontend
+> vite build
+
+vite v6.4.2 building for production...
+transforming...
+✓ 2204 modules transformed.
+rendering chunks...
+[plugin vite:reporter] 
+(!) E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/api/core.js is dynamically imported by E:/Project/HTML/AnXinSecurity/src/components/TitleBar.tsx but also statically imported by E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/api/dpi.js, E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/api/event.js, E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/api/image.js, E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/api/path.js, E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/api/window.js, E:/Project/HTML/AnXinSecurity/node_modules/@tauri-apps/plugin-dialog/dist-js/index.js, E:/Project/HTML/AnXinSecurity/src/api/allowlist.ts, E:/Project/HTML/AnXinSecurity/src/api/behavior.ts, E:/Project/HTML/AnXinSecurity/src/api/config.ts, E:/Project/HTML/AnXinSecurity/src/api/devSettings.ts, E:/Project/HTML/AnXinSecurity/src/api/errorTrace.ts, E:/Project/HTML/AnXinSecurity/src/api/exclusions.ts, E:/Project/HTML/AnXinSecurity/src/api/firewall.ts, E:/Project/HTML/AnXinSecurity/src/api/fs.ts, E:/Project/HTML/AnXinSecurity/src/api/hypervisor.ts, E:/Project/HTML/AnXinSecurity/src/api/i18n.ts, E:/Project/HTML/AnXinSecurity/src/api/logs.ts, E:/Project/HTML/AnXinSecurity/src/api/privilege.ts, E:/Project/HTML/AnXinSecurity/src/api/process.ts, E:/Project/HTML/AnXinSecurity/src/api/quarantine.ts, E:/Project/HTML/AnXinSecurity/src/api/risk.ts, E:/Project/HTML/AnXinSecurity/src/api/scanRules.ts, E:/Project/HTML/AnXinSecurity/src/api/scanner.ts, E:/Project/HTML/AnXinSecurity/src/components/TrayExitPrompt.tsx, dynamic import will not move module into another chunk.
+
+computing gzip size...
+dist/index.html                                  0.48 kB │ gzip:   0.32 kB
+dist/assets/index-6cu46OyQ.css                   3.21 kB │ gzip:   1.15 kB
+dist/assets/index-CMFgNp5V.js                    0.17 kB │ gzip:   0.16 kB
+dist/assets/errorTrace-BRYj_axg.js               0.21 kB │ gzip:   0.16 kB
+dist/assets/quarantine-N4JTD7T-.js               0.83 kB │ gzip:   0.41 kB
+dist/assets/quarantineStore-DmJ7hwYG.js          1.60 kB │ gzip:   0.69 kB
+dist/assets/scannerStore-pTa-Ssmq.js             2.86 kB │ gzip:   1.21 kB
+dist/assets/SkeletonItem-BOsgeUb7.js             7.98 kB │ gzip:   2.64 kB
+dist/assets/BehaviorLifecyclePage-DlZqGSIt.js    7.99 kB │ gzip:   2.62 kB
+dist/assets/QuarantinePage-BkzvbNYB.js           8.99 kB │ gzip:   2.69 kB
+dist/assets/FirewallPage-DEqYPX4Q.js            12.23 kB │ gzip:   3.35 kB
+dist/assets/Badge-DKMu2cqt.js                   13.05 kB │ gzip:   3.41 kB
+dist/assets/ScanPage-BPs1rALO.js                13.46 kB │ gzip:   3.84 kB
+dist/assets/OverviewPage-DG7fPphp.js            14.42 kB │ gzip:   4.27 kB
+dist/assets/TableHeaderCell-CY8V2e39.js         14.96 kB │ gzip:   4.53 kB
+dist/assets/firewallStore-0J7jX4H1.js           16.30 kB │ gzip:   4.06 kB
+dist/assets/BehaviorPage-D0VCWTIX.js            17.20 kB │ gzip:   3.96 kB
+dist/assets/SettingsPage-DL1CSeuF.js            59.27 kB │ gzip:  13.78 kB
+dist/assets/ConfirmDialog-4z5Of3B5.js           83.58 kB │ gzip:  26.04 kB
+dist/assets/index-rlSySq5y.js                  493.78 kB │ gzip: 147.73 kB
+✓ built in 5.06s
+   Compiling anxin-security v1.0.0 (E:\Project\HTML\AnXinSecurity\src-tauri)
+warning: function `minifilter_instances_key` is never used
+   --> src\services\driver_install_service.rs:573:4
+    |
+573 | fn minifilter_instances_key(service_name: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: structure field `driverConnected` should have a snake case name
+  --> src\services\hypervisor_service.rs:49:9
+   |
+49 |     pub driverConnected: bool,
+   |         ^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `driver_connected`
+   |
+   = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: structure field `operatingMode` should have a snake case name
+  --> src\services\hypervisor_service.rs:52:9
+   |
+52 |     pub operatingMode: u32,
+   |         ^^^^^^^^^^^^^ help: convert the identifier to snake case: `operating_mode`
+
+warning: structure field `modeName` should have a snake case name
+  --> src\services\hypervisor_service.rs:55:9
+   |
+55 |     pub modeName: String,
+   |         ^^^^^^^^ help: convert the identifier to snake case: `mode_name`
+
+warning: structure field `cpuVendor` should have a snake case name
+  --> src\services\hypervisor_service.rs:58:9
+   |
+58 |     pub cpuVendor: String,
+   |         ^^^^^^^^^ help: convert the identifier to snake case: `cpu_vendor`
+
+warning: structure field `cpuCount` should have a snake case name
+  --> src\services\hypervisor_service.rs:61:9
+   |
+61 |     pub cpuCount: u32,
+   |         ^^^^^^^^ help: convert the identifier to snake case: `cpu_count`
+
+warning: structure field `pageTablesActive` should have a snake case name
+  --> src\services\hypervisor_service.rs:64:9
+   |
+64 |     pub pageTablesActive: bool,
+   |         ^^^^^^^^^^^^^^^^ help: convert the identifier to snake case: `page_tables_active`
+
+warning: structure field `degradReason` should have a snake case name
+  --> src\services\hypervisor_service.rs:67:9
+   |
+67 |     pub degradReason: String,
+   |         ^^^^^^^^^^^^ help: convert the identifier to snake case: `degrad_reason`
+
+warning: structure field `versionMajor` should have a snake case name
+  --> src\services\hypervisor_service.rs:70:9
+   |
+70 |     pub versionMajor: u32,
+   |         ^^^^^^^^^^^^ help: convert the identifier to snake case: `version_major`
+
+warning: structure field `versionMinor` should have a snake case name
+  --> src\services\hypervisor_service.rs:71:9
+   |
+71 |     pub versionMinor: u32,
+   |         ^^^^^^^^^^^^ help: convert the identifier to snake case: `version_minor`
+
+warning: structure field `versionPatch` should have a snake case name
+  --> src\services\hypervisor_service.rs:72:9
+   |
+72 |     pub versionPatch: u32,
+   |         ^^^^^^^^^^^^ help: convert the identifier to snake case: `version_patch`
+
+warning: `anxin-security` (lib) generated 11 warnings
+warning: enum `AuditEvent` is never used
+  --> src\services\audit_service.rs:24:10
+   |
+24 | pub enum AuditEvent {
+   |          ^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `log` is never used
+  --> src\services\audit_service.rs:71:8
+   |
+71 | pub fn log(event: AuditEvent) {
+   |        ^^^
+
+warning: function `format_event` is never used
+  --> src\services\audit_service.rs:91:4
+   |
+91 | fn format_event(timestamp: &str, svc_pid: u32, event: &AuditEvent) -> String {
+   |    ^^^^^^^^^^^^
+
+warning: function `mask_path` is never used
+   --> src\services\audit_service.rs:176:4
+    |
+176 | fn mask_path(path: &str) -> String {
+    |    ^^^^^^^^^
+
+warning: function `mask_sid` is never used
+   --> src\services\audit_service.rs:192:4
+    |
+192 | fn mask_sid(sid: &str) -> String {
+    |    ^^^^^^^^
+
+warning: function `resolve_audit_dir` is never used
+   --> src\services\audit_service.rs:203:4
+    |
+203 | fn resolve_audit_dir() -> PathBuf {
+    |    ^^^^^^^^^^^^^^^^^
+
+warning: function `current_rfc3339` is never used
+   --> src\services\audit_service.rs:209:4
+    |
+209 | fn current_rfc3339() -> String {
+    |    ^^^^^^^^^^^^^^^
+
+warning: function `current_date_compact` is never used
+   --> src\services\audit_service.rs:218:4
+    |
+218 | fn current_date_compact() -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: function `days_to_ymd` is never used
+   --> src\services\audit_service.rs:230:4
+    |
+230 | fn days_to_ymd(days: u64) -> (u32, u32, u32) {
+    |    ^^^^^^^^^^^
+
+warning: function `is_leap_year` is never used
+   --> src\services\audit_service.rs:258:4
+    |
+258 | fn is_leap_year(year: u32) -> bool {
+    |    ^^^^^^^^^^^^
+
+warning: function `minifilter_instances_key` is never used
+   --> src\services\driver_install_service.rs:573:4
+    |
+573 | fn minifilter_instances_key(service_name: &str) -> String {
+    |    ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `version` is never read
+   --> src\services\firewall_rules.rs:163:9
+    |
+162 | pub struct CompiledRules {
+    |            ------------- field in this struct
+163 |     pub version: u32,
+    |         ^^^^^^^
+    |
+    = note: `CompiledRules` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: constant `EVENT_HYPERVISOR_STATUS` is never used
+  --> src\services\hypervisor_service.rs:31:11
+   |
+31 | pub const EVENT_HYPERVISOR_STATUS: &str = "hypervisor-status";
+   |           ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `start_time` is never read
+  --> src\services\identity_verification_service.rs:47:9
+   |
+38 | pub struct ClientIdentity {
+   |            -------------- field in this struct
+...
+47 |     pub start_time: u64,
+   |         ^^^^^^^^^^
+   |
+   = note: `ClientIdentity` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+
+warning: enum `VerifyError` is never used
+  --> src\services\identity_verification_service.rs:62:10
+   |
+62 | pub enum VerifyError {
+   |          ^^^^^^^^^^^
+
+warning: function `verify_identity` is never used
+   --> src\services\identity_verification_service.rs:130:8
+    |
+130 | pub fn verify_identity(
+    |        ^^^^^^^^^^^^^^^
+
+warning: function `detect_pid_reuse` is never used
+   --> src\services\identity_verification_service.rs:158:8
+    |
+158 | pub fn detect_pid_reuse(current_start_time: u64, recorded_start_time: u64) -> bool {
+    |        ^^^^^^^^^^^^^^^^
+
+warning: function `get_current_session_id` is never used
+   --> src\services\identity_verification_service.rs:406:8
+    |
+406 | pub fn get_current_session_id() -> Result<u32, String> {
+    |        ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `ChannelStatus` is never constructed
+   --> src\services\ipc_protocol.rs:467:12
+    |
+467 | pub struct ChannelStatus {
+    |            ^^^^^^^^^^^^^
+
+warning: struct `ElevationRequestParams` is never constructed
+   --> src\services\ipc_protocol.rs:485:12
+    |
+485 | pub struct ElevationRequestParams {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `ElevationConfirmParams` is never constructed
+   --> src\services\ipc_protocol.rs:503:12
+    |
+503 | pub struct ElevationConfirmParams {
+    |            ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `REQUEST_ELEVATION` is never used
+   --> src\services\ipc_protocol.rs:271:15
+    |
+271 |     pub const REQUEST_ELEVATION: &str = "request_elevation";
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: constant `CONFIRM_ELEVATION` is never used
+   --> src\services\ipc_protocol.rs:275:15
+    |
+275 |     pub const CONFIRM_ELEVATION: &str = "confirm_elevation";
+    |               ^^^^^^^^^^^^^^^^^
+
+warning: constant `GET_CHANNEL_STATUS` is never used
+   --> src\services\ipc_protocol.rs:279:15
+    |
+279 |     pub const GET_CHANNEL_STATUS: &str = "get_channel_status";
+    |               ^^^^^^^^^^^^^^^^^^
+
+warning: constant `REVOKE_ELEVATION` is never used
+   --> src\services\ipc_protocol.rs:283:15
+    |
+283 |     pub const REVOKE_ELEVATION: &str = "revoke_elevation";
+    |               ^^^^^^^^^^^^^^^^
+
+warning: method `has_ui_bridge` is never used
+   --> src\services\service_context.rs:172:12
+    |
+144 | impl ServiceContext {
+    | ------------------- method in this implementation
+...
+172 |     pub fn has_ui_bridge(&self) -> bool {
+    |            ^^^^^^^^^^^^^
+
+warning: constant `FILE_READ_DATA` is never used
+   --> src\utils\driver_client.rs:414:7
+    |
+414 | const FILE_READ_DATA: u32 = 1;
+    |       ^^^^^^^^^^^^^^
+
+warning: constant `IOCTL_ANXIN_REMOVE_PID` is never used
+   --> src\utils\driver_client.rs:439:7
+    |
+439 | const IOCTL_ANXIN_REMOVE_PID: u32 =
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `IOCTL_ANXIN_QUERY_PIDS` is never used
+   --> src\utils\driver_client.rs:445:7
+    |
+445 | const IOCTL_ANXIN_QUERY_PIDS: u32 =
+    |       ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `IOCTL_ANXIN_REMOVE_WINSTA` is never used
+   --> src\utils\driver_client.rs:451:7
+    |
+451 | const IOCTL_ANXIN_REMOVE_WINSTA: u32 =
+    |       ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: constant `MAX_PROTECTED_PIDS` is never used
+   --> src\utils\driver_client.rs:462:7
+    |
+462 | const MAX_PROTECTED_PIDS: usize = 64;
+    |       ^^^^^^^^^^^^^^^^^^
+
+warning: methods `is_connected`, `remove_pid`, `query_pids`, and `remove_winsta` are never used
+   --> src\utils\driver_client.rs:532:12
+    |
+469 | impl DriverClient {
+    | ----------------- methods in this implementation
+...
+532 |     pub fn is_connected(&self) -> bool {
+    |            ^^^^^^^^^^^^
+...
+547 |     pub fn remove_pid(&self, pid: u32) -> io::Result<()> {
+    |            ^^^^^^^^^^
+...
+566 |     pub fn query_pids(&self) -> io::Result<Vec<u32>> {
+    |            ^^^^^^^^^^
+...
+633 |     pub fn remove_winsta(&self) -> io::Result<()> {
+    |            ^^^^^^^^^^^^^
+
+warning: constant `IOCTL_GET_STATS` is never used
+  --> src\utils\hv_client.rs:25:7
+   |
+25 | const IOCTL_GET_STATS: u32 =
+   |       ^^^^^^^^^^^^^^^
+
+warning: constant `IOCTL_GET_VIOLATIONS` is never used
+  --> src\utils\hv_client.rs:27:7
+   |
+27 | const IOCTL_GET_VIOLATIONS: u32 =
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: struct `HvStats` is never constructed
+  --> src\utils\hv_client.rs:53:12
+   |
+53 | pub struct HvStats {
+   |            ^^^^^^^
+
+warning: struct `HvViolationEvent` is never constructed
+  --> src\utils\hv_client.rs:66:12
+   |
+66 | pub struct HvViolationEvent {
+   |            ^^^^^^^^^^^^^^^^
+
+warning: methods `platform_string` and `is_full_mode` are never used
+   --> src\utils\hv_client.rs:103:12
+    |
+ 79 | impl HvStatusInfo {
+    | ----------------- methods in this implementation
+...
+103 |     pub fn platform_string(&self) -> String {
+    |            ^^^^^^^^^^^^^^^
+...
+121 |     pub fn is_full_mode(&self) -> bool {
+    |            ^^^^^^^^^^^^
+
+warning: methods `get_stats` and `get_violations` are never used
+   --> src\utils\hv_client.rs:190:12
+    |
+140 | impl HvClient {
+    | ------------- methods in this implementation
+...
+190 |     pub fn get_stats(&self) -> io::Result<HvStats> {
+    |            ^^^^^^^^^
+...
+211 |     pub fn get_violations(&self, max_events: usize) -> io::Result<Vec<HvViolationEvent>> {
+    |            ^^^^^^^^^^^^^^
+
+warning: `anxin-security` (bin "anxin-security") generated 48 warnings (10 duplicates)
+    Finished `release` profile [optimized] target(s) in 4m 12s
+       Built application at: E:\Project\HTML\AnXinSecurity\src-tauri\target\x86_64-pc-windows-msvc\release\anxin-security.exe
+        Info Patching E:\Project\HTML\AnXinSecurity\src-tauri\target\x86_64-pc-windows-msvc\release\anxin-security.exe with bundle type information: nsis
+        Info Target: x64
+     Running makensis to produce E:\Project\HTML\AnXinSecurity\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\AnXinSecurity_1.0.0_x64-setup.exe
+    Finished 1 bundle at:
+        E:\Project\HTML\AnXinSecurity\src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\AnXinSecurity_1.0.0_x64-setup.exe
+
