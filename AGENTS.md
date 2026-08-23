@@ -124,9 +124,10 @@
   - **Medium**：可能导致信息泄露或安全功能降级（如密钥泄露、审计缺失）
   - **Low**：影响有限或利用条件苛刻（如配置残留、日志信息泄露）
 - **当前已知漏洞摘要**（2026-08-23 与 `buglist.md` 核对，以该文件为准）：
-  - 共 104 条（VUL-001 ~ VUL-106，编号有跳号），Fixed 55 / Open 49 / Accepted 0
+  - 共 105 条（VUL-001 ~ VUL-107，编号有跳号），Fixed 55 / Open 49 / Accepted 1
   - Open 集中在 VUL-004~014、VUL-041、VUL-053~090 及新增 VUL-106（隔离擦除、路径遍历、capability 过宽、file_hook 注入器系列等）
   - 三进程拆分安全复查新增 **VUL-106**（Medium, Open）：IPC 客户端身份校验仅按镜像文件名白名单、无安装目录/签名比对；拆分将白名单扩至 anxin-tray.exe 后伪装面增大
+  - Rust 依赖审计新增 **VUL-107**（Low, Accepted, cargo-audit 2026-08-23）：sqlx 0.7.4 RUSTSEC-2024-0363 为唯一 Windows 可达条目且仅用 SQLite 嵌入式驱动；quick-xml/rsa 经产物符号抽查确认不在 Windows 构建内（tauri Linux/macOS 跨平台链）；sqlx 0.8 迁移单独立项
   - 驱动相关 P0-P1（VUL-045 ~ VUL-052）与驱动 BSOD/BYOVD 审计（VUL-091 ~ VUL-094）已于 2026-07-30 全部修复
   - 驱动自保专项测试（2026-08-13 来宾实测）新增 VUL-096 ~ VUL-103 已全部修复：webview 子进程保护传播（VUL-096）、安装目录运行期文件保护（VUL-097）、服务键注册表保护 4/4（VUL-098）、SET_DIAG 授权校验（VUL-099）、进程名伪装授权校验（VUL-100）、卸载 .sys 清理（VUL-101，改用一次性 SYSTEM 计划任务删服务键 + PFRO 重启删除，T10 "卸载 + 重启一次全清"验证通过）、FpmQueryPaths 紧凑回复 + 超时守卫（VUL-102）、线程上下文句柄剥离（VUL-103）；VUL-104（ProcMon 缺 /INTEGRITYCHECK）、VUL-105（IPC 单线程被扫描阻塞 broken-pipe）均已修复
   - 修改本摘要时必须与 `buglist.md` 实际内容核对，不得凭记忆更新

@@ -34,6 +34,8 @@
   - Main 瘦身：托盘创建、拦截窗口预建、standalone 防护组件启动分支全部移除；提权 + 无服务时自动引导 `AnXinService.exe --foreground`；非提权保持降级；
   - Main 标题栏关闭 → 新命令 `close_main_window` = 退出 Main 进程（防护不受影响）；托盘退出 → exit-confirm 小窗口（新前端 label 分支 ExitConfirmWindowApp）→ execute_exit → IPC 停服 → 全 GUI 退出；
   - 托盘菜单文案接入 i18n（Rust 侧 lookup_rust_side_text，键 tray_show_main/tray_exit）。
+- npm 依赖告警收口（cc8860c）：`npm audit` 实为 6 条（5 high + 1 low，全开发/构建期依赖），audit fix 清零并首次提交 package-lock.json（此前被 gitignore 导致 Dependabot 无法看到精确版本）；typecheck/lint/test/vite build 验证通过。
+- Rust 依赖审计（cargo-audit v0.22.2 已安装）：4 vulnerabilities + 23 unmaintained。quick-xml×2 与 rsa 经 Windows release 产物符号抽查确认不在构建内（tauri Linux/macOS 跨平台链）；sqlx 0.7.4 RUSTSEC-2024-0363 为唯一直接相关条目且本项目仅用 SQLite 嵌入式驱动（advisory 针对 PG/MySQL wire protocol）。登记 **VUL-107**（Low, Accepted），sqlx 0.8 迁移单独立项。
 
 **本轮事故与修复（必须知晓）**
 

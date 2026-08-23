@@ -115,6 +115,7 @@
 | VUL-105 | Medium | 服务模式 IPC 唯一处理线程被批量扫描阻塞，状态刷新 broken-pipe、开关卡死、扫描无法取消 | services/ipc_server.rs | Fixed |
 | VUL-106 | Medium | IPC 客户端身份校验仅按镜像文件名白名单（无安装目录/签名比对），同名伪装进程可通过校验并驱动拦截决策/停服通道；三进程拆分白名单扩至 anxin-tray.exe 后伪装面增大 | services/identity_verification_service.rs | Open |
 
+| VUL-107 | Low | Rust 依赖审计（cargo-audit 2026-08-23）：sqlx 0.7.4 RUSTSEC-2024-0363 为唯一 Windows 可达条目且仅用 SQLite 嵌入式驱动（wire-protocol 误读不可达）；quick-xml×2 与 rsa 经产物符号抽查确认不在 Windows 构建内 | src-tauri/Cargo.lock（crates/anxin-core） | Accepted |
 ---
 
 ## 漏洞详情
@@ -1307,4 +1308,20 @@
 - **代码位置**: identity_verification_service.rs:77（ANXIN_EXE_NAMES）、is_valid_anxin_path、verify_pipe_client。
 - **攻击向量**: 本地已执行恶意程序（medium integrity，同用户会话）→ 命名为 anxin-tray.exe → 连接 `\\.\pipe\Global\AnXinSecurityIPC` → 通过身份校验 → 提交拦截放行决策或请求停服。
 - **修复方向**: 生产模式在文件名白名单之上增加强校验：① 客户端镜像父目录 == 服务自身安装目录；或 ② WinVerifyTrust 校验 AnXin 签名；两者任一失败即 fail-closed。开发模式维持现状（ANXIN_DEV_MODE=1）。
-- **备注**: 该弱点对原单 exe 白名单同样存在（非拆分引入的新类别），拆分仅扩大了可冒充名称集合，故按既有暴露面登记为 Medium 而非 High。
+
+---
+
+### VUL-107: Rust 依赖审计——sqlx 0.7.4 RUSTSEC-2024-0363（quick-xml/rsa 经产物验证不可达）
+
+- **严重等级**: Low
+- **漏洞类型**: 第三方依赖漏洞（cargo-audit 2026-08-23，RustSec advisory-db 1225 条）
+- **影响模块**: `src-tauri/Cargo.lock`（anxin-core / anxin-security 依赖树，629 crate）
+- **状态**: Accepted
+- **发现日期**: 2026-08-23
+- **审计结果**: 4 vulnerabilities + 23 unmaintained warnings。
+  - quick-xml 0.39.2 ×2（RUSTSEC-2026-0194/0195, high DoS）：来自 tauri 的 Linux/macOS 跨平台链；Windows release 产物符号抽查 `quick_xml=False`，不可达。
+  - rsa 0.9.10（RUSTSEC-2023-0071, medium Marvin timing）：同上跨平台链且上游无修复版；产物符号抽查 `rsa_=False`，不可达。
+  - sqlx 0.7.4（RUSTSEC-2024-0363）：唯一直接依赖相关条目。该 advisory 为 wire-protocol 二进制误读（PG/MySQL），本项目仅用 SQLite 嵌入式驱动，实际可达性受限。
+  - 23 条 unmaintained 警告：gtk/atk/gdk 系列为 Linux GUI 链（Windows 构建不含），paste/proc-macro-error/fxhash/unic-* 为宏工具类间接依赖，无可用替代修复。
+- **处置决策**: 接受现状并持续观察。sqlx 0.7 → 0.8 涉及 API 大版本迁移（query_as 宏、ConnectOptions 等）与全量回归，单独立项评估而非顺手升级；tauri 后续版本升级时关注 quick-xml 是否随之进入 >=0.41。
+- **复现命令**: `cargo install cargo-audit --locked && cargo audit`（在 src-tauri 下执行）
