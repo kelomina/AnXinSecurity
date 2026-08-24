@@ -539,6 +539,15 @@ fn start_protection_runtime(
         })
         .map_err(|e| format!("Failed to spawn driver init thread: {}", e))?;
 
+    // VUL-108 配套：把服务自身 PID 经 ADD_PID（完整路径校验）注册为受信核心进程。
+    // 三进程拆分后服务镜像名为 AnXinService.exe，不再匹配驱动的旧前缀自动保护；
+    // 若不自注册，WinSta/Desktop 回调会拒绝服务发起的跨会话 GUI 拉起（0x80070542）。
+    //  VUL-108 companion: register the service's own PID via ADD_PID (full-path
+    //  verification) as a trusted core process. After the split the service image is
+    //  AnXinService.exe and no longer matches the legacy auto-protect prefix; without
+    //  self-registration the WinSta callbacks reject the cross-session GUI launch.
+    register_product_pid_with_driver(std::process::id(), "service(self)");
+
     Ok(ProtectionRuntime {
         ipc_server,
         runtime: Some(runtime),
@@ -1595,45 +1604,54 @@ fn launch_ui_process() -> Result<(), String> {
     Ok(())
 }
 
-/// 向驱动显式注册 GUI 进程 PID，确保内核级进程保护生效。
-///  Explicitly register a GUI process PID with the driver for kernel-level protection.
+/// 向驱动显式注册产品进程 PID（ADD_PID，完整路径校验通过即标记 Trusted）。
+///  Explicitly register a product-process PID with the driver (ADD_PID; passing the
+///  full-path check marks the entry Trusted).
 ///
-/// 拆分后两个调用方：服务启动时拉起的 Tray 进程（launch_ui_process），以及
-/// 任何通过 IPC 身份校验的 GUI 客户端（Main 由 Tray 按需拉起，服务端在握手
+/// 拆分后三个调用方：服务自身（start_protection_runtime，获得 trusted 身份以放行
+/// 跨会话 GUI 拉起，VUL-108）、服务启动时拉起的 Tray 进程（launch_ui_process），
+/// 以及任何通过 IPC 身份校验的 GUI 客户端（Main 由 Tray 按需拉起，服务端在握手
 /// 时自动登记，见 ipc_server::handle_client）。
-///  Two callers after the split: the Tray process spawned at service start
-///  (launch_ui_process), and any GUI client that passed IPC identity verification
-///  (Main is spawned by Tray on demand; the server registers it during the IPC
-///  handshake, see ipc_server::handle_client).
-pub fn register_ui_process_pid(pid: u32) {
+///  Three callers after the split: the service itself (start_protection_runtime —
+///  trusted identity so its cross-session GUI launch passes the WinSta callbacks),
+///  the Tray process spawned at service start (launch_ui_process), and any GUI
+///  client that passed IPC identity verification.
+pub fn register_product_pid_with_driver(pid: u32, what: &str) {
     use crate::utils::driver_client::DriverClient;
 
     let client = DriverClient::new();
     match client.connect() {
         Ok(()) => match client.add_pid(pid) {
             Ok(()) => {
-                eprintln!(
-                    "[Service] UI process PID {} registered with driver for protection",
-                    pid
-                );
+                service_log(&format!(
+                    "[Service] {} PID {} registered with driver for protection",
+                    what, pid
+                ));
             }
             Err(e) => {
-                eprintln!(
-                    "[Service] Failed to register UI PID {} with driver: {}",
-                    pid, e
-                );
+                service_log(&format!(
+                    "[Service] Failed to register {} PID {} with driver: {}",
+                    what, pid, e
+                ));
             }
         },
         Err(e) => {
-            eprintln!(
-                "[Service] Failed to connect to driver for UI PID registration: {}",
-                e
-            );
+            service_log(&format!(
+                "[Service] Failed to connect to driver for {} PID registration: {}",
+                what, e
+            ));
         }
     }
     // 保持连接打开，确保 PID 在保护列表中持续有效
     //  Keep the connection open to ensure the PID stays in the protected list
     std::mem::forget(client);
+}
+
+/// 向驱动显式注册 GUI 进程 PID（register_product_pid_with_driver 的 UI 语义包装）。
+///  Register a GUI process PID (thin UI-semantics wrapper over
+///  register_product_pid_with_driver).
+pub fn register_ui_process_pid(pid: u32) {
+    register_product_pid_with_driver(pid, "UI process");
 }
 
 /// 启动服务 dispatcher — 阻塞直到服务停止

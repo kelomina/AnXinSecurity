@@ -266,6 +266,9 @@ fn ensure_exit_confirm_window(app: &AppHandle) -> Result<WebviewWindow, String> 
 /// 中文关键词：拉起主程序，托盘，打开主界面，进程启动
 /// English keywords: launch main executable, tray, open main UI, process start
 pub fn launch_main_ui_process() -> Result<(), String> {
+    // Main 已运行时重复 spawn 由 Main 自身的单实例互斥体兜底（新进程立即退出）。
+    //  Duplicate spawns when Main already runs are handled by Main's own
+    //  singleton mutex (the duplicate exits immediately).
     let self_exe = std::env::current_exe().map_err(|e| format!("current_exe failed: {}", e))?;
     let dir = self_exe
         .parent()

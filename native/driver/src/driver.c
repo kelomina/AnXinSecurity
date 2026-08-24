@@ -160,6 +160,29 @@ extern PCHAR PsGetProcessImageFileName(PEPROCESS Process);
  */
 #define PROCESS_NAME_ANSI       "anxin-security.exe"
 #define ANSI_NAME_COMPARE_LEN   14
+/*
+ * 三进程拆分（2026-08，见 docs/three-process-split.md）后的产品家族镜像名。
+ * 名称匹配的语义边界（VUL-100 原则不变）：
+ *  - 仅用于「自动保护的快速纳入」与 IsAnxinProcess 的 Stage 1 预筛；
+ *  - 绝不单独授予信任/授权——Trusted 身份仍只能由 Stage 2 完整路径 +
+ *    TRUSTED_INSTALL_DIR 校验（ADD_PID IOCTL 路径）授予。
+ * Family image names after the three-process split (2026-08). Matching is used
+ * ONLY for auto-protection admission and the IsAnxinProcess stage-1 prefilter;
+ * it never grants trust by itself — Trusted still requires the stage-2 full
+ * path + trusted-install-dir verification via the ADD_PID path.
+ */
+static const CHAR * const ANXIN_FAMILY_ANSI[] = {
+    "anxin-security.exe",
+    "anxinsecurity.exe",
+    "anxinservice.exe",
+    "anxintray.exe",
+};
+static const WCHAR * const ANXIN_FAMILY_WIDE[] = {
+    L"anxin-security.exe",
+    L"anxinsecurity.exe",
+    L"anxinservice.exe",
+    L"anxintray.exe",
+};
 #define MAX_PROTECTED_PIDS      64
 #define MAX_PROTECTED_WINSTA    8
 /*
@@ -536,6 +559,9 @@ DRIVER_DISPATCH   DriverDeviceControl;
 // Process
 void       ProcessNotifyCallback(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId, _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
 void       ThreadNotifyCallback(_In_ HANDLE ProcessId, _In_ HANDLE ThreadId, _In_ BOOLEAN Create);
+
+/* Family-name matcher (three-process split); definition below IsCallerFamilyTry. */
+static BOOLEAN AnxinNamePrefixMatch(PCHAR ansiName);
 void       LoadImageNotifyCallback(_In_opt_ PUNICODE_STRING FullImageName, _In_ HANDLE ProcessId, _In_ PIMAGE_INFO ImageInfo);
 OB_PREOP_CALLBACK_STATUS ObPreProcessHandleCreate(_In_ PVOID RegistrationContext, _Inout_ POB_PRE_OPERATION_INFORMATION PreInfo);
 void       ObPostProcessHandleCreate(_In_ PVOID RegistrationContext, _Inout_ POB_POST_OPERATION_INFORMATION PostInfo);
@@ -1059,7 +1085,6 @@ BOOLEAN IsAnxinProcess(HANDLE Pid)
     NTSTATUS        status;
     BOOLEAN         result = FALSE;
     USHORT          tailChars = 0;
-    ULONG           i;
 
     status = PsLookupProcessByProcessId(Pid, &processObj);
     if (!NT_SUCCESS(status)) {
@@ -1074,26 +1099,13 @@ BOOLEAN IsAnxinProcess(HANDLE Pid)
     }
 
     /*
-     * EPROCESS.ImageFileName 只有 15 个字符加一个结尾位，长于此的名字会被截断，
-     * 因此这里只比较前 ANSI_NAME_COMPARE_LEN 个字符，作为快速排除用。
-     * EPROCESS.ImageFileName holds only 15 characters plus a terminator, so longer
-     * names are truncated. Only the first ANSI_NAME_COMPARE_LEN characters are
-     * compared here, purely as a fast reject.
+     * Stage-1 prefilter now uses the family table (four image names after the
+     * three-process split). Semantics unchanged: fast reject only - trusted
+     * authorization is still decided by the stage-2 full-path check.
      */
-    for (i = 0; i < ANSI_NAME_COMPARE_LEN; i++) {
-        CHAR actual   = ansiName[i];
-        CHAR expected = PROCESS_NAME_ANSI[i];
-
-        if (actual >= 'A' && actual <= 'Z') {
-            actual = (CHAR)(actual - 'A' + 'a');
-        }
-        if (expected >= 'A' && expected <= 'Z') {
-            expected = (CHAR)(expected - 'A' + 'a');
-        }
-        if (actual != expected) {
-            ObDereferenceObject(processObj);
-            return FALSE;
-        }
+    if (!AnxinNamePrefixMatch(ansiName)) {
+        ObDereferenceObject(processObj);
+        return FALSE;
     }
 
     /* --- 第 2 步：完整 NT 路径确认 / Stage 2: confirm the full NT path --- */
@@ -1114,19 +1126,28 @@ BOOLEAN IsAnxinProcess(HANDLE Pid)
         return FALSE;
     }
 
-    RtlInitUnicodeString(&targetName, PROCESS_NAME);
+    /*
+     * Must end with one of the family image names preceded by a path separator.
+     * Authorization is still gated below by the trusted-install-dir check, so
+     * extending the name set does not widen the trust boundary (VUL-038/046/097
+     * semantics preserved).
+     */
+    for (ULONG f = 0; f < RTL_NUMBER_OF(ANXIN_FAMILY_WIDE); f++) {
+        RtlInitUnicodeString(&targetName, (PWSTR)ANXIN_FAMILY_WIDE[f]);
 
-    /* 必须是 ...\anxin-security.exe，前面紧邻一个路径分隔符 */
-    /* Must end with ...\anxin-security.exe preceded by a path separator */
-    if (fullPath->Length > targetName.Length) {
-        tailChars = (USHORT)((fullPath->Length - targetName.Length) / sizeof(WCHAR));
-        WCHAR  separator = fullPath->Buffer[tailChars - 1];
+        if (fullPath->Length > targetName.Length) {
+            tailChars = (USHORT)((fullPath->Length - targetName.Length) / sizeof(WCHAR));
+            WCHAR  separator = fullPath->Buffer[tailChars - 1];
 
-        if (separator == L'\\' || separator == L'/') {
-            tail.Buffer        = &fullPath->Buffer[tailChars];
-            tail.Length        = targetName.Length;
-            tail.MaximumLength = targetName.Length;
-            result = (BOOLEAN)(RtlCompareUnicodeString(&tail, &targetName, TRUE) == 0);
+            if (separator == L'\\' || separator == L'/') {
+                tail.Buffer        = &fullPath->Buffer[tailChars];
+                tail.Length        = targetName.Length;
+                tail.MaximumLength = targetName.Length;
+                result = (BOOLEAN)(RtlCompareUnicodeString(&tail, &targetName, TRUE) == 0);
+                if (result) {
+                    break;
+                }
+            }
         }
     }
 
@@ -1389,17 +1410,33 @@ static BOOLEAN AnxinNamePrefixMatch(PCHAR ansiName)
     if (ansiName == NULL)
         return FALSE;
 
-    for (ULONG i = 0; i < ANSI_NAME_COMPARE_LEN; i++) {
-        CHAR actual   = ansiName[i];
-        CHAR expected = PROCESS_NAME_ANSI[i];
-        if (actual >= 'A' && actual <= 'Z')
-            actual = (CHAR)(actual - 'A' + 'a');
-        if (expected >= 'A' && expected <= 'Z')
-            expected = (CHAR)(expected - 'A' + 'a');
-        if (actual != expected)
-            return FALSE;
+    for (ULONG f = 0; f < RTL_NUMBER_OF(ANXIN_FAMILY_ANSI); f++) {
+        const CHAR *expected = ANXIN_FAMILY_ANSI[f];
+        ULONG expectedLen = 0;
+        while (expected[expectedLen] != '\0' && expectedLen < ANSI_NAME_COMPARE_LEN)
+            expectedLen++;
+
+        BOOLEAN matched = TRUE;
+        for (ULONG i = 0; i < expectedLen; i++) {
+            CHAR actual   = ansiName[i];
+            CHAR exp      = expected[i];
+            if (actual == '\0') {          /* truncated 15-byte field ran out */
+                matched = FALSE;
+                break;
+            }
+            if (actual >= 'A' && actual <= 'Z')
+                actual = (CHAR)(actual - 'A' + 'a');
+            if (exp >= 'A' && exp <= 'Z')
+                exp = (CHAR)(exp - 'A' + 'a');
+            if (actual != exp) {
+                matched = FALSE;
+                break;
+            }
+        }
+        if (matched)
+            return TRUE;
     }
-    return TRUE;
+    return FALSE;
 }
 
 /*

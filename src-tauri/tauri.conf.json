@@ -43,6 +43,8 @@
       "../config/firewall_rules.json",
       "../native/net_filter/build/x64/Release/AnXinNetFilter.sys",
       "../native/proc_monitor/build/x64/Release/AnXinProcMon.sys",
+      "../native/driver/build/x64/Release/AnXinProcProtect.sys",
+      "../native/file_protect/build/x64/Release/AnXinFileProtect.sys",
       "../Engine/**/*"
     ],
     "windows": {

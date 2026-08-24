@@ -16,9 +16,33 @@
 
 ## 当前状态快照
 
-更新时间：2026-08-24
+更新时间：2026-08-24（第二轮）
 
-### 2026-08-24 三进程 VM 安装实测（第一轮）：拓扑闭环验证通过，VUL-108 阻断驱动运行时的 GUI 拉起
+### 2026-08-24 三进程 VM 实测第二轮：三驱动全绿 + 静默安装链路修复，VUL-108 收敛至内核专项
+
+**目标**：验证 VUL-108 修复（驱动家族名表+服务自注册）、FileProtect root Instances 双写、NetFilter 注册段。
+
+**已验证状态（VM 内实际运行）**
+
+1. **静默安装链路修复并闭环**：PS Direct s=0 静默安装曾永久挂起——根因是 hooks PREINSTALL 的 MessageBox 无 /SD 在 NSIS 3.11 静默模式下仍显示等待；且该版本 makensis 对 /SD 的三种标准写法全部报 Usage 错误（实测）。改用 `${If} ${Silent}` 分支后，PS Direct 静默安装 100 秒内完成。
+2. **三驱动首次全部 RUNNING**：ProcProtect/FileProtect/**NetFilter** 全绿。根因为 hooks 的 `${__FILEDIR__}\..\native` 相对路径在 bundler 输出树中不存在导致 PREINSTALL 落盘自项目初始即静默跳过（Proc/File 靠 System32 遗留文件掩盖，NetFilter 无遗留故从未装上）；已改为 POSTINSTALL 从 `$INSTDIR\_up_\` CopyFiles 落盘 + 注册，root+Parameters Instances 双写生效（id=7000 消失）。
+3. **VUL-108 仍未解决**：家族名表扩展 + 服务 ADD_PID 自注册（log 证实 "service(self) PID registered"）就位后 CreateProcessAsUserW 仍 0x80070542。已排除 WinSta/Desktop 回调与 Token 类型 ObCallback。收敛结论：干预点在内核更深层（疑似进程创建同步路径以 STATUS_BAD_IMPERSONATION_LEVEL 拒绝），需 DebugView 内核输出或驱动代码审计定位。buglist VUL-108 已补进展段（保持 Open, High）。
+4. **附带发现与修复**：tauri-plugin-single-instance 在本环境对 Main/Tray 均不可靠（双实例共存实证）→ 两进程均改为入口处命名互斥体守卫（Global\→Local\ 回退），插件依赖移除；Main 的 mutex 刻意置于 handle_driver_cli 之后（CLI 短命进程不得占用单实例锁）。
+
+**计划/假设**
+
+- VUL-108 下一步三选一：DebugView 内核日志捕获、驱动创建同步路径审计（找 STATUS_BAD_IMPERSONATION_LEVEL 来源）、或临时 DIAG 掩码二分回调类别。建议先做 ③（改动最小）。
+- 安装器挂起问题已彻底解决（${Silent} 分支），vm-automation 可回归自动化安装流程。
+
+**风险/待办**
+
+- guest 当前为「最新包安装成功」状态（四服务全绿），未还原检查点——下一轮测试前需还原「测试专用初始化」。
+- 双 AnXinSecurity 进程曾在手动安装场景出现（finish-run 与 Tray 各拉一个）——mutex 守卫已修，待下轮安装复测确认。
+- NetFilter depend= Tcpip 未含 BFE；BFE 启动顺序异常时 callout 注册可能延迟，观察项。
+
+---
+
+### 2026-08-24 三进程 VM 实测第一轮：拓扑闭环验证通过，VUL-108 阻断驱动运行时的 GUI 拉起
 
 **目标**：在「病毒测试」VM 上安装三进程版并实测 §6 清单。检查点纪律已固化（AGENTS.md「VM 测试检查点纪律」），本轮从用户重建的「测试专用初始化」检查点出发，测毕已还原并抽查（安装目录不存在、服务未注册、凭据可连）。
 

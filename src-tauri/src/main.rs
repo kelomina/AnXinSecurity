@@ -25,6 +25,38 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager, RunEvent};
 
+/// 函数名称：acquire_main_singleton
+/// 函数作用：Main 进程单实例守卫。tauri-plugin-single-instance 依赖查找既有实例
+///           隐藏窗口来退出第二实例，在本环境实测不可靠（出现双 Main 共存），改为
+///           进程入口直接持有命名互斥体。
+/// Function name: acquire_main_singleton
+/// Purpose: Single-instance guard for the Main process. The single-instance plugin's
+///           hidden-window lookup proved unreliable here (two Mains coexisted), so
+///           hold a named mutex at the process entry instead.
+fn acquire_main_singleton() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    // Global\ 跨会话互斥优先，失败回退 Local\（与 Tray 守卫同一策略）。
+    //  Global\ first for cross-session exclusion; fall back to Local\.
+    for prefix in ["Global\\", "Local\\"] {
+        let name: Vec<u16> = format!("{prefix}AnXinMainSingletonMutex\0").encode_utf16().collect();
+        let attrs: Option<*const windows::Win32::Security::SECURITY_ATTRIBUTES> = None;
+        match unsafe { CreateMutexW(attrs, false, PCWSTR(name.as_ptr())) } {
+            Ok(_) => {
+                let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+                // 有意不关闭句柄：互斥体需随进程生命周期保持持有。
+                //  Intentionally leak the handle: held for the process lifetime.
+                return !already;
+            }
+            Err(e) => eprintln!("[Main] mutex create failed ({prefix}): {}", e),
+        }
+    }
+    eprintln!("[Main] singleton mutex unavailable - allowing start");
+    true
+}
+
 /// 函数名称：resolve_behavior_database_path
 /// 函数作用：解析行为分析与隔离区共用 SQLite 数据库路径；相对路径写入 APPDATA，避免 tauri dev 监听仓库运行时文件后重载。
 /// Function name: resolve_behavior_database_path
@@ -323,11 +355,19 @@ fn handle_driver_cli() -> Option<i32> {
 
 fn main() {
     // 安装/卸载程序会以子命令方式调用本程序执行驱动动作，这些调用不启动 UI。
-    // 必须放在最前面：此时不需要 Tauri 运行时，也不该初始化任何防护组件。
+    // 必须放在最前面（先于单实例守卫）：CLI 进程短命即退，不得占用 Main 的
+    // 单实例互斥体，否则安装期之后 Tray 将无法拉起主界面。
     //  The installer and uninstaller invoke this binary with driver subcommands that must not start
-    //  the UI. Handled first: no Tauri runtime is needed and no protection component should start.
+    //  the UI. Handled first, BEFORE the singleton guard: CLI processes are short-lived
+    //  and must not hold Main's singleton mutex, or the tray could never launch the UI
+    //  again after an install.
     if let Some(code) = handle_driver_cli() {
         std::process::exit(code);
+    }
+
+    if !acquire_main_singleton() {
+        eprintln!("[Main] another instance is running - exiting");
+        return;
     }
 
     // UI 进程以普通用户权限运行；防护由独立服务进程（AnXinService.exe，SYSTEM）提供。
@@ -345,15 +385,11 @@ fn main() {
     }
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            // 单实例互斥：第二个实例启动时，唤醒已有主窗口而非启动新实例。
-            // Single-instance mutex: when a second instance launches, activate the existing main window instead.
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
-        }))
+        // 单实例已由 acquire_main_singleton 的命名互斥体保证；插件式单实例
+        // （隐藏窗口查找）在本环境实测不可靠，已移除。
+        //  Single-instance is now guaranteed by the named mutex in
+        //  acquire_main_singleton; the plugin-based approach (hidden-window lookup)
+        //  proved unreliable in this environment and has been removed.
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())

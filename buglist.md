@@ -1338,3 +1338,12 @@
 - **怀疑点**: 进程创建同步回调（PsSetCreateProcessNotifyRoutineEx）路径上对受保护进程上下文中的令牌句柄/使用做了干预降权。
 - **修复方向**: 驱动侧为「AnXinService.exe 服务进程跨会话创建用户 GUI 子进程」的合法产品路径加显式豁免（按 caller PID == 服务 PID 且目标镜像 ∈ {AnXinTray.exe} 放行），不得放宽对外部进程的保护边界。修复后需 VM 回归：驱动 RUNNING 时 launch_ui_process 成功 + 外部伪装进程创建仍被拒。
 - **附带修复**: launch_ui_process 增加「登录就绪轮询」（90s/5s 步进），解决 AUTO_START 早于自动登录导致的 0x800703F0 一次性失败。
+
+---
+
+### VUL-108 进展补充（2026-08-24 第二轮 VM 实测）
+
+- **已尝试并证实不足**：① 驱动家族名表扩展（AnxinNamePrefixMatch/IsAnxinProcess 覆盖四个镜像名）+ 编译部署；② 服务启动时经 ADD_PID 自注册（service.log 证实 "service(self) PID registered"，Trusted 身份应已建立）。两者就位后 CreateProcessAsUserW 仍稳定报 0x80070542。
+- **同轮已排除**：WinSta/Desktop ObCallback（目标 winsta 非受保护列表成员时直接放行）；ObCallback 对 Token 类型的注册（ObRegisterCallbacks 仅 Process/Thread/Winsta/Desktop）；windows-rs DuplicateTokenEx 绑定签名。
+- **同轮正面成果**：POSTINSTALL CopyFiles 方案落地后，三驱动首次全部 RUNNING（FileProtect root+Parameters Instances 双写修复生效；NetFilter 自产品化以来首次安装成功）。
+- **下一步方向**：捕获内核侧证据后定位精确干预点——① guest 运行 DebugView 收集驱动 DbgPrintf（Strip 类日志含 caller PID 与 access mask）；② 审计 PsSetCreateProcessNotifyRoutineEx 同步路径及其辅助函数是否可能以 STATUS_BAD_IMPERSONATION_LEVEL(0xC00000A1) 拒绝创建（该值映射用户态恰为 0x80070542）；③ 若确认，为「caller==AnXinService.exe 且目标镜像∈{AnXinTray.exe}」加显式放行分支。

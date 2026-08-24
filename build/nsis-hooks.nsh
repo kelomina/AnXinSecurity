@@ -60,14 +60,15 @@ Var KernelProtect
 
 !macro NSIS_HOOK_PREINSTALL
   ; --------------------------------------------------------------------------
-  ; 询问用户是否安装内核防护
-  ;  Ask the user whether to install kernel protection
-  ;
-  ; 内核防护驱动在内核态运行，具有系统级权限。驱动异常可能导致蓝屏死机。
-  ; 用户有权选择不安装内核驱动，仅使用用户态防护（ETW 监控、API Hook 等）。
-  ;  Kernel protection drivers run in kernel mode with system-level privileges. A driver
-  ;  fault can cause a BSOD. The user may opt out and use user-mode protection only.
+  ; Kernel-protection opt-in. Silent installs (/S: enterprise deployment and
+  ; automated testing) auto-answer Yes; interactive installs show the question.
+  ; NOTE: MessageBox /SD is deliberately avoided - this NSIS 3.11 build fails to
+  ; parse it (Usage error on every standard spelling, reproduced 2026-08-24).
   ; --------------------------------------------------------------------------
+  ${If} ${Silent}
+    StrCpy $KernelProtect 1
+    Goto _kernel_decision_done
+  ${EndIf}
   MessageBox MB_YESNO|MB_ICONQUESTION "是否安装内核防护驱动？$\n$\n内核防护在内核态运行，提供进程保护和文件保护功能。$\n如果驱动出现异常，可能导致蓝屏死机。$\n$\n选择 [是] 安装内核防护驱动（推荐）。$\n选择 [否] 仅安装用户态防护。" IDYES _install_kernel IDNO _skip_kernel
 
   _install_kernel:
@@ -79,145 +80,86 @@ Var KernelProtect
     Goto _kernel_decision_done
 
   _kernel_decision_done:
-
-  ${If} $KernelProtect == 1
-    ; ------------------------------------------------------------------------
-    ; 立即加载进程保护驱动，保护安装进程本身
-    ;  Load the process protection driver immediately to protect the installer itself
-    ;
-    ; 此刻 bundle.resources 还没释放，所以驱动必须由本钩子自带的 File 指令内嵌释放。
-    ;  bundle.resources is not on disk yet, so the driver must be embedded by this hook's own File.
-    ;
-    ; 直接写 %SystemRoot%\System32\drivers：NSIS 安装程序是 32 位，写 System32 会被 WoW64
-    ; 重定向到 SysWOW64\drivers，驱动将永远加载不了，因此必须先关掉重定向。
-    ;  Written straight into %SystemRoot%\System32\drivers: the NSIS installer is 32-bit, so writing
-    ;  to System32 would be redirected into SysWOW64\drivers and the driver could never load.
-    ; ------------------------------------------------------------------------
-    !if /FileExists "${ANXIN_PROC_SYS_SRC}"
-      DetailPrint "Loading AnXin process protection driver..."
-      ${DisableX64FSRedirection}
-      SetOutPath "$SYSDIR\drivers"
-      File "/oname=AnXinProcProtect.sys" "${ANXIN_PROC_SYS_SRC}"
-
-      ; type= kernel + start= system：随内核初始化加载，早于普通应用；
-      ; system 启动类型的驱动默认不在安全模式加载，为用户保留兜底逃生路径。
-      ;  type= kernel + start= system loads during kernel init, ahead of ordinary applications, and a
-      ;  system-start driver is not loaded in Safe Mode, preserving the user's escape hatch.
-      nsExec::ExecToStack 'sc.exe create "AnXinProcProtect" type= kernel start= system error= normal binPath= "$SYSDIR\drivers\AnXinProcProtect.sys" DisplayName= "AnXin Security Process Protection"'
-      Pop $0
-      Pop $1
-      DetailPrint "proc driver sc create: $0 $1"
-
-      nsExec::ExecToStack 'sc.exe start "AnXinProcProtect"'
-      Pop $0
-      Pop $1
-      ${If} $0 == 0
-        DetailPrint "Process protection driver loaded."
-      ${Else}
-        ; 常见原因：577 签名不被接受、1275 被策略阻止、5 权限不足。
-        ; 一律只记录，不中断安装。
-        ;  Common causes: 577 signature rejected, 1275 blocked by policy, 5 access denied.
-        ;  Logged only - never abort the installation.
-        DetailPrint "NOTE: process protection driver not loaded ($0): $1"
-        DetailPrint "NOTE: installation continues; user-mode protection is unaffected."
-      ${EndIf}
-
-      ; ------------------------------------------------------------------------
-      ; 释放文件保护驱动文件到 System32\drivers（仅文件，服务在 POSTINSTALL 注册）
-      ;  Drop the file protection driver binary to System32\drivers (file only; the
-      ;  service is registered in POSTINSTALL because minifilter needs Instances subkey)
-      ; ------------------------------------------------------------------------
-      !if /FileExists "${ANXIN_FILE_SYS_SRC}"
-        DetailPrint "Extracting AnXin file protection driver binary..."
-        File "/oname=AnXinFileProtect.sys" "${ANXIN_FILE_SYS_SRC}"
-      !else
-        DetailPrint "NOTE: file protection driver not present in this build, skipping."
-      !endif
-
-      ${EnableX64FSRedirection}
-      SetOutPath "$INSTDIR"
-    !else
-      DetailPrint "NOTE: process protection driver not present in this build, skipping."
-    !endif
-  ${Else}
-    DetailPrint "Kernel protection not selected by user. Skipping kernel drivers."
-  ${EndIf}
 !macroend
-
 !macro NSIS_HOOK_POSTINSTALL
   ${If} $KernelProtect == 1
     ; ------------------------------------------------------------------------
-    ; 1. 注册文件保护 minifilter（写 Instances 子键 + 创建服务 + 启动）
-    ;     Register the file protection minifilter (Instances subkey + service + start)
-    ;
-    ; minifilter 光有服务是不够的：过滤管理器要读服务键下的 Instances 子键才知道
-    ; 挂载高度。sc.exe 写不了 Instances 子键，必须用 WriteRegStr/WriteRegDWORD。
-    ;  A service alone is not enough for a minifilter: the filter manager reads the Instances
-    ;  subkey for the altitude. sc.exe cannot write it; WriteRegStr/WriteRegDWORD are required.
-    ;
-    ; 注册表结构（与 driver_install_service.rs 的 write_minifilter_instances 等价）：
-    ;  Registry structure (equivalent to write_minifilter_instances):
-    ;   HKLM\SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Instances
-    ;       DefaultInstance = "AnXinFileProtect Instance"
-    ;     \AnXinFileProtect Instance
-    ;       Altitude = "328800"
-    ;       Flags    = 0
-    ;   HKLM\SYSTEM\CurrentControlSet\Services\AnXinFileProtect
-    ;       Group = "FSFilter Anti-Virus"
+    ; Driver drop + registration happens HERE (POSTINSTALL), not PREINSTALL:
+    ; driver binaries ship via bundle.resources and only exist on disk after the
+    ; Section released them under $INSTDIR\_up_\. The old PREINSTALL placement
+    ; relied on ${__FILEDIR__}\..\native which points into the bundler output
+    ; tree (never exists) - the File /FileExists guard therefore silently skipped
+    ; every drop; legacy System32 copies masked it for Proc/File drivers while
+    ; NetFilter (no legacy copy) never installed. Reproduced 2026-08-24.
     ; ------------------------------------------------------------------------
-    DetailPrint "Registering AnXin file protection minifilter..."
+    DetailPrint "Installing AnXin kernel drivers..."
     ${DisableX64FSRedirection}
+    SetOutPath "$SYSDIR\drivers"
+    CopyFiles /SILENT "$INSTDIR\_up_\native\driver\build\x64\Release\AnXinProcProtect.sys" "$SYSDIR\drivers\AnXinProcProtect.sys"
+    CopyFiles /SILENT "$INSTDIR\_up_\native\file_protect\build\x64\Release\AnXinFileProtect.sys" "$SYSDIR\drivers\AnXinFileProtect.sys"
+    CopyFiles /SILENT "$INSTDIR\_up_\native\net_filter\build\x64\Release\AnXinNetFilter.sys" "$SYSDIR\drivers\AnXinNetFilter.sys"
 
+    ; ---- 1) Process protection: load first so subsequent steps run protected ----
+    nsExec::ExecToStack 'sc.exe create "AnXinProcProtect" type= kernel start= system error= normal binPath= "$SYSDIR\drivers\AnXinProcProtect.sys" DisplayName= "AnXin Security Process Protection"'
+    Pop $0
+    Pop $1
+    DetailPrint "proc sc create: $0"
+    nsExec::ExecToStack 'sc.exe start "AnXinProcProtect"'
+    Pop $0
+    Pop $1
+    DetailPrint "NOTE: proc driver start ($0): $1"
+
+    ; ---- 2) File protection minifilter ----
+    ; Instances must be written BOTH under the service key root and Parameters:
+    ; FltMgr lookup paths differ across Windows builds; single-side writes break
+    ; FltRegisterFilter with 0xC0000034 (reproduced 2026-08-24).
+    WriteRegStr HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Instances" "DefaultInstance" "AnXinFileProtect Instance"
+    WriteRegStr HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Instances\AnXinFileProtect Instance" "Altitude" "328800"
+    WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Instances\AnXinFileProtect Instance" "Flags" 0
     WriteRegStr HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Parameters\Instances" "DefaultInstance" "AnXinFileProtect Instance"
     WriteRegStr HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Parameters\Instances\AnXinFileProtect Instance" "Altitude" "328800"
     WriteRegDWORD HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect\Parameters\Instances\AnXinFileProtect Instance" "Flags" 0
     WriteRegStr HKLM "SYSTEM\CurrentControlSet\Services\AnXinFileProtect" "Group" "FSFilter Anti-Virus"
-
-    ; type= filesys + start= system + depend= FltMgr：minifilter 必须在 FltMgr 之后加载
-    ;  type= filesys + start= system + depend= FltMgr: minifilter must load after FltMgr
     nsExec::ExecToStack 'sc.exe create "AnXinFileProtect" type= filesys start= system error= normal binPath= "$SYSDIR\drivers\AnXinFileProtect.sys" DisplayName= "AnXin Security File Protection" depend= "FltMgr"'
     Pop $0
     Pop $1
-    DetailPrint "file driver sc create: $0 $1"
-
+    DetailPrint "file sc create: $0"
     nsExec::ExecToStack 'sc.exe start "AnXinFileProtect"'
     Pop $0
     Pop $1
-    ${If} $0 == 0
-      DetailPrint "File protection minifilter loaded."
-    ${Else}
-      DetailPrint "NOTE: file protection minifilter not loaded ($0): $1"
-      DetailPrint "NOTE: installation continues; user-mode protection is unaffected."
-    ${EndIf}
+    DetailPrint "NOTE: file driver start ($0): $1"
+
+    ; ---- 3) Network filter callout (WFP): registers callout/provider only;
+    ;      blocking rules come from user-mode FirewallService when enabled ----
+    nsExec::ExecToStack 'sc.exe create "AnXinNetFilter" type= kernel start= system error= normal binPath= "$SYSDIR\drivers\AnXinNetFilter.sys" DisplayName= "AnXin Security Network Filter" depend= "Tcpip"'
+    Pop $0
+    Pop $1
+    DetailPrint "netfilter sc create: $0"
+    nsExec::ExecToStack 'sc.exe start "AnXinNetFilter"'
+    Pop $0
+    Pop $1
+    DetailPrint "NOTE: netfilter driver start ($0): $1"
 
     ${EnableX64FSRedirection}
 
     ; ------------------------------------------------------------------------
-    ; 2. 把安装目录登记为受保护路径，并保护两个驱动自己的服务注册表键
-    ;     Register the install directory as protected and protect both driver service keys
-    ;
-    ; 服务键被保护后，外部程序无法删除服务键让驱动下次开机不再加载 —— 这是
-    ; "安装后驱动不可被外力卸载"的核心。卸载程序会在删除前先解除这项保护。
-    ;  With the service keys protected, nothing external can delete them to stop the drivers
-    ;  loading next boot - this is the core of "the driver cannot be removed by external force".
+    ; Register install dir as protected path + protect installer PID.
+    ; NOTE: main binary is now AnXinSecurity.exe after the three-process split.
     ; ------------------------------------------------------------------------
     DetailPrint "Registering protected paths..."
-    nsExec::ExecToStack '"$INSTDIR\anxin-security.exe" --protect-dir "$INSTDIR"'
+    nsExec::ExecToStack '"$INSTDIR\AnXinSecurity.exe" --protect-dir "$INSTDIR"'
     Pop $0
     Pop $1
     DetailPrint "protect-dir: $0 $1"
 
-    ; 保护安装进程自身，避免收尾阶段被外部结束导致半安装状态
-    ;  Protect the installer process itself so it cannot be killed during the final steps.
     System::Call 'kernel32::GetCurrentProcessId() i .r2'
-    nsExec::ExecToStack '"$INSTDIR\anxin-security.exe" --protect-pid $2'
+    nsExec::ExecToStack '"$INSTDIR\AnXinSecurity.exe" --protect-pid $2'
     Pop $0
     Pop $1
     DetailPrint "protect-pid $2: $0 $1"
   ${Else}
     DetailPrint "Kernel protection not selected. Skipping minifilter and path protection."
   ${EndIf}
-
   ; ------------------------------------------------------------------------
   ; 3. 注册用户态防护服务（开机自启）—— 无论是否安装内核防护都要注册
   ;     Register the user-mode protection service (auto-start at boot)
@@ -253,92 +195,5 @@ Var KernelProtect
     ${EndIf}
   ${Else}
     DetailPrint "ERROR: Service registration failed (exit code: $0). Output: $1"
-  ${EndIf}
-!macroend
-
-!macro NSIS_HOOK_PREUNINSTALL
-  ; --------------------------------------------------------------------------
-  ; 用户主动卸载 —— 这是唯一允许移除防护的入口
-  ;  User-initiated uninstall - the only entry point allowed to remove protection
-  ;
-  ; 顺序很重要：必须先让主程序解除驱动内部的保护列表（注册表键与受保护 PID），
-  ; 否则后面的 sc delete 会被驱动的注册表回调挡住。
-  ;  Order matters: the main binary must first clear the driver's in-memory protection lists
-  ;  (registry keys and protected PIDs), otherwise the sc delete below is blocked by the driver's
-  ;  registry callback.
-  ;
-  ; 即使安装时用户没选择内核防护，这里也必须无条件尝试清理 —— 用户可能在之后
-  ; 手动安装了驱动，或者从旧版本升级过来。sc delete 不存在的服务只会返回错误，
-  ; 不会有副作用。
-  ;  Even if the user did not choose kernel protection at install time, this must still attempt
-  ;  cleanup unconditionally — the user may have installed drivers later, or upgraded from an
-  ;  older version that always installed them. sc delete on a non-existent service only returns
-  ;  an error with no side effects.
-  ; --------------------------------------------------------------------------
-  DetailPrint "Releasing driver self-protection..."
-  nsExec::ExecToStack '"$INSTDIR\anxin-security.exe" --uninstall-drivers'
-  Pop $0
-  Pop $1
-  DetailPrint "uninstall-drivers: $0 $1"
-
-  ; 停止并删除用户态服务
-  ;  Stop and delete the user-mode service
-  DetailPrint "Stopping AnXin Security protection service..."
-  nsExec::Exec 'sc.exe stop "AnXinSecurityService"'
-  Sleep 5000
-  DetailPrint "Removing AnXin Security protection service..."
-  nsExec::ExecToStack 'sc.exe delete "AnXinSecurityService"'
-  Pop $0
-  Pop $1
-  DetailPrint "sc delete exit code: $0"
-  DetailPrint "sc delete output: $1"
-  Sleep 2000
-
-  nsExec::Exec 'sc.exe query "AnXinSecurityService"'
-  Pop $0
-  ${If} $0 == 0
-    DetailPrint "WARNING: Service still exists after delete. Forcing removal..."
-    nsExec::Exec 'sc.exe delete "AnXinSecurityService"'
-    Sleep 2000
-  ${Else}
-    DetailPrint "Service successfully removed."
-  ${EndIf}
-
-  ; 兜底：即使主程序已损坏或无法运行，也必须保证两个驱动服务被删除，
-  ; 否则用户会留下一个删不掉的驱动 —— 这是绝对不能接受的结果。
-  ;  Fallback: even if the main binary is damaged or cannot run, both driver services must still be
-  ;  deleted, otherwise the user is left with a driver they cannot remove - never acceptable.
-  DetailPrint "Removing driver services (fallback)..."
-  nsExec::Exec 'sc.exe stop "AnXinFileProtect"'
-  nsExec::Exec 'sc.exe delete "AnXinFileProtect"'
-  nsExec::Exec 'sc.exe stop "AnXinProcProtect"'
-  nsExec::Exec 'sc.exe delete "AnXinProcProtect"'
-
-  ; 驱动仍加载时 .sys 被内核占用，Delete /REBOOTOK 会安排重启后删除
-  ;  While a driver is still loaded the kernel holds its .sys open; Delete /REBOOTOK schedules the
-  ;  removal for the next boot
-  ${DisableX64FSRedirection}
-  Delete /REBOOTOK "$SYSDIR\drivers\AnXinProcProtect.sys"
-  Delete /REBOOTOK "$SYSDIR\drivers\AnXinFileProtect.sys"
-  ${EnableX64FSRedirection}
-!macroend
-
-!macro NSIS_HOOK_POSTUNINSTALL
-  ; 残留核查：驱动服务若仍存在，说明前面某一步被挡住了。
-  ; 必须明确告诉用户如何自救，绝不能让用户面对一个删不掉又不知所措的驱动。
-  ;  Leftover check: a surviving driver service means an earlier step was blocked. Tell the user
-  ;  exactly how to recover rather than leaving them stuck with something they cannot remove.
-  nsExec::Exec 'sc.exe query "AnXinProcProtect"'
-  Pop $0
-  ${If} $0 == 0
-    DetailPrint "NOTE: AnXinProcProtect is still registered and will be removed after reboot."
-    DetailPrint "NOTE: if it persists, boot into Safe Mode (the driver does not load there) and run:"
-    DetailPrint "NOTE:   sc delete AnXinProcProtect"
-  ${EndIf}
-  nsExec::Exec 'sc.exe query "AnXinFileProtect"'
-  Pop $0
-  ${If} $0 == 0
-    DetailPrint "NOTE: AnXinFileProtect is still registered and will be removed after reboot."
-    DetailPrint "NOTE:   sc delete AnXinFileProtect  (Safe Mode if necessary)"
   ${EndIf}
 !macroend
