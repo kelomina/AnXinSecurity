@@ -384,6 +384,16 @@ fn main() {
         std::process::exit(0);
     }
 
+    if std::env::args().any(|arg| arg == "--query-trace") {
+        use anxin_security::utils::driver_client::DriverClient;
+        let c = DriverClient::new();
+        match c.connect().and_then(|_| c.query_trace()) {
+            Ok(trace) => println!("{}", trace),
+            Err(e) => println!("[query-trace] failed: {}", e),
+        }
+        std::process::exit(0);
+    }
+
     if std::env::args().any(|arg| arg == "--cpasu-probe") {
         let r = anxin_security::services::windows_service::cpasu_diagnostic_probe();
         std::fs::write("C:\\Windows\\Temp\\svc-probe.txt", &r).ok();

@@ -568,6 +568,17 @@ impl DriverClient {
         self.ioctl_write(IOCTL_ANXIN_SET_DIAG, &(flags as usize).to_ne_bytes())
     }
 
+    /// VUL-108 诊断：读取驱动 Trace 环形缓冲区内容。
+    ///  VUL-108 diagnostics: read the driver's Trace ring buffer.
+    pub fn query_trace(&self) -> io::Result<String> {
+        const IOCTL_ANXIN_QUERY_TRACE: u32 =
+            ctl_code(FILE_DEVICE_UNKNOWN, 0x80B, METHOD_BUFFERED, FILE_READ_DATA);
+        let mut out_buf = vec![0u8; 16384];
+        self.ioctl_read(IOCTL_ANXIN_QUERY_TRACE, &mut out_buf)?;
+        let end = out_buf.iter().position(|&b| b == 0).unwrap_or(out_buf.len());
+        Ok(String::from_utf8_lossy(&out_buf[..end]).to_string())
+    }
+
     pub fn add_pid(&self, pid: u32) -> io::Result<()> {
         self.ioctl_write(IOCTL_ANXIN_ADD_PID, &(pid as usize).to_ne_bytes())
     }
@@ -697,6 +708,29 @@ impl DriverClient {
         }
 
         Ok(())
+    }
+
+    /// VUL-108 诊断：读取型 IOCTL（输出到 out_buf，返回实际字节数）。
+    ///  VUL-108 diagnostics: read-style IOCTL (writes into out_buf, returns bytes).
+    fn ioctl_read(&self, code: u32, out_buf: &mut [u8]) -> io::Result<usize> {
+        let handle = self.get_handle()?;
+        let mut bytes_returned = 0u32;
+        unsafe {
+            let result = DeviceIoControl(
+                handle,
+                code,
+                None,
+                0,
+                Some(out_buf.as_mut_ptr() as *mut _),
+                out_buf.len() as u32,
+                Some(&mut bytes_returned as *mut u32),
+                None,
+            );
+            if let Err(e) = result {
+                return Err(io::Error::from_raw_os_error(e.code().0));
+            }
+        }
+        Ok(bytes_returned as usize)
     }
 }
 
