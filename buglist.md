@@ -1358,3 +1358,11 @@
 - **当前头号怀疑**：SCM 服务环境特有因素——如服务进程被驱动标记 protected 后内核对其 CreateProcessAsUserW 调用的 SeSubProcessToken/令牌会话处理路径干预；或服务启动栈中某组件（HookService 管道/ETW 会话）遗留了影响内核创建路径的状态。
 - **基础设施就绪**：guest 已部署 DebugView64.exe（C:\Windows\Temp\DbgView64.exe，内核 DbgPrint 捕获、零符号下载）。下一步：提权运行 DbgView 开启 Kernel 捕获 → 重启服务复现 542 → 导出日志定位驱动干预点。【禁止 kd/cdb/WinDbg】
 - **附带确认**：ADD_PID 对已注册 PID 重复注册返回内部错误（非幂等），IPC 握手重复注册产生噪音日志——建议用户态缓存已注册状态或驱动改幂等。
+
+---
+
+### VUL-108 附带发现：FileProtect CmCallback 阻止 AnXin* 服务键创建（三进程拆分后）
+
+- **根因**：minifilter.c 的 `IsCallerAuthorized()` 使用硬编码 `ANXIN_EXE_NAME_ANSI("anxin-security.exe")` 做调用者预筛。三进程拆分后 AnXinService.exe / AnXinSecurity.exe 均不匹配 → 被视为非产品进程 → 对 AnXin* 服务键的 SetValue/CreateKey 操作被 STATUS_ACCESS_DENIED 拒绝。
+- **影响**：安装器/服务无法注册 AnXinSecurityService 用户态防护服务；无法更新已注册驱动服务键。
+- **修复方向**：将 minifilter.c 的 ANSI 预筛与完整路径校验扩展为与 ProcProtect 相同的家族名表（四个镜像名）。部署需重启周期（FileProtect anti-unload）。
