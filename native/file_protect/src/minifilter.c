@@ -54,6 +54,17 @@ static VOID    AnxinLoadTrustedInstallDir(VOID);
 #define MAX_PATH_LENGTH         520
 #define POOL_TAG                'xFAn'
 #define ANXIN_EXE_NAME          L"anxin-security.exe"
+/*
+ * 三进程拆分（2026-08）后的产品家族名表。用于 IsCallerAuthorized 的
+ * 预筛与完整路径确认。授权仍需通过可信安装目录校验。
+ */
+static const WCHAR * const ANXIN_FAMILY_WIDE[] = {
+    L"anxin-security.exe",
+    L"anxinsecurity.exe",
+    L"anxinservice.exe",
+    L"anxintray.exe",
+};
+#define ANXIN_FAMILY_COUNT      4
 /* VUL-038: 可信安装目录，路径必须包含此组件 */
 #define ANXIN_TRUSTED_DIR       L"\\anxinsecurity\\"
 /*
@@ -577,7 +588,6 @@ BOOLEAN IsCallerAuthorized(VOID)
     NTSTATUS        status;
     BOOLEAN         valid = FALSE;
     USHORT          tailChars = 0;
-    ULONG           i;
 
     if (pid == NULL) return FALSE;
     if (pid == (HANDLE)4) return TRUE;                      // SYSTEM
@@ -588,13 +598,26 @@ BOOLEAN IsCallerAuthorized(VOID)
     ansiName = PsGetProcessImageFileName(proc);
     if (ansiName == NULL) return FALSE;
 
-    for (i = 0; i < ANXIN_ANSI_COMPARE_LEN; i++) {
-        CHAR actual   = ansiName[i];
-        CHAR expected = ANXIN_EXE_NAME_ANSI[i];
-
-        if (actual >= 'A' && actual <= 'Z')   actual   = (CHAR)(actual - 'A' + 'a');
-        if (expected >= 'A' && expected <= 'Z') expected = (CHAR)(expected - 'A' + 'a');
-        if (actual != expected) return FALSE;               // not anxin-security.exe
+    {
+        BOOLEAN familyMatch = FALSE;
+        for (ULONG f = 0; f < ANXIN_FAMILY_COUNT && !familyMatch; f++) {
+            ULONG elen = 0;
+            CHAR buf[16] = {0};
+            while (ANXIN_FAMILY_WIDE[f][elen] != L'\0' && elen < 15) { buf[elen] = (CHAR)ANXIN_FAMILY_WIDE[f][elen]; elen++; }
+            buf[elen] = '\0';
+            if (elen > ANXIN_ANSI_COMPARE_LEN) elen = ANXIN_ANSI_COMPARE_LEN;
+            BOOLEAN m = TRUE;
+            for (ULONG k = 0; k < elen; k++) {
+                CHAR a = ansiName[k];
+                CHAR e = buf[k];
+                if (a == '\0') { m = FALSE; break; }
+                if (a >= 'A' && a <= 'Z') a = (CHAR)(a - 'A' + 'a');
+                if (e >= 'A' && e <= 'Z') e = (CHAR)(e - 'A' + 'a');
+                if (a != e) { m = FALSE; break; }
+            }
+            if (m) { familyMatch = TRUE; break; }
+        }
+        if (!familyMatch) return FALSE;
     }
 
     /* --- 完整路径确认 / Confirm the full path --- */
@@ -605,18 +628,17 @@ BOOLEAN IsCallerAuthorized(VOID)
         return FALSE;
     }
 
-    RtlInitUnicodeString(&target, ANXIN_EXE_NAME);
-
-    // Check that the full path ends with \anxin-security.exe (case-insensitive)
-    if (fullPath->Length > target.Length) {
-        tailChars = (USHORT)((fullPath->Length - target.Length) / sizeof(WCHAR));
-        WCHAR  separator = fullPath->Buffer[tailChars - 1];
-
-        if (separator == L'\\' || separator == L'/') {
-            tail.Buffer        = &fullPath->Buffer[tailChars];
-            tail.Length        = target.Length;
-            tail.MaximumLength = target.Length;
-            valid = (BOOLEAN)(RtlCompareUnicodeString(&tail, &target, TRUE) == 0);
+    for (ULONG f = 0; f < ANXIN_FAMILY_COUNT && !valid; f++) {
+        RtlInitUnicodeString(&target, (PWSTR)ANXIN_FAMILY_WIDE[f]);
+        if (fullPath->Length > target.Length) {
+            tailChars = (USHORT)((fullPath->Length - target.Length) / sizeof(WCHAR));
+            WCHAR  sep = fullPath->Buffer[tailChars - 1];
+            if (sep == L'\\' || sep == L'/') {
+                tail.Buffer        = &fullPath->Buffer[tailChars];
+                tail.Length        = target.Length;
+                tail.MaximumLength = target.Length;
+                valid = (BOOLEAN)(RtlCompareUnicodeString(&tail, &target, TRUE) == 0);
+            }
         }
     }
 

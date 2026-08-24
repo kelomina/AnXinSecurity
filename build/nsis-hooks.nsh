@@ -1,4 +1,4 @@
-﻿; NSIS 安装/卸载钩子
+; NSIS 安装/卸载钩子
 ;  NSIS install/uninstall hooks
 ;
 ; Tauri 2.0 的 NSIS 模板使用的宏名与执行时机（已从模板反编译确认）：
