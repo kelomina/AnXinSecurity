@@ -51,6 +51,34 @@ const FILE_HOOK_PIPE_NAME: &str = "anxin_security_filehook";
 ///  IPC `shutdown_service` method set it via [`request_service_shutdown`].
 static SERVICE_STOP_SIGNAL: std::sync::OnceLock<Arc<AtomicBool>> = std::sync::OnceLock::new();
 
+/// 服务模式文件日志路径：服务进程无控制台，stderr 全部丢失；关键生命周期
+/// 事件（启动/停止/UI 拉起/组件失败）双写到该文件供现场排查。
+///  Service-mode file log path: a service process has no console and its stderr is
+///  lost; key lifecycle events (start/stop/UI launch/component failures) are
+///  dual-written to this file for on-site troubleshooting.
+fn service_log_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("PROGRAMDATA").unwrap_or_else(|_| r"C:\ProgramData".into()))
+        .join("AnXinSecurity")
+        .join("logs")
+        .join("service.log")
+}
+
+/// 双写一条服务日志：保留原有 stderr 行为，同时追加到文件（失败静默——日志
+/// 绝不能反过来影响防护流程）。
+///  Dual-write one service log line: keeps the original stderr behaviour and appends
+///  to the file (failures are swallowed — logging must never affect protection).
+pub fn service_log(msg: &str) {
+    eprintln!("{}", msg);
+    let path = service_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(f, "[{}] {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f"), msg);
+    }
+}
+
 /// 请求优雅停止防护服务（幂等）：仅置位停止标志，真正的组件收尾由持有
 /// ProtectionRuntime 的主循环执行。
 ///  Request a graceful protection-service shutdown (idempotent): only sets the stop flag;
@@ -205,7 +233,7 @@ pub fn run_service() -> Result<(), String> {
     // 服务以 SYSTEM 在 Session 0 运行，UI 进程需要在用户会话（Session 1+）中运行
     //  Service runs as SYSTEM in Session 0, UI process needs to run in user session (Session 1+)
     if let Err(e) = launch_ui_process() {
-        eprintln!("[Service] Failed to launch UI process: {}", e);
+        service_log(&format!("[Service] Failed to launch UI process: {}", e));
         // UI 拉起失败不阻断服务运行，用户可手动启动 UI
         //  UI launch failure doesn't block service; user can manually start UI
     }
@@ -270,7 +298,7 @@ pub fn run_foreground() -> Result<(), String> {
     let runtime_guard = start_protection_runtime(started_at, stop_flag.clone())?;
 
     if let Err(e) = launch_ui_process() {
-        eprintln!("[Service] Failed to launch UI process: {} (non-fatal)", e);
+        service_log(&format!("[Service] Failed to launch UI process: {} (non-fatal)", e));
     }
 
     // Ctrl+C / 控制台关闭 → 置位停止标志。用独立的 current-thread runtime 阻塞等待信号，
@@ -1363,7 +1391,9 @@ fn resolve_tray_exe_path() -> std::path::PathBuf {
 fn launch_ui_process() -> Result<(), String> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows::Win32::Security::{
+        DuplicateTokenEx, SecurityImpersonation, TokenPrimary, SECURITY_ATTRIBUTES, TOKEN_ALL_ACCESS,
+    };
     use windows::Win32::System::Environment::CreateEnvironmentBlock;
     use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
     use windows::Win32::System::Threading::{
@@ -1376,18 +1406,76 @@ fn launch_ui_process() -> Result<(), String> {
     //  1. Get active console session ID
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
     if session_id == 0xFFFFFFFF {
-        eprintln!("[Service] No active console session, skipping UI launch");
+        service_log("[Service] No active console session, skipping UI launch");
         return Ok(());
     }
-    eprintln!("[Service] Active console session: {}", session_id);
+    service_log(&format!("[Service] Active console session: {}", session_id));
 
-    // 2. 查询该会话的用户令牌
-    //  2. Query user token for this session
+    // 2. 查询该会话的用户令牌。
+    //    服务 AUTO_START 常早于用户自动登录完成，此时 WTSQueryUserToken 报
+    //    0x800703F0（令牌不存在）——这是时序问题而非故障；轮询等待登录就绪，
+    //    总窗口 90s（覆盖慢盘冷启动），期间每 5s 重试一次。
+    //  2. Query the session's user token. AUTO_START services routinely beat the
+    //     user autologon, where WTSQueryUserToken fails with 0x800703F0 (token does
+    //     not exist) — a timing issue, not a fault. Poll until logon is ready: retry
+    //     every 5s within a 90s window (covers slow cold boots).
     let mut user_token = windows::Win32::Foundation::HANDLE::default();
-    unsafe {
-        WTSQueryUserToken(session_id, &mut user_token)
-            .map_err(|e| format!("WTSQueryUserToken failed: {}", e))?;
+    {
+        const LOGON_WAIT_TOTAL_MS: u64 = 90_000;
+        const LOGON_WAIT_STEP_MS: u64 = 5_000;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(LOGON_WAIT_TOTAL_MS);
+        loop {
+            let mut attempt_err = None;
+            unsafe {
+                if let Err(e) = WTSQueryUserToken(session_id, &mut user_token) {
+                    attempt_err = Some(e);
+                }
+            }
+            match attempt_err {
+                None => break,
+                Some(e) => {
+                    if std::time::Instant::now() >= deadline {
+                        let msg = format!("[Service] WTSQueryUserToken failed after {}s wait: {}", LOGON_WAIT_TOTAL_MS / 1000, e);
+                        service_log(&msg);
+                        return Err(format!("WTSQueryUserToken failed: {}", e));
+                    }
+                    service_log(&format!(
+                        "[Service] user token not ready yet ({}) - waiting for logon",
+                        e.code()
+                    ));
+                    std::thread::sleep(std::time::Duration::from_millis(LOGON_WAIT_STEP_MS));
+                }
+            }
+        }
     }
+
+    // 2.5 复制为主令牌：WTSQueryUserToken 返回的令牌句柄在受保护的服务进程内
+    //     会被自保驱动的句柄审计降级为 Identification 模拟级别（VUL-103 副作用），
+    //     直接传给 CreateProcessAsUserW 会报 0x80070542 BAD_IMPERSONATION_LEVEL。
+    //     按 MSDN 指引先显式 DuplicateTokenEx 出 TokenPrimary + SecurityImpersonation。
+    //  2.5 Duplicate into a primary token: inside the protected service process the
+    //      self-protection driver's handle audit downgrades the WTSQueryUserToken
+    //      handle to Identification level (side effect of the VUL-103 fix), so passing
+    //      it straight to CreateProcessAsUserW fails with 0x80070542
+    //      BAD_IMPERSONATION_LEVEL. Follow the MSDN guidance and explicitly
+    //      DuplicateTokenEx to TokenPrimary + SecurityImpersonation first.
+    let mut primary_token = windows::Win32::Foundation::HANDLE::default();
+    unsafe {
+        DuplicateTokenEx(
+            user_token,
+            TOKEN_ALL_ACCESS,
+            None,
+            SecurityImpersonation,
+            TokenPrimary,
+            &mut primary_token,
+        )
+        .map_err(|e| {
+            let msg = format!("[Service] DuplicateTokenEx failed: {}", e);
+            service_log(&msg);
+            format!("DuplicateTokenEx failed: {}", e)
+        })?;
+    }
+    service_log("[Service] user token duplicated to primary (SecurityImpersonation)");
 
     // 3. 创建用户环境块
     //  3. Create user environment block
@@ -1400,7 +1488,7 @@ fn launch_ui_process() -> Result<(), String> {
     //  4. Get executable path (the split Tray process next to us; falls back to self without --service)
     let exe_path = resolve_tray_exe_path();
     let exe_path_str = exe_path.to_string_lossy().to_string();
-    eprintln!("[Service] Launching UI process: {}", exe_path_str);
+    service_log(&format!("[Service] Launching UI process: {}", exe_path_str));
 
     // 获取 exe 所在目录作为工作目录，避免继承 System32
     //  Get exe parent dir as working directory to avoid inheriting System32
@@ -1445,7 +1533,7 @@ fn launch_ui_process() -> Result<(), String> {
         .collect();
     let result = unsafe {
         CreateProcessAsUserW(
-            user_token,
+            primary_token,
             PCWSTR(exe_path_wide.as_ptr()),
             windows::core::PWSTR(command_line.as_mut_ptr()),
             Some(&SECURITY_ATTRIBUTES {
@@ -1481,10 +1569,10 @@ fn launch_ui_process() -> Result<(), String> {
             let _ = AllowSetForegroundWindow(process_info.dwProcessId);
             let _ = CloseHandle(process_info.hThread);
             let _ = CloseHandle(process_info.hProcess);
-            eprintln!(
+            service_log(&format!(
                 "[Service] UI process launched successfully (PID: {})",
                 process_info.dwProcessId
-            );
+            ));
 
             // 向驱动注册 UI 进程 PID，确保 UI 进程受到内核级进程保护。
             //  Register the UI process PID with the driver for kernel-level process protection.
@@ -1496,9 +1584,13 @@ fn launch_ui_process() -> Result<(), String> {
             //  the primary protection path.
             register_ui_process_pid(process_info.dwProcessId);
         }
+        let _ = CloseHandle(primary_token);
         let _ = CloseHandle(user_token);
     }
 
+    if let Err(ref e) = result {
+        service_log(&format!("[Service] CreateProcessAsUserW failed: {}", e));
+    }
     result.map_err(|e| format!("CreateProcessAsUserW failed: {}", e))?;
     Ok(())
 }

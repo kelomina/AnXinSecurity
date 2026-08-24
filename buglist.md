@@ -114,10 +114,9 @@
 | VUL-104 | High | AnXinProcMon 构建缺 /INTEGRITYCHECK，进程/线程回调注册被 CI 拒绝（0xC0000022） | native/proc_monitor/AnXinProcMon.vcxproj | Fixed |
 | VUL-105 | Medium | 服务模式 IPC 唯一处理线程被批量扫描阻塞，状态刷新 broken-pipe、开关卡死、扫描无法取消 | services/ipc_server.rs | Fixed |
 | VUL-106 | Medium | IPC 客户端身份校验仅按镜像文件名白名单（无安装目录/签名比对），同名伪装进程可通过校验并驱动拦截决策/停服通道；三进程拆分白名单扩至 anxin-tray.exe 后伪装面增大 | services/identity_verification_service.rs | Open |
-
 | VUL-107 | Low | Rust 依赖审计（cargo-audit 2026-08-23）：sqlx 0.7.4 RUSTSEC-2024-0363 为唯一 Windows 可达条目且仅用 SQLite 嵌入式驱动（wire-protocol 误读不可达）；quick-xml×2 与 rsa 经产物符号抽查确认不在 Windows 构建内 | src-tauri/Cargo.lock（crates/anxin-core） | Accepted |
+| VUL-108 | High | ProcProtect 进程创建同步路径对受保护服务（AnXinService.exe）跨会话 CreateProcessAsUserW 使用的用户令牌干预降权，报 0x80070542 BAD_IMPERSONATION_LEVEL，服务无法在驱动运行时拉起用户会话 GUI；DuplicateTokenEx 复制的新句柄同样被干预 | native/driver/src/driver.c（进程创建回调）/ services/windows_service.rs::launch_ui_process | Open |
 ---
-
 ## 漏洞详情
 
 ### VUL-001: DLL 注入路径未校验
@@ -1324,4 +1323,18 @@
   - sqlx 0.7.4（RUSTSEC-2024-0363）：唯一直接依赖相关条目。该 advisory 为 wire-protocol 二进制误读（PG/MySQL），本项目仅用 SQLite 嵌入式驱动，实际可达性受限。
   - 23 条 unmaintained 警告：gtk/atk/gdk 系列为 Linux GUI 链（Windows 构建不含），paste/proc-macro-error/fxhash/unic-* 为宏工具类间接依赖，无可用替代修复。
 - **处置决策**: 接受现状并持续观察。sqlx 0.7 → 0.8 涉及 API 大版本迁移（query_as 宏、ConnectOptions 等）与全量回归，单独立项评估而非顺手升级；tauri 后续版本升级时关注 quick-xml 是否随之进入 >=0.41。
-- **复现命令**: `cargo install cargo-audit --locked && cargo audit`（在 src-tauri 下执行）
+
+---
+
+### VUL-108: ProcProtect 进程创建路径对受保护服务的跨会话令牌干预，服务无法拉起用户会话 GUI
+
+- **严重等级**: High（三进程架构下服务拉起 Tray 的核心编排被完全阻断）
+- **漏洞类型**: 自保驱动副作用 / 功能回归
+- **影响模块**: `native/driver/src/driver.c`（进程创建同步回调）+ `services/windows_service.rs::launch_ui_process`
+- **状态**: Open
+- **发现日期**: 2026-08-24（VM 安装实测）
+- **现象**: AnXinProcProtect RUNNING 时，服务内 `CreateProcessAsUserW(WTSQueryUserToken 令牌)` 稳定报 `0x80070542 BAD_IMPERSONATION_LEVEL`；先 `DuplicateTokenEx(TokenPrimary, SecurityImpersonation)` 复制的新句柄同样失败。驱动 STOPPED 时同代码成功（VM 因果实验证实：log「UI process launched successfully (PID: 4116)」且 AnXinTray 存活于 s=1）。
+- **已排除**: ObCallbacks 仅注册 PsProcessType/PsThreadType（不含 Token 类型）；windows-rs DuplicateTokenEx 绑定签名核对无误；SCM SYSTEM 服务具备 SeAssignPrimaryTokenPrivilege。
+- **怀疑点**: 进程创建同步回调（PsSetCreateProcessNotifyRoutineEx）路径上对受保护进程上下文中的令牌句柄/使用做了干预降权。
+- **修复方向**: 驱动侧为「AnXinService.exe 服务进程跨会话创建用户 GUI 子进程」的合法产品路径加显式豁免（按 caller PID == 服务 PID 且目标镜像 ∈ {AnXinTray.exe} 放行），不得放宽对外部进程的保护边界。修复后需 VM 回归：驱动 RUNNING 时 launch_ui_process 成功 + 外部伪装进程创建仍被拒。
+- **附带修复**: launch_ui_process 增加「登录就绪轮询」（90s/5s 步进），解决 AUTO_START 早于自动登录导致的 0x800703F0 一次性失败。

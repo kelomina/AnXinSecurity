@@ -18,17 +18,59 @@ use anxin_security::services::app_lifecycle_service::AppLifecycleService;
 use anxin_security::services::interception_service::InterceptionService;
 use anxin_security::services::interception_window_service::prepare_interception_window;
 use anxin_security::services::ipc_bridge_service::{commands as ipc_bridge_commands, IpcBridgeService};
-use anxin_security::services::tray_service::TrayService;
+use anxin_security::services::tray_service::{launch_main_ui_process, TrayService};
 use anxin_security::services::trust_service::TrustService;
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, RunEvent};
 
+/// 函数名称：acquire_tray_singleton
+/// 函数作用：Tray 自身的单实例守卫。tauri-plugin-single-instance 依赖「查找既有
+///           实例隐藏窗口」来退出第二实例，而本进程没有常驻主窗口、该查找不可靠
+///           （实测出现双托盘共存），故改为进程入口处直接持有命名互斥体：已存在
+///           即返回 false，main 直接退出。
+/// Function name: acquire_tray_singleton
+/// Purpose: Single-instance guard for the tray process. The single-instance plugin
+///           relies on finding the existing instance's hidden window to exit the new
+///           one; this process has no resident main window and that lookup proved
+///           unreliable in the field (two trays coexisted). Hold a named mutex at the
+///           very entry instead: false means another instance owns it and main exits.
+fn acquire_tray_singleton() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+
+    // Global\ 跨会话互斥（防其他会话的诊断/计划任务重复拉起）；普通用户令牌
+    // 可能无 SeCreateGlobalPrivilege 导致创建失败，此时回退 Local\（覆盖同会话
+    // 的主要场景：服务拉起与用户双击都在登录会话内）。
+    //  Global\ gives cross-session exclusion (diagnostic/scheduled launches in other
+    //  sessions); a normal user token may lack SeCreateGlobalPrivilege so fall back
+    //  to Local\, which still covers the primary same-session case.
+    for prefix in ["Global\\", "Local\\"] {
+        let name: Vec<u16> = format!("{prefix}AnXinTraySingletonMutex\0").encode_utf16().collect();
+        let attrs: Option<*const windows::Win32::Security::SECURITY_ATTRIBUTES> = None;
+        match unsafe { CreateMutexW(attrs, false, PCWSTR(name.as_ptr())) } {
+            Ok(_) => {
+                // 紧邻读取 LastError：ERROR_ALREADY_EXISTS 表示已有实例持有同名互斥体。
+                //  Read LastError immediately: ALREADY_EXISTS means another instance holds it.
+                let already = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+                // 有意不关闭句柄：互斥体需随进程生命周期保持持有。
+                //  Intentionally leak the handle: it must be held for the process lifetime.
+                return !already;
+            }
+            Err(e) => eprintln!("[Tray] mutex create failed ({prefix}): {}", e),
+        }
+    }
+    eprintln!("[Tray] singleton mutex unavailable - allowing start");
+    true
+}
+
 fn main() {
+    if !acquire_tray_singleton() {
+        eprintln!("[Tray] another instance is running - exiting");
+        return;
+    }
+
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|_app, _argv, _cwd| {
-            // Tray 自身单实例：第二个实例直接退出（无窗口可激活）。
-            //  Tray single-instance: the second instance simply exits (no window to activate).
-        }))
         .setup(|app| {
             // 注册应用生命周期状态。退出时先设置这个状态，隐藏的窗口就不会再阻止关闭。
             app.manage(AppLifecycleService::new());
@@ -61,6 +103,14 @@ fn main() {
                 match ipc_bridge.start(&app_handle) {
                     Ok(true) => {
                         eprintln!("[Tray] Connected to service process");
+                        // 保持旧版行为：服务可用后自动打开一次主界面
+                        // （方案 §1 决策 6）。Main 关闭后不会因 IPC 重连再次弹出。
+                        //  Preserve legacy behaviour: open the main window once when the
+                        //  backend is available (plan §1 decision 6). It will not re-open
+                        //  on later IPC reconnects after the user closed it.
+                        if let Err(e) = launch_main_ui_process() {
+                            eprintln!("[Tray] auto-launch main UI failed: {}", e);
+                        }
                     }
                     Ok(false) => {
                         // 服务未运行：托盘仍驻留；防护状态经 get_protection_status 呈现降级。

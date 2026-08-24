@@ -16,7 +16,39 @@
 
 ## 当前状态快照
 
-更新时间：2026-08-23
+更新时间：2026-08-24
+
+### 2026-08-24 三进程 VM 安装实测（第一轮）：拓扑闭环验证通过，VUL-108 阻断驱动运行时的 GUI 拉起
+
+**目标**：在「病毒测试」VM 上安装三进程版并实测 §6 清单。检查点纪律已固化（AGENTS.md「VM 测试检查点纪律」），本轮从用户重建的「测试专用初始化」检查点出发，测毕已还原并抽查（安装目录不存在、服务未注册、凭据可连）。
+
+**已验证状态（VM 内实际运行）**
+
+1. **安装**：NSIS 静默安装成功；`C:\Program Files\AnXinSecurity\` 下三 exe 齐备（8.3MB/3.7MB/3.9MB）；`sc binPath = "...\AnXinService.exe" --service`（Phase 6 切换生效）；AUTO_START。
+2. **编排链**：SCM → AnXinService(s=0) RUNNING → 跨会话拉起 AnXinTray(s=1) 存活 → Tray 连上 IPC 后自动拉起 AnXinSecurity Main(s=1)——**三进程共存拓扑完整达成**（ProcProtect STOPPED 条件下，见第 4 点）。
+3. **IPC**：`\\.\pipe\Global\AnXinSecurityIPC` 与 `anxin_security_filehook` 管道就绪；Tray/Main 双客户端接入。
+4. **生命周期语义**：服务优雅 stop/start ✓；Main 关闭即退出进程、Tray 驻留 ✓；Tray 单实例守卫跨会话生效（自研 Global\+Local\ mutex，替换了在该环境不可靠的 single-instance 插件）✓。
+5. **本轮修复（随实测发现即时落地）**：
+   - `launch_ui_process` 增加 service_log 文件日志（`C:\ProgramData\AnXinSecurity\logs\service.log`，服务 stderr 从此可追查）；
+   - `DuplicateTokenEx(TokenPrimary, SecurityImpersonation)` 显式复制令牌；
+   - 登录就绪轮询（90s/5s 步进），解决 AUTO_START 早于自动登录的 0x800703F0 一次性失败；
+   - Tray 单实例自研守卫 + 移除 tauri-plugin-single-instance（其第二实例路径依赖 FindWindowW 命中隐藏窗口，无主窗口进程下不可靠）。
+
+**阻断问题：VUL-108（High, Open, 已登记 buglist）**
+
+- AnXinProcProtect RUNNING 时 `CreateProcessAsUserW` 稳定报 0x80070542 BAD_IMPERSONATION_LEVEL，DuplicateTokenEx 复制的新句柄同样被干预——**驱动运行时服务无法拉起用户会话 GUI**。
+- 因果实验证实：驱动 STOPPED + 用户登录 → launch 成功且 Tray 存活；驱动 RUNNING → 失败。
+- 已排除：ObCallbacks 仅注册 Process/Thread 类型；windows-rs 绑定签名核对无误；SYSTEM 特权齐备。
+- 待办：驱动侧为「AnXinService.exe 跨会话创建 AnXinTray.exe」合法路径加豁免后 VM 回归。
+
+**遗留问题/待办**
+
+- **FileProtect 注册但启动失败（System log id=7000）、NetFilter 未注册**：疑似与 nsis-hooks.nsh 以 HEAD 基线重建丢失的用户未提交改动有关（该改动可能正是驱动注册逻辑修复）。需要用户提供原改动内容或重新排查 hooks 的 FileProtect/NetFilter 段。
+- 拦截弹窗端到端（样本→Server 入队→Tray 弹窗→决策回传）未测：依赖 FileProtect/ETW 全链路健康，待 VUL-108 修复+驱动问题解决后一并跑。
+- 托盘菜单点击类 GUI 交互无法远程自动化，需人工抽查。
+- guest 实验期间临时配置（autologon 注册表、ProcProtect demand-start）已随检查点还原清除。
+
+---
 
 ### 2026-08-23 三进程拆分实施完成（Main / Tray / Service）——代码层收口，待 VM 实测
 
