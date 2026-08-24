@@ -1710,6 +1710,39 @@ NTSTATUS ProcessNotifyCallback(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId,
             }
 
             if (match || isChildOfProtected) {
+                /*
+                 * VUL-108 修复：后端服务进程自身（AnXinService.exe）不得进入
+                 * pending→promoted 自动保护链。进入该链后，内核对服务发起的
+                 * 跨会话 CreateProcessAsUserW 施加 BAD_IMPERSONATION_LEVEL
+                 * （0x80070542），导致无法拉起用户会话 GUI。服务通过 ADD_PID
+                 * 自注册获得 Trusted=TRUE 的等效保护，无需名称自动保护。
+                 *
+                 * VUL-108 fix: the backend service process (AnXinService.exe)
+                 * must NOT enter the pending→promoted auto-protect chain. Once
+                 * in that chain, the kernel blocks its cross-session
+                 * CreateProcessAsUserW with BAD_IMPERSONATION_LEVEL
+                 * (0x80070542), preventing user-session GUI launch. The service
+                 * self-registers via ADD_PID (Trusted=TRUE) for equivalent
+                 * protection without name-based auto-protect.
+                 */
+                BOOLEAN isBackendService = FALSE;
+                {
+                    const char svc[] = "anxinservice";
+                    BOOLEAN sm = TRUE;
+                    ULONG svcLen = sizeof(svc) - 1; /* 12, excludes NUL */
+                    if (svcLen > ANSI_NAME_COMPARE_LEN) svcLen = ANSI_NAME_COMPARE_LEN;
+                    for (ULONG k = 0; k < svcLen; k++) {
+                        CHAR a = ansiName[k];
+                        CHAR e = svc[k];
+                        if (a == '\0') { sm = FALSE; break; }
+                        if (a >= 'A' && a <= 'Z') a = (CHAR)(a - 'A' + 'a');
+                        if (e >= 'A' && e <= 'Z') e = (CHAR)(e - 'A' + 'a');
+                        if (a != e) { sm = FALSE; break; }
+                    }
+                    isBackendService = sm;
+                }
+
+                if (!isBackendService || isChildOfProtected) {
                 Trace("PN:autoprotect");
                 if (!(g_DiagFlags & DIAG_DISABLE_AUTOPROTECT)) {
                     /*
@@ -1723,6 +1756,7 @@ NTSTATUS ProcessNotifyCallback(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId,
                     Trace(s ? "PN:queue-ok" : "PN:queue-fail");
                     if (NT_SUCCESS(s))
                         DbgPrintf("[AnXin] Deferred auto-protect queued PID %lu (created, child=%d)\n", (ULONG)(ULONG_PTR)ProcessId, isChildOfProtected);
+                }
                 }
             }
         }
