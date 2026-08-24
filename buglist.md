@@ -1347,3 +1347,14 @@
 - **同轮已排除**：WinSta/Desktop ObCallback（目标 winsta 非受保护列表成员时直接放行）；ObCallback 对 Token 类型的注册（ObRegisterCallbacks 仅 Process/Thread/Winsta/Desktop）；windows-rs DuplicateTokenEx 绑定签名。
 - **同轮正面成果**：POSTINSTALL CopyFiles 方案落地后，三驱动首次全部 RUNNING（FileProtect root+Parameters Instances 双写修复生效；NetFilter 自产品化以来首次安装成功）。
 - **下一步方向**：捕获内核侧证据后定位精确干预点——① guest 运行 DebugView 收集驱动 DbgPrintf（Strip 类日志含 caller PID 与 access mask）；② 审计 PsSetCreateProcessNotifyRoutineEx 同步路径及其辅助函数是否可能以 STATUS_BAD_IMPERSONATION_LEVEL(0xC00000A1) 拒绝创建（该值映射用户态恰为 0x80070542）；③ 若确认，为「caller==AnXinService.exe 且目标镜像∈{AnXinTray.exe}」加显式放行分支。
+
+---
+
+### VUL-108 排查进展（2026-08-24 深夜，第三轮）
+
+- **已实施并部署但无效的修复**：① Ex 回调签名修复（void→NTSTATUS 显式 STATUS_SUCCESS，消除寄存器垃圾返回理论）；② 家族名表扩展；③ 服务 ADD_PID 自注册（日志证实成功，Trusted 应已建立）；④ RevertToSelf 防御（排除线程残留模拟）；⑤ 令牌属性核验（复制出的令牌确为 Primary/SecurityImpersonation/SessionId=1）。
+- **决定性新证据**：同一 AnXinService.exe 二进制、同一探针代码——经 schtask SYSTEM 启动时 CPASU 对 cmd 与 AnXinTray 均成功；经 SCM 以服务身份运行时对任意目标稳定 0x80070542。判别变量为「进程由 SCM 创建且运行完整防护栈」这一身份本身。
+- **已排除**：FileProtect（删键重启后仍失败）；NetFilter（多轮失败时它常为 NOT-REG）；ProcProtect ObCallback 剥权（DIAG=0xF 全关后仍失败）；线程残留模拟（RevertToSelf 后仍失败）；令牌属性错误（已核验）；Ex 回调垃圾返回（显式化后仍失败）。
+- **当前头号怀疑**：SCM 服务环境特有因素——如服务进程被驱动标记 protected 后内核对其 CreateProcessAsUserW 调用的 SeSubProcessToken/令牌会话处理路径干预；或服务启动栈中某组件（HookService 管道/ETW 会话）遗留了影响内核创建路径的状态。
+- **基础设施就绪**：guest 已开启本地内核调试（bcdedit /debug on），kd.exe 及依赖已部署 C:\Windows\Temp\kdt\，kd-capture.log 通道验证可用。下一步：kd -kl 下复现并抓取完整内核 DbgPrint 流（驱动 Strip/Pending 日志 + 失败时刻内核输出）。
+- **附带确认**：ADD_PID 对已注册 PID 重复注册返回内部错误（非幂等），IPC 握手重复注册产生噪音日志——建议用户态缓存已注册状态或驱动改幂等。

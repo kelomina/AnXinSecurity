@@ -561,6 +561,13 @@ impl DriverClient {
     /// x64 上是 8 字节；发 4 字节会被判 STATUS_BUFFER_TOO_SMALL 直接失败。
     ///  The driver checks `InputBufferLength >= sizeof(HANDLE)` and reads via `*(PHANDLE)`,
     ///  which is 8 bytes on x64; sending 4 bytes fails with STATUS_BUFFER_TOO_SMALL.
+    /// VUL-108 诊断通道：运行时设置驱动的 DIAG 掩码（需授权调用者）。
+    ///  VUL-108 diagnostics: runtime-set the driver DIAG mask (authorized callers only).
+    pub fn set_diag_flags(&self, flags: u32) -> io::Result<()> {
+        const IOCTL_ANXIN_SET_DIAG: u32 = 0x00228028; // CTL_CODE(0x22, 0x80A, METHOD_BUFFERED, FILE_WRITE_DATA)
+        self.ioctl_write(IOCTL_ANXIN_SET_DIAG, &(flags as usize).to_ne_bytes())
+    }
+
     pub fn add_pid(&self, pid: u32) -> io::Result<()> {
         self.ioctl_write(IOCTL_ANXIN_ADD_PID, &(pid as usize).to_ne_bytes())
     }

@@ -90,6 +90,149 @@ pub fn request_service_shutdown() {
     }
 }
 
+/// VUL-108 诊断探针：在【本进程上下文】内复刻 launch_ui_process 的跨会话创建
+/// 序列（查询控制台令牌→复制主令牌→CPASU 启动 cmd），每步结果写入返回串。
+/// 用于判定失败是否与 AnXinService.exe 进程身份绑定。
+///  VUL-108 diagnostic probe: replays the exact cross-session creation sequence
+///  of launch_ui_process INSIDE this process context, returning per-step results.
+///  Discriminates whether failure is bound to the service process identity.
+pub fn cpasu_diagnostic_probe() -> String {
+    use windows::core::PCWSTR;
+    use windows::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows::Win32::Security::{DuplicateTokenEx, SecurityImpersonation, TokenPrimary, TOKEN_ALL_ACCESS};
+    use windows::Win32::System::RemoteDesktop::{WTSGetActiveConsoleSessionId, WTSQueryUserToken};
+    use windows::Win32::System::Environment::CreateEnvironmentBlock;
+    use windows::Win32::System::Threading::{
+        CreateProcessAsUserW, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW,
+    };
+
+    let mut out = String::new();
+    let mut log = |s: &str| out.push_str(s);
+
+    // 实验变量：先自注册为受保护+trusted 进程，再执行 CPASU 序列
+    //  Experiment variable: self-register as protected+trusted BEFORE CPASU.
+    register_product_pid_with_driver(std::process::id(), "probe-self");
+    let session_id = unsafe { WTSGetActiveConsoleSessionId() };
+    log(&format!("session={}", session_id));
+
+    let mut user_token = windows::Win32::Foundation::HANDLE::default();
+    let qok = unsafe { WTSQueryUserToken(session_id, &mut user_token) };
+    log(&format!(" QUT={}", qok.is_ok()));
+    if qok.is_err() {
+        log(&format!(" err={:?}", unsafe { GetLastError() }));
+        return out;
+    }
+
+    let mut primary = windows::Win32::Foundation::HANDLE::default();
+    let dup = unsafe {
+        DuplicateTokenEx(
+            user_token,
+            TOKEN_ALL_ACCESS,
+            None,
+            SecurityImpersonation,
+            TokenPrimary,
+            &mut primary,
+        )
+    };
+    log(&format!(" DUP={}", dup.is_ok()));
+
+    let mut env_block = std::ptr::null_mut();
+    unsafe {
+        let _ = CreateEnvironmentBlock(&mut env_block, user_token, false);
+    }
+
+    // 目标 1：cmd.exe（非家族名，中性目标）
+    let app: Vec<u16> = "cmd.exe\0".encode_utf16().collect();
+    let mut cmdline: Vec<u16> = "cmd /c exit 0\0".encode_utf16().collect();
+    let mut si = STARTUPINFOW {
+        cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+        ..Default::default()
+    };
+    let mut pi = PROCESS_INFORMATION::default();
+    let r1 = unsafe {
+        CreateProcessAsUserW(
+            primary,
+            PCWSTR(app.as_ptr()),
+            windows::core::PWSTR(cmdline.as_mut_ptr()),
+            None,
+            None,
+            false,
+            CREATE_UNICODE_ENVIRONMENT,
+            Some(env_block),
+            PCWSTR(std::ptr::null()),
+            &mut si,
+            &mut pi,
+        )
+    };
+    log(&format!(" CPASU[cmd]={}", r1.is_ok()));
+    if !r1.is_ok() {
+        log(&format!(" err={:?}", unsafe { GetLastError() }));
+    }
+    unsafe {
+        if !pi.hProcess.is_invalid() {
+            let _ = CloseHandle(pi.hProcess);
+        }
+        if !pi.hThread.is_invalid() {
+            let _ = CloseHandle(pi.hThread);
+        }
+    }
+
+    // 目标 2：同目录的 AnXinTray.exe（家族名目标）
+    if let Ok(self_exe) = std::env::current_exe() {
+        if let Some(dir) = self_exe.parent() {
+            let tray = dir.join("AnXinTray.exe");
+            if tray.exists() {
+                let mut tray_wide: Vec<u16> =
+                    format!("\"{}\"\0", tray.display()).encode_utf16().collect();
+                let tray_app: Vec<u16> = format!("{}\0", tray.display()).encode_utf16().collect();
+                let mut si2 = STARTUPINFOW {
+                    cb: std::mem::size_of::<STARTUPINFOW>() as u32,
+                    ..Default::default()
+                };
+                let mut pi2 = PROCESS_INFORMATION::default();
+                let r2 = unsafe {
+                    CreateProcessAsUserW(
+                        primary,
+                        PCWSTR(tray_app.as_ptr()),
+                        windows::core::PWSTR(tray_wide.as_mut_ptr()),
+                        None,
+                        None,
+                        false,
+                        CREATE_UNICODE_ENVIRONMENT,
+                        Some(env_block),
+                        PCWSTR(std::ptr::null()),
+                        &mut si2,
+                        &mut pi2,
+                    )
+                };
+                log(&format!(" CPASU[tray]={}", r2.is_ok()));
+                if !r2.is_ok() {
+                    log(&format!(" err={:?}", unsafe { GetLastError() }));
+                } else {
+                    log(&format!(
+                        " traypid={}",
+                        pi2.dwProcessId
+                    ));
+                }
+                unsafe {
+                    if !pi2.hProcess.is_invalid() {
+                        let _ = CloseHandle(pi2.hProcess);
+                    }
+                    if !pi2.hThread.is_invalid() {
+                        let _ = CloseHandle(pi2.hThread);
+                    }
+                }
+            } else {
+                log(" TRAY-NOT-FOUND");
+            }
+        }
+    }
+
+    use windows::Win32::UI::WindowsAndMessaging as _;
+
+    out
+}
+
 /// 需要转发到 UI 进程的事件名列表
 ///  List of event names to forward to UI process
 const FORWARDABLE_EVENTS: &[&str] = &[
@@ -1397,6 +1540,31 @@ fn resolve_tray_exe_path() -> std::path::PathBuf {
     self_exe
 }
 
+/// VUL-108 诊断开关读取：HKLM\SOFTWARE\AnXinInstallDiagnostics\CpasuProbe == "1"
+fn RegGetValueW_marker() -> bool {
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Registry::{
+        RegGetValueW, REG_VALUE_TYPE, RRF_RT_REG_SZ, HKEY_LOCAL_MACHINE,
+    };
+    let subkey: Vec<u16> = "SOFTWARE\\AnXinInstallDiagnostics\0".encode_utf16().collect();
+    let name: Vec<u16> = "CpasuProbe\0".encode_utf16().collect();
+    let mut buf = [0u16; 32];
+    let mut cb = (buf.len() * 2) as u32;
+    let mut ptype = REG_VALUE_TYPE::default();
+    let st = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            PCWSTR(subkey.as_ptr()),
+            PCWSTR(name.as_ptr()),
+            RRF_RT_REG_SZ,
+            Some(&mut ptype),
+            Some(buf.as_mut_ptr() as *mut core::ffi::c_void),
+            Some(&mut cb),
+        )
+    };
+    st.is_ok() && String::from_utf16_lossy(&buf[..(cb as usize / 2).min(buf.len())]).trim_end_matches('\0').trim() == "1"
+}
+
 fn launch_ui_process() -> Result<(), String> {
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::CloseHandle;
@@ -1413,6 +1581,9 @@ fn launch_ui_process() -> Result<(), String> {
 
     // 1. 获取活跃控制台会话 ID
     //  1. Get active console session ID
+    // 实验变量：先自注册为受保护+trusted 进程，再执行 CPASU 序列
+    //  Experiment variable: self-register as protected+trusted BEFORE CPASU.
+    register_product_pid_with_driver(std::process::id(), "probe-self");
     let session_id = unsafe { WTSGetActiveConsoleSessionId() };
     if session_id == 0xFFFFFFFF {
         service_log("[Service] No active console session, skipping UI launch");
@@ -1484,13 +1655,83 @@ fn launch_ui_process() -> Result<(), String> {
             format!("DuplicateTokenEx failed: {}", e)
         })?;
     }
+    // VUL-108 关键诊断：检测调用线程是否携带低级别模拟令牌（Identification 级
+    // 模拟会让 CreateProcessAsUserW 以 STATUS_BAD_IMPERSONATION_LEVEL 失败），
+    // 并防御性 RevertToSelf 后重试。
+    //  VUL-108 KEY DIAGNOSTIC: detect whether the calling thread carries a low-level
+    //  impersonation token (Identification-level impersonation makes CPASU fail with
+    //  STATUS_BAD_IMPERSONATION_LEVEL); defensively RevertToSelf and retry.
+    // 防御性 RevertToSelf：若启动路径上有代码在线程残留了 Identification 级模拟，
+    // CreateProcessAsUserW 会以 STATUS_BAD_IMPERSONATION_LEVEL(0x542) 失败；
+    // 未模拟时调用无害。
+    //  Defensive RevertToSelf: if anything left an Identification-level thread
+    //  impersonation on this thread during startup, CPASU fails with
+    //  STATUS_BAD_IMPERSONATION_LEVEL; harmless when not impersonating.
+    unsafe {
+        windows::Win32::Security::RevertToSelf();
+    }
+    service_log("[Service][diag] RevertToSelf issued before CPASU");
     service_log("[Service] user token duplicated to primary (SecurityImpersonation)");
+    service_log("[Service] user token duplicated to primary (SecurityImpersonation)");
+
+    // VUL-108 诊断：核验复制出的令牌真实属性（类型/模拟级别/会话 ID）。
+    //  VUL-108 diagnostics: verify the duplicated token's actual properties.
+    unsafe {
+        use windows::Win32::Security::{
+            GetTokenInformation, TokenImpersonationLevel, TokenSessionId, TokenStatistics,
+        };
+        let mut stats = windows::Win32::Security::TOKEN_STATISTICS::default();
+        let mut ret = 0u32;
+        if GetTokenInformation(
+            primary_token,
+            TokenStatistics,
+            Some(&mut stats as *mut _ as *mut _),
+            std::mem::size_of::<windows::Win32::Security::TOKEN_STATISTICS>() as u32,
+            &mut ret,
+        )
+        .is_ok()
+        {
+            service_log(&format!(
+                "[Service][diag] token: type={:?} ilvl={:?}",
+                stats.TokenType, stats.ImpersonationLevel
+            ));
+        } else {
+            service_log("[Service][diag] GetTokenInformation(TokenStatistics) failed");
+        }
+        let mut sid_val = 0u32;
+        if GetTokenInformation(
+            primary_token,
+            TokenSessionId,
+            Some(&mut sid_val as *mut _ as *mut _),
+            4,
+            &mut ret,
+        )
+        .is_ok()
+        {
+            service_log(&format!("[Service][diag] token SessionId={}", sid_val));
+        }
+    }
 
     // 3. 创建用户环境块
     //  3. Create user environment block
     let mut env_block: *mut std::ffi::c_void = std::ptr::null_mut();
     unsafe {
         let _ = CreateEnvironmentBlock(&mut env_block, user_token, false);
+    }
+
+    // VUL-108 现场诊断：注册表标记存在时，在本调用点运行完整探针（双目标）
+    // 并落盘结果，然后直接返回——用于区分「目标家族名」与「服务进程身份」。
+    //  VUL-108 on-site diagnostics: when the registry marker is present, run the
+    //  full dual-target probe at THIS exact call site, persist results, return.
+    {
+        let marker = RegGetValueW_marker();
+        if marker {
+            let mut r = String::from("[site-probe]\r\n");
+            r.push_str(&cpasu_diagnostic_probe());
+            let _ = std::fs::write("C:\\Windows\\Temp\\site-cpasu.txt", &r);
+            service_log("[Service] site CPASU probe executed - see C:\\Windows\\Temp\\site-cpasu.txt");
+            return Ok(());
+        }
     }
 
     // 4. 获取可执行文件路径（拆分后为同目录的 Tray 进程；兼容期回退自身，不带 --service）
@@ -1554,7 +1795,7 @@ fn launch_ui_process() -> Result<(), String> {
             false,
             CREATE_UNICODE_ENVIRONMENT,
             Some(env_block),
-            PCWSTR(exe_dir_wide.as_ptr()),
+            PCWSTR(std::ptr::null()), // VUL-108 诊断：去掉 lpDesktop，排除窗口站因素
             &startup_info,
             &mut process_info,
         )

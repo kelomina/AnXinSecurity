@@ -557,7 +557,7 @@ DRIVER_DISPATCH   DriverCreateClose;
 DRIVER_DISPATCH   DriverDeviceControl;
 
 // Process
-void       ProcessNotifyCallback(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId, _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
+NTSTATUS     ProcessNotifyCallback(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId, _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo);
 void       ThreadNotifyCallback(_In_ HANDLE ProcessId, _In_ HANDLE ThreadId, _In_ BOOLEAN Create);
 
 /* Family-name matcher (three-process split); definition below IsCallerFamilyTry. */
@@ -1641,7 +1641,26 @@ void ClearProtectedWinstas(void)
 // Process notification callback
 // ===========================================================================
 
-void ProcessNotifyCallback(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIFY_INFO CreateInfo)
+/*
+ * VUL-108 根因修复：本回调注册于 PsSetCreateProcessNotifyRoutineEx，
+ * 该 API 要求 NTSTATUS 返回原型（PCREATE_PROCESS_NOTIFY_ROUTINE_EX）。
+ * 旧实现为 void——内核从 RAX 读取"返回值"作为创建决策，读到的是本函数
+ * 执行路径残留的寄存器垃圾；非零时 NtCreateUserProcess 以任意状态码失败
+ * （实测表现为 0xC00000A1 → 用户态 0x80070542 BAD_IMPERSONATION_LEVEL）。
+ * 受影响场景：家族名匹配的新进程创建（即服务拉起 Tray 的合法路径）。
+ * 现改为显式 NTSTATUS 并在所有出口返回 STATUS_SUCCESS。
+ *
+ * VUL-108 root-cause fix: this callback is registered with
+ * PsSetCreateProcessNotifyRoutineEx, which requires the NTSTATUS-returning
+ * PCREATE_PROCESS_NOTIFY_ROUTINE_EX prototype. The old implementation was
+ * void - the kernel read leftover RAX garbage as the creation verdict, and any
+ * nonzero leftover failed NtCreateUserProcess with an arbitrary status
+ * (observed as 0xC00000A1 -> user-mode 0x80070542 BAD_IMPERSONATION_LEVEL).
+ * Affected path: creation of family-matched processes, i.e. exactly the
+ * service->tray legitimate launch. Now explicitly returns STATUS_SUCCESS on
+ * every exit.
+ */
+NTSTATUS ProcessNotifyCallback(_Inout_ PEPROCESS Process, _In_ HANDLE ProcessId, _Inout_opt_ PPS_CREATE_NOTIFY_INFO CreateInfo)
 {
     if (CreateInfo != NULL) {
         Trace("PN:create");
@@ -1715,6 +1734,8 @@ void ProcessNotifyCallback(PEPROCESS Process, HANDLE ProcessId, PPS_CREATE_NOTIF
             DbgPrintf("[AnXin] PID %lu removed from protection (terminated)\n", (ULONG)(ULONG_PTR)ProcessId);
         }
     }
+
+    return STATUS_SUCCESS;
 }
 
 // ===========================================================================

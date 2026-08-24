@@ -365,6 +365,32 @@ fn main() {
         std::process::exit(code);
     }
 
+    // VUL-108 临时诊断：--cpasu-probe 在本进程上下文执行与 launch_ui_process
+    // 完全相同的跨会话创建序列，输出每一步结果以定位差异。
+    //  VUL-108 temp diagnostics: --cpasu-probe runs the exact cross-session
+    //  creation sequence inside this process context.
+    if let Some(v) = std::env::args().skip_while(|a| a != "--set-diag").nth(1) {
+        match u32::from_str_radix(&v, 16) {
+            Ok(flags) => {
+                use anxin_security::utils::driver_client::DriverClient;
+                let c = DriverClient::new();
+                match c.connect().and_then(|_| c.set_diag_flags(flags)) {
+                    Ok(_) => println!("[diag] flags=0x{:X} set", flags),
+                    Err(e) => println!("[diag] failed: {}", e),
+                }
+            }
+            Err(e) => println!("bad hex: {}", e),
+        }
+        std::process::exit(0);
+    }
+
+    if std::env::args().any(|arg| arg == "--cpasu-probe") {
+        let r = anxin_security::services::windows_service::cpasu_diagnostic_probe();
+        std::fs::write("C:\\Windows\\Temp\\svc-probe.txt", &r).ok();
+        println!("{}", r);
+        std::process::exit(0);
+    }
+
     if !acquire_main_singleton() {
         eprintln!("[Main] another instance is running - exiting");
         return;
