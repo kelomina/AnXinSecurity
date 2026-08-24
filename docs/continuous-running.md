@@ -18,6 +18,11 @@
 
 更新时间：2026-08-24（第二轮）
 
+### 2026-08-24 VUL-108 深挖（第三轮）：排除法收敛，本地内核调试就绪
+
+**最终验证（干净重启后）**：四服务全绿（ProcProtect/FileProtect/NetFilter/SecurityService 全 RUNNING），NTSTATUS 修复版驱动确认已部署（宿主/来宾哈希一致 376711D6），跨会话拉起仍稳定 0x80070542。排除项与判别实验详见 buglist.md VUL-108 第三轮进展段。下一步：kd -kl 内核调试（基础设施已就绪：bcdedit /debug on + kd.exe 于 C:\Windows\Temp\kdt\）。检查点未还原以保留复现现场（VUL-108 解决后还原并重建）。
+
+---
 ### 2026-08-24 三进程 VM 实测第二轮：三驱动全绿 + 静默安装链路修复，VUL-108 收敛至内核专项
 
 **目标**：验证 VUL-108 修复（驱动家族名表+服务自注册）、FileProtect root Instances 双写、NetFilter 注册段。
