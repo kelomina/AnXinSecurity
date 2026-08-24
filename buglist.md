@@ -1356,5 +1356,5 @@
 - **决定性新证据**：同一 AnXinService.exe 二进制、同一探针代码——经 schtask SYSTEM 启动时 CPASU 对 cmd 与 AnXinTray 均成功；经 SCM 以服务身份运行时对任意目标稳定 0x80070542。判别变量为「进程由 SCM 创建且运行完整防护栈」这一身份本身。
 - **已排除**：FileProtect（删键重启后仍失败）；NetFilter（多轮失败时它常为 NOT-REG）；ProcProtect ObCallback 剥权（DIAG=0xF 全关后仍失败）；线程残留模拟（RevertToSelf 后仍失败）；令牌属性错误（已核验）；Ex 回调垃圾返回（显式化后仍失败）。
 - **当前头号怀疑**：SCM 服务环境特有因素——如服务进程被驱动标记 protected 后内核对其 CreateProcessAsUserW 调用的 SeSubProcessToken/令牌会话处理路径干预；或服务启动栈中某组件（HookService 管道/ETW 会话）遗留了影响内核创建路径的状态。
-- **基础设施就绪**：guest 已开启本地内核调试（bcdedit /debug on），kd.exe 及依赖已部署 C:\Windows\Temp\kdt\，kd-capture.log 通道验证可用。下一步：kd -kl 下复现并抓取完整内核 DbgPrint 流（驱动 Strip/Pending 日志 + 失败时刻内核输出）。
+- **基础设施就绪**：guest 已部署 DebugView64.exe（C:\Windows\Temp\DbgView64.exe，内核 DbgPrint 捕获、零符号下载）。下一步：提权运行 DbgView 开启 Kernel 捕获 → 重启服务复现 542 → 导出日志定位驱动干预点。【禁止 kd/cdb/WinDbg】
 - **附带确认**：ADD_PID 对已注册 PID 重复注册返回内部错误（非幂等），IPC 握手重复注册产生噪音日志——建议用户态缓存已注册状态或驱动改幂等。
