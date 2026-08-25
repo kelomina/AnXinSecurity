@@ -1672,7 +1672,129 @@ fn launch_ui_process() -> Result<(), String> {
     }
     service_log("[Service][diag] RevertToSelf issued before CPASU");
     service_log("[Service] user token duplicated to primary (SecurityImpersonation)");
+
+    // VUL-108 关键修复：显式启用 SE_ASSIGN_PRIMARY_TOKEN_PRIVILEGE。
+    // SCM 创建的服务进程理论上拥有此特权，但 ProcProtect 驱动可能在进程
+    // 创建同步回调中剥离了它。CPASU 必须持有此特权才能用非自身令牌创建进程。
+    //  VUL-108 KEY FIX: explicitly enable SE_ASSIGN_PRIMARY_TOKEN_PRIVILEGE.
+    //  The SCM-created service process should have this by default, but the
+    //  ProcProtect driver may strip it in its synchronous create callback.
+    unsafe {
+        use windows::Win32::Foundation::{HANDLE};
+        use windows::Win32::System::Threading::{GetCurrentProcess};
+        use windows::Win32::Security::{
+            LookupPrivilegeValueW, AdjustTokenPrivileges, TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
+            LUID_AND_ATTRIBUTES, TOKEN_PRIVILEGES, SE_PRIVILEGE_ENABLED,
+        };
+        // Enable in current process token
+        let proc_handle = GetCurrentProcess();
+        let name: Vec<u16> = "SeAssignPrimaryTokenPrivilege\0".encode_utf16().collect();
+        let mut luid = windows::Win32::Foundation::LUID::default();
+        let _ = LookupPrivilegeValueW(
+            PCWSTR::null(),
+            windows::core::PCWSTR(name.as_ptr()),
+            &mut luid,
+        );
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let _ = AdjustTokenPrivileges(
+            HANDLE(proc_handle.0),
+            false,
+            Some(&tp),
+            0,
+            None,
+            None,
+        );
+        // Also enable on the DUPLICATED user token
+        let name2: Vec<u16> = "SeAssignPrimaryTokenPrivilege\0".encode_utf16().collect();
+        let _ = LookupPrivilegeValueW(
+            PCWSTR::null(),
+            windows::core::PCWSTR(name2.as_ptr()),
+            &mut luid,
+        );
+        let mut tp2 = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let _ = AdjustTokenPrivileges(
+            primary_token,
+            false,
+            Some(&tp2),
+            0,
+            None,
+            None,
+        );
+    }
     service_log("[Service] user token duplicated to primary (SecurityImpersonation)");
+
+    // VUL-108 关键修复：显式启用 SE_ASSIGN_PRIMARY_TOKEN_PRIVILEGE。
+    // SCM 创建的服务进程理论上拥有此特权，但 ProcProtect 驱动可能在进程
+    // 创建同步回调中剥离了它。CPASU 必须持有此特权才能用非自身令牌创建进程。
+    //  VUL-108 KEY FIX: explicitly enable SE_ASSIGN_PRIMARY_TOKEN_PRIVILEGE.
+    //  The SCM-created service process should have this by default, but the
+    //  ProcProtect driver may strip it in its synchronous create callback.
+    unsafe {
+        use windows::Win32::Foundation::{HANDLE};
+        use windows::Win32::System::Threading::{GetCurrentProcess};
+        use windows::Win32::Security::{
+            LookupPrivilegeValueW, AdjustTokenPrivileges, TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY,
+            LUID_AND_ATTRIBUTES, TOKEN_PRIVILEGES, SE_PRIVILEGE_ENABLED,
+        };
+        // Enable in current process token
+        let proc_handle = GetCurrentProcess();
+        let name: Vec<u16> = "SeAssignPrimaryTokenPrivilege\0".encode_utf16().collect();
+        let mut luid = windows::Win32::Foundation::LUID::default();
+        let _ = LookupPrivilegeValueW(
+            PCWSTR::null(),
+            windows::core::PCWSTR(name.as_ptr()),
+            &mut luid,
+        );
+        let mut tp = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let _ = AdjustTokenPrivileges(
+            HANDLE(proc_handle.0),
+            false,
+            Some(&tp),
+            0,
+            None,
+            None,
+        );
+        // Also enable on the DUPLICATED user token
+        let name2: Vec<u16> = "SeAssignPrimaryTokenPrivilege\0".encode_utf16().collect();
+        let _ = LookupPrivilegeValueW(
+            PCWSTR::null(),
+            windows::core::PCWSTR(name2.as_ptr()),
+            &mut luid,
+        );
+        let mut tp2 = TOKEN_PRIVILEGES {
+            PrivilegeCount: 1,
+            Privileges: [LUID_AND_ATTRIBUTES {
+                Luid: luid,
+                Attributes: SE_PRIVILEGE_ENABLED,
+            }],
+        };
+        let _ = AdjustTokenPrivileges(
+            primary_token,
+            false,
+            Some(&tp2),
+            0,
+            None,
+            None,
+        );
+    }
 
     // VUL-108 诊断：核验复制出的令牌真实属性（类型/模拟级别/会话 ID）。
     //  VUL-108 diagnostics: verify the duplicated token's actual properties.
